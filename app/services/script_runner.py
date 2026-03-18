@@ -702,7 +702,7 @@ class ScriptRunner:
                 # [Controller] Close comments
                 await tiktok.close_panel(self._device)
                 await self._step("key", "close comments")
-                await self._wait(0.5, 1, "closing")
+                await self._wait(1, 2, "panel closing animation")
 
                 # [Script] Maybe like the video too
                 if random.random() < like_after_comment:

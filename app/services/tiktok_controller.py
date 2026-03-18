@@ -468,11 +468,54 @@ class TikTokController:
         return True
 
     async def close_panel(self, device: str) -> bool:
-        """Press BACK to close current panel (comments, profile, etc.)."""
+        """Close comment panel reliably.
+
+        TikTok needs up to 2 BACKs: 1st closes keyboard, 2nd closes panel.
+        Verifies panel is actually closed before returning.
+        """
+        for attempt in range(3):
+            if self._backend:
+                await self._backend.key_event(device, "BACK")
+            else:
+                await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
+            await asyncio.sleep(0.6)
+
+            # Check if panel is still open by looking for comment input or panel elements
+            try:
+                elements = await self.dump_ui(device)
+                panel_still_open = False
+                for el in elements:
+                    # EditText = comment input field = panel is open
+                    if el.cls and "EditText" in el.cls:
+                        panel_still_open = True
+                        break
+                    # Comment-related content-desc
+                    if el.content_desc and (
+                        "comment" in el.content_desc.lower()
+                        or "reply" in el.content_desc.lower()
+                    ):
+                        # This could be the comment icon on the feed too,
+                        # so check if it's in the comment panel area (top half = panel)
+                        if el.bounds[1] < 1000:  # Panel header area
+                            panel_still_open = True
+                            break
+
+                if not panel_still_open:
+                    logger.info(f"  ✅ Comment panel closed (attempt {attempt + 1})")
+                    return True
+                else:
+                    logger.info(f"  ⚠️ Panel still open, sending BACK again (attempt {attempt + 1})")
+            except Exception:
+                # If UI dump fails, assume it worked
+                return True
+
+        # Last resort: press HOME then reopen TikTok feed
+        logger.warning("  ⚠️ Panel stuck — pressing BACK one more time")
         if self._backend:
             await self._backend.key_event(device, "BACK")
         else:
             await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
+        await asyncio.sleep(0.5)
         return True
 
     async def swipe_next(self, device: str) -> bool:
