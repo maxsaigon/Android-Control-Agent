@@ -56,11 +56,24 @@ class AccessibilityBackend(DeviceBackend):
         ip = device.split(":")[0]
         return f"ws://{ip}:{self._ws_port}"
 
+    @staticmethod
+    def _is_ws_open(ws) -> bool:
+        """Check if WebSocket is open (compatible with websockets 14-16+)."""
+        try:
+            from websockets.protocol import State
+            return ws.state is State.OPEN
+        except (ImportError, AttributeError):
+            pass
+        try:
+            return ws.open
+        except AttributeError:
+            return False
+
     async def _ensure_connected(self, device: str) -> "websockets.WebSocketClientProtocol":
         """Get or create WebSocket connection to device."""
         if device in self._connections:
             ws = self._connections[device]
-            if ws.open:
+            if self._is_ws_open(ws):
                 return ws
             else:
                 # Connection closed — clean up
@@ -279,7 +292,7 @@ class AccessibilityBackend(DeviceBackend):
     def is_connected(self, device: str) -> bool:
         """Check if WebSocket is currently connected."""
         ws = self._connections.get(device)
-        return ws is not None and ws.open
+        return ws is not None and self._is_ws_open(ws)
 
 
 # Singleton
