@@ -22,8 +22,9 @@ RUN pip install --no-cache-dir \
 COPY app/ ./app/
 COPY config.yaml ./
 
-# Bundle helper APK for auto-install on devices (optional — APK may be pre-installed)
-COPY android-helper/app/build/outputs/apk/debug/app-debug.ap[k] ./ac-helper.apk
+# Bundle helper APK for auto-install on devices
+# NOTE: Uncomment when building from a machine with Android Studio APK output
+# COPY android-helper/app/build/outputs/apk/debug/app-debug.apk ./ac-helper.apk
 
 # Data + screenshots volumes
 RUN mkdir -p /app/data /app/screenshots
