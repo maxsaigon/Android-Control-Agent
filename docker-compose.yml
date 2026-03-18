@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8000"
     env_file:
       - .env
     volumes:
@@ -14,6 +14,7 @@ services:
       - ./app/templates:/app/app/templates
       # Mount config (editable without rebuild)
       - ./config.yaml:/app/config.yaml
-    # ADB: use host network to access devices on LAN
-    network_mode: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
+

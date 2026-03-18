@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.androidcontrol.helper'
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "com.androidcontrol.helper"
+        minSdk 28          // Android 9+ (screencap global action requires API 28)
+        targetSdk 33
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            debuggable true
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    // WebSocket server
+    implementation 'org.java-websocket:Java-WebSocket:1.5.4'
+
+    // JSON processing
+    implementation 'com.google.code.gson:gson:2.10.1'
+}

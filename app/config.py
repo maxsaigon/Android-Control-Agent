@@ -17,13 +17,18 @@ SCREENSHOTS_DIR = RUNTIME_DIR / "screenshots"
 class Settings(BaseSettings):
     """App settings loaded from .env file."""
 
-    # LLM Configuration
-    openai_api_key: str = ""
-    llm_base_url: str = "https://api.deepseek.com"  # OpenAI-compatible endpoint
-    llm_model: str = "deepseek-chat"  # or gpt-4o, deepseek-reasoner, etc.
+    # LLM Configuration — Primary: GPT-4o, Fallback: DeepSeek
+    openai_api_key: str = ""       # GPT-4o API key (primary)
+    deepseek_api_key: str = ""     # DeepSeek API key (fallback)
+    llm_base_url: str = ""         # Empty = OpenAI default, or custom endpoint
+    llm_model: str = "gpt-4o"      # Primary model
 
     # ADB
-    adb_path: str = "/etc/platform-tools/adb"
+    adb_path: str = "adb"
+
+    # Accessibility Service Backend
+    accessibility_ws_port: int = 38301     # WebSocket port on helper APK
+    default_backend: str = "auto"          # "auto" | "adb" | "accessibility"
 
     # Database
     database_url: str = f"sqlite:///{DATA_DIR}/android_control.db"

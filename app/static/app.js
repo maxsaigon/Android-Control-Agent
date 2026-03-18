@@ -6,6 +6,10 @@ const API = '';  // Same origin
 let devices = [];
 let templates = [];
 let refreshTimer = null;
+let currentPage = 'dashboard';
+let isConfirming = false;
+let liveStepData = {};  // {taskId: {current_step, action, detail, steps: [...], started_at}}
+let subscribedTasks = new Set();
 
 // ===== INITIALIZATION =====
 
@@ -97,32 +101,60 @@ async function refreshDevices() {
 }
 
 function renderDevices() {
+    if (isConfirming) return; // Don't re-render during confirm dialog
     const container = document.getElementById('deviceList');
+    const countEl = document.getElementById('deviceCount');
+    if (countEl) countEl.textContent = devices.length;
+
     if (!devices.length) {
-        container.innerHTML = '<div class="empty-state"><div class="empty-icon">📱</div><div class="empty-text">No devices registered</div></div>';
+        container.innerHTML = '<div class="empty-state"><div class="empty-icon">📱</div><div class="empty-text">Chưa có device nào<br><small style="color:var(--text-muted)">Thêm device ở form bên phải →</small></div></div>';
         return;
     }
-    container.innerHTML = '<div class="device-grid">' + devices.map(d => `
-        <div class="device-card" onclick="selectDevice(${d.id})" id="dev-${d.id}">
-            <div class="device-header">
-                <span class="device-name">${d.name}</span>
-                <span class="device-status status-${d.status}">${d.status}</span>
+    container.innerHTML = '<div class="device-grid">' + devices.map(d => {
+        const statusMap = {
+            online: { label: '🟢 Online', cls: 'online' },
+            offline: { label: '🔴 Offline', cls: 'offline' },
+            busy: { label: '🟡 Busy', cls: 'busy' },
+            unauthorized: { label: '🔒 Unauthorized', cls: 'unauthorized' },
+        };
+        const st = statusMap[d.status] || statusMap.offline;
+        const lastSeen = d.last_seen
+            ? new Date(d.last_seen).toLocaleString('vi-VN', {
+                hour: '2-digit', minute: '2-digit',
+                day: '2-digit', month: '2-digit'
+            })
+            : '—';
+
+        return `
+            <div class="device-card ${st.cls}" onclick="selectDevice(${d.id})" id="dev-${d.id}">
+                <div class="device-header">
+                    <span class="device-name">
+                        ${d.name}
+                        <button class="btn-icon" onclick="event.stopPropagation(); renameDevice(${d.id}, '${d.name.replace(/'/g, "\\'")}')" title="Đổi tên">✏️</button>
+                    </span>
+                    <span class="device-status status-${d.status}">${st.label}</span>
+                </div>
+                <div class="device-info">
+                    <span>🌐 ${d.ip_address}:${d.adb_port}</span>
+                    <span>📱 ${d.device_model || 'Unknown'}</span>
+                    ${d.battery_level !== null && d.battery_level !== undefined ? `<span>🔋 ${d.battery_level}%</span>` : ''}
+                    ${d.android_version ? `<span>🤖 Android ${d.android_version}</span>` : ''}
+                    <span>🕐 ${lastSeen}</span>
+                </div>
+                ${d.status === 'unauthorized' ? '<div class="device-warning">⚠️ Chấp nhận kết nối ADB trên phone</div>' : ''}
+                <div class="device-actions">
+                    ${d.status === 'offline'
+                        ? `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); connectDevice(${d.id})">🔗 Connect</button>`
+                        : d.status === 'unauthorized'
+                        ? `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); connectDevice(${d.id})">🔄 Retry</button>`
+                        : `<button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); disconnectDevice(${d.id})">Disconnect</button>`
+                    }
+                    <button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); checkDeviceStatus(${d.id})">📡 Status</button>
+                    <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteDevice(${d.id}, this)">🗑️</button>
+                </div>
             </div>
-            <div class="device-info">
-                <span>📍 ${d.ip_address}</span>
-                <span>📱 ${d.device_model || '—'}</span>
-                ${d.battery_level !== null ? `<span>🔋 ${d.battery_level}%</span>` : ''}
-                ${d.android_version ? `<span>🤖 v${d.android_version}</span>` : ''}
-            </div>
-            <div class="device-actions">
-                ${d.status === 'offline'
-                    ? `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); connectDevice(${d.id})">Connect</button>`
-                    : `<button class="btn btn-xs btn-ghost" onclick="event.stopPropagation(); disconnectDevice(${d.id})">Disconnect</button>`
-                }
-                <button class="btn btn-xs btn-danger" onclick="event.stopPropagation(); deleteDevice(${d.id})">Delete</button>
-            </div>
-        </div>
-    `).join('') + '</div>';
+        `;
+    }).join('') + '</div>';
 }
 
 function selectDevice(id) {
@@ -165,34 +197,309 @@ async function disconnectDevice(id) {
     } catch (e) { toast('Failed', 'error'); }
 }
 
-async function deleteDevice(id) {
-    if (!confirm('Delete this device?')) return;
+async function renameDevice(id, currentName) {
+    // Already editing — ignore
+    if (isConfirming) return;
+    isConfirming = true;
+
+    const card = document.getElementById(`dev-${id}`);
+    if (!card) { isConfirming = false; return; }
+
+    const nameEl = card.querySelector('.device-name');
+    if (!nameEl) { isConfirming = false; return; }
+
+    // Replace name text with input field
+    const oldHTML = nameEl.innerHTML;
+    nameEl.innerHTML = `<input type="text" class="rename-input" value="${currentName}" 
+        onclick="event.stopPropagation()" 
+        onkeydown="if(event.key==='Enter'){saveDeviceName(${id},this.value);event.stopPropagation()}else if(event.key==='Escape'){cancelRename()}"
+        onblur="saveDeviceName(${id},this.value)">`;
+    const input = nameEl.querySelector('input');
+    input.focus();
+    input.select();
+}
+
+async function saveDeviceName(id, newName) {
+    if (!isConfirming) return; // Already saved/cancelled
+    isConfirming = false;
+    if (!newName || !newName.trim()) {
+        refreshDevices();
+        return;
+    }
+    try {
+        const res = await fetch(`${API}/api/devices/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName.trim() }),
+        });
+        if (res.ok) {
+            toast(`✏️ Đã đổi tên → ${newName.trim()}`, 'success');
+        }
+    } catch (e) { toast('Đổi tên thất bại', 'error'); }
+    refreshDevices();
+}
+
+function cancelRename() {
+    isConfirming = false;
+    refreshDevices();
+}
+
+let deleteConfirmId = null;
+let deleteConfirmTimer = null;
+
+function deleteDevice(id, btnEl) {
+    // Two-click confirmation: first click → "Sure?", second click → delete
+    if (deleteConfirmId === id) {
+        // Second click — actually delete
+        clearTimeout(deleteConfirmTimer);
+        deleteConfirmId = null;
+        doDeleteDevice(id);
+    } else {
+        // First click — show confirmation
+        if (deleteConfirmTimer) clearTimeout(deleteConfirmTimer);
+        deleteConfirmId = id;
+        if (btnEl) {
+            btnEl.textContent = '⚠️ Sure?';
+            btnEl.classList.add('btn-warning');
+        }
+        // Auto-reset after 3 seconds
+        deleteConfirmTimer = setTimeout(() => {
+            deleteConfirmId = null;
+            if (btnEl) {
+                btnEl.textContent = '🗑️';
+                btnEl.classList.remove('btn-warning');
+            }
+        }, 3000);
+    }
+}
+
+async function doDeleteDevice(id) {
     try {
         await fetch(`${API}/api/devices/${id}`, { method: 'DELETE' });
-        toast('Device deleted', 'success');
+        toast('🗑️ Đã xóa device', 'success');
         refreshDevices();
         refreshStats();
     } catch (e) { toast('Failed', 'error'); }
 }
 
+async function addDevice(event) {
+    event.preventDefault();
+    const payload = {
+        name: document.getElementById('devName').value,
+        ip_address: document.getElementById('devIp').value,
+        adb_port: parseInt(document.getElementById('devPort').value),
+    };
+
+    try {
+        const res = await fetch(`${API}/api/devices`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            toast(`❌ ${err.detail}`, 'error');
+            return;
+        }
+        const device = await res.json();
+        toast(`📱 Đã thêm "${device.name}"`, 'success');
+        document.getElementById('addDeviceForm').reset();
+        document.getElementById('devPort').value = '5555';
+
+        await refreshDevices();
+
+        // Auto-connect nếu checkbox checked
+        if (document.getElementById('devAutoConnect').checked) {
+            toast('🔗 Đang kết nối ADB...', 'info');
+            await connectDevice(device.id);
+        }
+        refreshStats();
+    } catch (e) {
+        toast(`Lỗi: ${e.message}`, 'error');
+    }
+}
+
+async function checkDeviceStatus(id) {
+    toast('📡 Checking...', 'info');
+    try {
+        const res = await fetch(`${API}/api/devices/${id}/status`);
+        const data = await res.json();
+        const batteryInfo = data.battery_level ? ` 🔋${data.battery_level}%` : '';
+        if (data.reachable) {
+            toast(`✅ ${data.name}: ${data.status}${batteryInfo}`, 'success');
+        } else {
+            toast(`🔴 ${data.name}: offline — không thể kết nối`, 'error');
+        }
+        refreshDevices();
+    } catch (e) { toast('Check failed', 'error'); }
+}
+
+async function scanLAN() {
+    const subnet = document.getElementById('scanSubnet').value.trim();
+    const port = parseInt(document.getElementById('scanPort').value);
+    const btn = document.getElementById('scanBtn');
+    const results = document.getElementById('scanResults');
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Đang quét...';
+    results.innerHTML = '<div class="loading">Quét ' + subnet + '.0/24 — khoảng 5-15 giây...</div>';
+
+    try {
+        const res = await fetch(`${API}/api/devices/scan`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subnet, port }),
+        });
+        const data = await res.json();
+
+        if (!data.devices || data.devices.length === 0) {
+            results.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Không tìm thấy thiết bị ADB<br><small style="color:var(--text-muted)">Kiểm tra WiFi Debugging trên phone</small></div></div>';
+            return;
+        }
+
+        results.innerHTML = data.devices.map(d => {
+            const statusMap = {
+                connected: { label: '🟢 Connected', cls: 'online' },
+                unauthorized: { label: '🔒 Unauthorized', cls: 'unauthorized' },
+                unknown: { label: '❓ Unknown', cls: 'offline' },
+            };
+            const st = statusMap[d.status] || statusMap.unknown;
+
+            return `
+                <div class="scan-result ${st.cls}">
+                    <div class="scan-result-info">
+                        <strong>${d.ip}:${d.port}</strong>
+                        <span class="device-status status-${d.status === 'connected' ? 'online' : d.status}">${st.label}</span>
+                    </div>
+                    <div class="scan-result-meta">
+                        ${d.model ? `📱 ${d.model}` : ''}
+                        ${d.android_version ? ` · 🤖 Android ${d.android_version}` : ''}
+                    </div>
+                    <div class="scan-result-actions">
+                        ${d.already_registered
+                            ? '<span style="color:var(--text-muted);font-size:12px">✅ Đã thêm</span>'
+                            : d.status === 'unauthorized'
+                            ? '<span style="color:var(--yellow);font-size:12px">🔒 Chấp nhận kết nối trên phone trước</span>'
+                            : `<button class="btn btn-xs btn-primary" onclick="addScannedDevice('${d.ip}', ${d.port}, '${d.model || d.ip}')">➕ Thêm</button>`
+                        }
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        toast(`🔍 Tìm thấy ${data.devices.length} thiết bị`, 'success');
+    } catch (e) {
+        results.innerHTML = '<div class="empty-state"><div class="empty-text" style="color:var(--red)">Lỗi quét mạng</div></div>';
+        toast(`Scan failed: ${e.message}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '🔍 Quét thiết bị';
+    }
+}
+
+async function addScannedDevice(ip, port, model) {
+    const payload = { name: model, ip_address: ip, adb_port: port };
+    try {
+        const res = await fetch(`${API}/api/devices`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+            const device = await res.json();
+            toast(`📱 Đã thêm "${device.name}"`, 'success');
+            await connectDevice(device.id);
+            refreshDevices();
+            // Re-scan to update buttons
+            scanLAN();
+        } else {
+            const err = await res.json();
+            toast(`❌ ${err.detail}`, 'error');
+        }
+    } catch (e) { toast(`Lỗi: ${e.message}`, 'error'); }
+}
+
+
 // ===== TEMPLATES =====
+
+// Template mode classification
+const SCRIPT_TEMPLATES = {
+    tiktok_browse:  { mode: 'script',  label: '🔧 Script', desc: 'Lướt TikTok feed', cost: '$0' },
+    tiktok_warmup:  { mode: 'script',  label: '🔧 Script', desc: 'Warm-up TikTok (xem passive)', cost: '$0' },
+    tiktok_like:    { mode: 'script',  label: '🔧 Script', desc: 'Like video TikTok', cost: '$0' },
+    tiktok_comment: { mode: 'hybrid',  label: '⚡ Hybrid', desc: 'AI sinh comment phù hợp video', cost: '~$0.005' },
+    tiktok_follow:  { mode: 'script',  label: '🔧 Script', desc: 'Follow accounts TikTok', cost: '$0' },
+    youtube_watch:  { mode: 'script',  label: '🔧 Script', desc: 'Xem YouTube videos', cost: '$0' },
+    facebook_scroll:{ mode: 'script',  label: '🔧 Script', desc: 'Lướt Facebook feed', cost: '$0' },
+    instagram_scroll:{ mode: 'script', label: '🔧 Script', desc: 'Lướt Instagram feed', cost: '$0' },
+};
 
 async function loadTemplates() {
     try {
         const res = await fetch(`${API}/api/templates`);
         templates = await res.json();
         const sel = document.getElementById('templateSelect');
-        sel.innerHTML = '<option value="">No template</option>' +
-            templates.map(t => `<option value="${t.name}">${t.title}</option>`).join('');
+        sel.innerHTML = '<option value="">— Chọn template —</option>' +
+            templates.map(t => {
+                const meta = SCRIPT_TEMPLATES[t.name];
+                const badge = meta ? meta.label : '🧠 AI';
+                return `<option value="${t.name}">${t.title} [${badge}]</option>`;
+            }).join('');
     } catch (e) { /* templates optional */ }
 }
 
 function onTemplateChange() {
     const name = document.getElementById('templateSelect').value;
     const tpl = templates.find(t => t.name === name);
-    if (tpl) {
-        document.getElementById('commandInput').placeholder = tpl.description;
+    const meta = SCRIPT_TEMPLATES[name];
+
+    const commandGroup = document.getElementById('commandGroup');
+    const commandInput = document.getElementById('commandInput');
+    const templateInfo = document.getElementById('templateInfo');
+
+    if (meta && (meta.mode === 'script' || meta.mode === 'hybrid')) {
+        // Script or Hybrid → hide command input, show info
+        if (commandGroup) commandGroup.style.display = 'none';
+        if (templateInfo) {
+            templateInfo.style.display = 'block';
+            templateInfo.innerHTML = `
+                <div class="template-info-badge ${meta.mode}">
+                    <span>${meta.label}</span>
+                    <span class="template-cost">${meta.cost}</span>
+                </div>
+                <div class="template-desc">${meta.desc}</div>
+                ${meta.mode === 'hybrid' ? '<div class="template-note">📸 AI phân tích screenshot → sinh comment phù hợp nội dung video</div>' : ''}
+            `;
+        }
+        // Auto-fill command from template description
+        if (tpl && commandInput) {
+            commandInput.value = tpl.description || `Script: ${name}`;
+        }
+        // Update mode
+        document.getElementById('executionMode').value = meta.mode === 'hybrid' ? 'script' : 'script';
+    } else if (name && tpl) {
+        // Pure AI template
+        if (commandGroup) commandGroup.style.display = 'block';
+        if (templateInfo) {
+            templateInfo.style.display = 'block';
+            templateInfo.innerHTML = `
+                <div class="template-info-badge ai">
+                    <span>🧠 AI</span>
+                    <span class="template-cost">$0.01+</span>
+                </div>
+                <div class="template-desc">${tpl.description}</div>
+            `;
+        }
+        commandInput.placeholder = tpl.description;
+        document.getElementById('executionMode').value = 'ai';
+    } else {
+        // No template selected
+        if (commandGroup) commandGroup.style.display = 'block';
+        if (templateInfo) templateInfo.style.display = 'none';
     }
+
+    updateCostEstimate();
+    updateSubmitButton();
 }
 
 // ===== ACTION CARDS =====
@@ -209,15 +516,41 @@ function selectAction(card) {
     document.getElementById('scriptConfig').style.display = mode === 'script' ? 'block' : 'none';
     document.getElementById('aiConfig').style.display = mode === 'ai' ? 'block' : 'none';
 
-    const btn = document.getElementById('submitBtn');
-    btn.disabled = false;
-    if (mode === 'script') {
-        btn.textContent = `🔧 Chạy ${card.querySelector('.action-name').textContent} — $0`;
-    } else {
-        btn.textContent = '🧠 Chạy AI Task';
+    // Reset template state when switching modes
+    if (mode === 'ai') {
+        const commandGroup = document.getElementById('commandGroup');
+        if (commandGroup) commandGroup.style.display = 'block';
+        const templateInfo = document.getElementById('templateInfo');
+        if (templateInfo) templateInfo.style.display = 'none';
+        // Auto-select template if present in templates list
+        const tplSelect = document.getElementById('templateSelect');
+        if (tplSelect) tplSelect.value = '';
     }
 
     updateCostEstimate();
+    updateSubmitButton();
+}
+
+function updateSubmitButton() {
+    const btn = document.getElementById('submitBtn');
+    const mode = document.getElementById('executionMode').value;
+    const selectedCard = document.querySelector('.action-card.selected');
+    btn.disabled = false;
+
+    if (mode === 'script') {
+        const nm = selectedCard ? selectedCard.querySelector('.action-name').textContent : '';
+        btn.textContent = `🔧 Chạy ${nm} — $0`;
+    } else {
+        const tplName = document.getElementById('templateSelect').value;
+        const meta = SCRIPT_TEMPLATES[tplName];
+        if (meta && meta.mode === 'hybrid') {
+            btn.textContent = `⚡ Chạy Hybrid — ${meta.cost}`;
+        } else if (meta && meta.mode === 'script') {
+            btn.textContent = `🔧 Chạy Script — $0`;
+        } else {
+            btn.textContent = '🧠 Chạy AI Task';
+        }
+    }
 }
 
 // ===== SUBMIT TASK =====
@@ -229,7 +562,12 @@ async function submitTask(e) {
     const mode = document.getElementById('executionMode').value;
     if (!action) { toast('Chọn hành động trước', 'error'); return; }
 
-    if (mode === 'ai') {
+    // Check if a script/hybrid template is selected via AI card
+    const tplName = document.getElementById('templateSelect')?.value;
+    const tplMeta = SCRIPT_TEMPLATES[tplName];
+    const isScriptTemplate = tplMeta && (tplMeta.mode === 'script' || tplMeta.mode === 'hybrid');
+
+    if (mode === 'ai' && !isScriptTemplate) {
         const cmd = document.getElementById('commandInput').value.trim();
         if (!cmd) { toast('⚠️ Nhập lệnh cho AI', 'error'); return; }
     }
@@ -241,7 +579,8 @@ async function submitTask(e) {
     const batchMode = document.getElementById('batchMode').checked;
 
     let payload;
-    if (mode === 'script') {
+    if (mode === 'script' && !isScriptTemplate) {
+        // Script card (e.g., tiktok_browse selected from script cards)
         const count = parseInt(document.getElementById('scriptCount').value) || 5;
         const viewTimeStr = document.getElementById('scriptViewTime').value || '5-15';
         const likeChance = parseFloat(document.getElementById('scriptLikeChance').value);
@@ -260,9 +599,27 @@ async function submitTask(e) {
                 like_chance: likeChance,
             },
         };
+    } else if (isScriptTemplate) {
+        // Script/Hybrid template selected via AI card → route as script
+        const count = 5;
+        payload = {
+            command: `${tplMeta.label}: ${tplName}`,
+            template: tplName,
+            execution_mode: 'script',
+            max_steps: 50,
+            max_retries: 1,
+            template_vars: {
+                count,
+                view_time_min: 5,
+                view_time_max: 15,
+                like_chance: 0.3,
+                use_ai: tplMeta.mode === 'hybrid',
+            },
+        };
     } else {
+        // Pure AI task
         const command = document.getElementById('commandInput').value;
-        const template = document.getElementById('templateSelect').value || null;
+        const template = tplName || null;
         const maxSteps = parseInt(document.getElementById('maxSteps').value) || 20;
         const maxRetries = parseInt(document.getElementById('maxRetries').value) || 2;
 
@@ -354,7 +711,19 @@ function updateCostEstimate() {
         return;
     }
 
-    if (mode === 'script') {
+    // Check if a hybrid/script template is selected
+    const tplName = document.getElementById('templateSelect')?.value;
+    const meta = SCRIPT_TEMPLATES[tplName];
+
+    if (meta && meta.mode === 'hybrid') {
+        // Hybrid: low AI cost per comment
+        const count = parseInt(document.getElementById('scriptCount')?.value) || 5;
+        const aiCalls = Math.ceil(count * 0.4);
+        const cost = (aiCalls * 0.001 * multiplier).toFixed(4);
+        modeEl.textContent = `⚡ Hybrid${batchMode ? ` ×${onlineDevices}` : ''}`;
+        costEl.textContent = `~$${cost}`;
+        costEl.style.color = 'var(--yellow)';
+    } else if (mode === 'script' || (meta && meta.mode === 'script')) {
         modeEl.textContent = `🔧 Script${batchMode ? ` ×${onlineDevices}` : ''}`;
         costEl.textContent = '$0.00';
         costEl.style.color = 'var(--green)';
@@ -389,6 +758,8 @@ async function refreshRunning() {
 
         if (!tasks.length) {
             container.innerHTML = '<div class="empty-state"><div class="empty-icon">🎯</div><div class="empty-text">No tasks running</div></div>';
+            liveStepData = {};
+            subscribedTasks.clear();
             return;
         }
 
@@ -396,8 +767,38 @@ async function refreshRunning() {
             const device = devices.find(d => d.id === t.device_id);
             const deviceName = device ? device.name : `Device ${t.device_id}`;
             const progress = Math.min((t.steps_taken / t.max_steps) * 100, 100);
-            const cmd = t.command.length > 50 ? t.command.substring(0, 50) + '...' : t.command;
+            const cmd = t.command.length > 60 ? t.command.substring(0, 60) + '...' : t.command;
             const modeLabel = t.execution_mode === 'script' ? '🔧' : '🧠';
+
+            // Live step data
+            const live = liveStepData[t.id] || {};
+            const elapsed = live.started_at
+                ? Math.floor((Date.now() - live.started_at) / 1000)
+                : 0;
+            const elapsedStr = elapsed > 0
+                ? `${Math.floor(elapsed / 60)}m${(elapsed % 60).toString().padStart(2, '0')}s`
+                : '';
+
+            // Action icon map
+            const actionIcons = {
+                tap: '👆', key: '⌨️', scroll: '📜', swipe: '👉',
+                type: '✏️', wait: '⏳', input: '✏️', error: '❌',
+                launch: '🚀', open: '📂', back: '◀️',
+            };
+
+            const currentAction = live.action || '';
+            const currentDetail = live.detail || '';
+            const actionIcon = actionIcons[currentAction] || '🔄';
+
+            // Step log (last 3 steps)
+            const recentSteps = (live.steps || []).slice(-3).reverse();
+
+            // Auto-subscribe to WebSocket for this task
+            if (!subscribedTasks.has(t.id)) {
+                subscribedTasks.add(t.id);
+                subscribeTask(t.id);
+            }
+
             return `
                 <div class="task-card" id="task-${t.id}">
                     <div class="task-card-header">
@@ -405,13 +806,31 @@ async function refreshRunning() {
                         <span class="task-device">📱 ${deviceName}</span>
                     </div>
                     <div class="task-command" title="${t.command}">${cmd}</div>
+                    ${currentAction ? `
+                        <div class="task-live-step">
+                            <span class="step-action">${actionIcon} ${currentAction}</span>
+                            <span class="step-detail">${currentDetail.length > 80 ? currentDetail.substring(0, 80) + '...' : currentDetail}</span>
+                        </div>
+                    ` : '<div class="task-live-step"><span class="step-action">⏳ Đang khởi tạo...</span></div>'}
                     <div class="task-progress">
                         <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${progress}%"></div>
+                            <div class="progress-fill ${progress > 75 ? 'progress-warn' : ''}" style="width: ${progress}%"></div>
                         </div>
                         <span class="task-steps">${t.steps_taken}/${t.max_steps}</span>
+                        ${elapsedStr ? `<span class="task-elapsed">⏱ ${elapsedStr}</span>` : ''}
                         <button class="btn btn-xs btn-danger" onclick="cancelTask(${t.id})" style="margin-left:6px">✕</button>
                     </div>
+                    ${recentSteps.length ? `
+                        <div class="task-step-log">
+                            ${recentSteps.map(s => `
+                                <div class="step-log-item">
+                                    <span class="step-num">#${s.step_num}</span>
+                                    <span class="step-icon">${actionIcons[s.action] || '•'}</span>
+                                    <span class="step-text">${(s.detail || s.action).substring(0, 60)}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : ''}
                 </div>
             `;
         }).join('');
@@ -568,15 +987,32 @@ function subscribeTask(taskId) {
     const ws = new WebSocket(`ws://${location.host}/ws/tasks/${taskId}`);
     ws.onmessage = (e) => {
         const data = JSON.parse(e.data);
-        if (data.event === 'step') {
-            refreshRunning();
+        if (data.event === 'started') {
+            if (!liveStepData[taskId]) liveStepData[taskId] = { steps: [], started_at: Date.now() };
+            liveStepData[taskId].started_at = Date.now();
+        } else if (data.event === 'step') {
+            if (!liveStepData[taskId]) liveStepData[taskId] = { steps: [], started_at: Date.now() };
+            liveStepData[taskId].current_step = data.step_num;
+            liveStepData[taskId].action = data.action;
+            liveStepData[taskId].detail = data.detail || '';
+            liveStepData[taskId].steps.push({
+                step_num: data.step_num,
+                action: data.action,
+                detail: data.detail || '',
+            });
+            // Update task card in-place for smoother UX
+            updateLiveTaskCard(taskId, data);
         } else if (data.event === 'completed') {
+            delete liveStepData[taskId];
+            subscribedTasks.delete(taskId);
             toast(`✅ Task #${taskId} completed: ${data.reason?.substring(0, 60) || 'Done'}`, 'success');
             refreshRunning();
             refreshHistory();
             refreshDevices();
             refreshStats();
         } else if (data.event === 'failed') {
+            delete liveStepData[taskId];
+            subscribedTasks.delete(taskId);
             toast(`❌ Task #${taskId} failed: ${data.error?.substring(0, 60) || 'Error'}`, 'error');
             refreshRunning();
             refreshHistory();
@@ -584,10 +1020,72 @@ function subscribeTask(taskId) {
             refreshStats();
         } else if (data.event === 'retry') {
             toast(`🔄 Task #${taskId} retry #${data.attempt} in ${data.delay}s`, 'info');
+        } else if (data.event === 'cancelled') {
+            delete liveStepData[taskId];
+            subscribedTasks.delete(taskId);
+            toast(`⛔ Task #${taskId} cancelled`, 'info');
+            refreshRunning();
         }
     };
-    ws.onerror = () => {};
-    ws.onclose = () => {};
+    ws.onerror = () => { subscribedTasks.delete(taskId); };
+    ws.onclose = () => { subscribedTasks.delete(taskId); };
+}
+
+function updateLiveTaskCard(taskId, stepData) {
+    const card = document.getElementById(`task-${taskId}`);
+    if (!card) return;
+
+    const actionIcons = {
+        tap: '👆', key: '⌨️', scroll: '📜', swipe: '👉',
+        type: '✏️', wait: '⏳', input: '✏️', error: '❌',
+        launch: '🚀', open: '📂', back: '◀️',
+    };
+    const icon = actionIcons[stepData.action] || '🔄';
+    const detail = (stepData.detail || '').substring(0, 80);
+
+    // Update current step display
+    const liveEl = card.querySelector('.task-live-step');
+    if (liveEl) {
+        liveEl.innerHTML = `
+            <span class="step-action">${icon} ${stepData.action}</span>
+            <span class="step-detail">${detail}</span>
+        `;
+    }
+
+    // Update step counter
+    const stepsEl = card.querySelector('.task-steps');
+    if (stepsEl) {
+        const parts = stepsEl.textContent.split('/');
+        stepsEl.textContent = `${stepData.step_num}/${parts[1] || '?'}`;
+    }
+
+    // Update progress bar
+    const fillEl = card.querySelector('.progress-fill');
+    if (fillEl) {
+        const maxSteps = parseInt((stepsEl?.textContent || '0/50').split('/')[1]) || 50;
+        const pct = Math.min((stepData.step_num / maxSteps) * 100, 100);
+        fillEl.style.width = pct + '%';
+        if (pct > 75) fillEl.classList.add('progress-warn');
+    }
+
+    // Update step log
+    const live = liveStepData[taskId];
+    if (live && live.steps.length > 0) {
+        const recentSteps = live.steps.slice(-3).reverse();
+        let logEl = card.querySelector('.task-step-log');
+        if (!logEl) {
+            logEl = document.createElement('div');
+            logEl.className = 'task-step-log';
+            card.appendChild(logEl);
+        }
+        logEl.innerHTML = recentSteps.map(s => `
+            <div class="step-log-item">
+                <span class="step-num">#${s.step_num}</span>
+                <span class="step-icon">${actionIcons[s.action] || '•'}</span>
+                <span class="step-text">${(s.detail || s.action).substring(0, 60)}</span>
+            </div>
+        `).join('');
+    }
 }
 
 // ===== TOASTS =====

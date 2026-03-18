@@ -49,6 +49,19 @@ class TemplateManager:
         "duration": "10",
         "react_count": "5",
         "max_steps": "20",
+        # TikTok-specific defaults
+        "session_count": "3",
+        "like_count": "10",
+        "like_chance": "0.3",
+        "max_comments": "5",
+        "follow_count": "5",
+        "follow_style": "from_feed",
+        "comment_pool": "",
+        "caption": "",
+        "hashtags": "",
+        "display_name": "",
+        "bio": "",
+        "avatar_path": "",
     }
 
     def render(self, name: str, **variables) -> str:

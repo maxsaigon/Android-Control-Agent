@@ -7,3 +7,20 @@ data/
 .ruff_cache/
 .pytest_cache/
 screenshots/
+
+# Android build artifacts
+android-helper/.gradle/
+android-helper/app/build/
+android-helper/build/
+android-helper/local.properties
+*.class
+*.dex
+*.apk
+!android-helper/app/build/outputs/apk/debug/app-debug.apk
+
+# IDE
+.idea/
+*.iml
+
+# Temp
+project_documentation.md

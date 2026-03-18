@@ -14,11 +14,16 @@ RUN pip install --no-cache-dir \
     "fastapi[standard]" \
     sqlmodel \
     python-dotenv \
-    pydantic-settings
+    pydantic-settings \
+    websockets \
+    Pillow
 
 # Copy app code
 COPY app/ ./app/
 COPY config.yaml ./
+
+# Bundle helper APK for auto-install on devices
+COPY android-helper/app/build/outputs/apk/debug/app-debug.apk ./ac-helper.apk
 
 # Data + screenshots volumes
 RUN mkdir -p /app/data /app/screenshots

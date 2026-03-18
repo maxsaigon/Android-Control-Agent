@@ -58,6 +58,20 @@ def get_device(device_id: int, session: Session = Depends(get_session)):
     return device
 
 
+@router.patch("/{device_id}", response_model=DeviceRead)
+def update_device(device_id: int, body: dict, session: Session = Depends(get_session)):
+    """Update device (e.g. rename)."""
+    device = session.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if "name" in body:
+        device.name = body["name"]
+    session.add(device)
+    session.commit()
+    session.refresh(device)
+    return device
+
+
 @router.delete("/{device_id}", status_code=204)
 def delete_device(device_id: int, session: Session = Depends(get_session)):
     """Remove a device."""
@@ -134,4 +148,50 @@ async def device_status(
         "status": device.status,
         "battery_level": device.battery_level,
         "last_seen": device.last_seen,
+    }
+
+
+@router.post("/scan")
+async def scan_devices(
+    body: dict,
+    session: Session = Depends(get_session),
+):
+    """Scan a subnet for ADB-enabled Android devices."""
+    subnet = body.get("subnet", "192.168.1")
+    port = body.get("port", 5555)
+
+    try:
+        found = await device_manager.scan_subnet(subnet, port)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Check which IPs are already registered
+    existing = session.exec(select(Device)).all()
+    registered_ips = {f"{d.ip_address}:{d.adb_port}" for d in existing}
+
+    for d in found:
+        d["already_registered"] = f"{d['ip']}:{d['port']}" in registered_ips
+
+    return {"subnet": subnet, "port": port, "devices": found}
+
+
+@router.post("/{device_id}/setup-helper")
+async def setup_helper(
+    device_id: int, session: Session = Depends(get_session)
+):
+    """Install and configure AC Helper APK on a device.
+
+    Steps: install APK → enable accessibility → launch → verify WebSocket.
+    """
+    device = session.get(Device, device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    result = await device_manager.ensure_helper_apk(
+        device.ip_address, device.adb_port
+    )
+    return {
+        "device_id": device.id,
+        "name": device.name,
+        "helper": result,
     }

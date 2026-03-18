@@ -139,12 +139,20 @@ class ADBAgent:
         'Check counts for progress. NEVER repeat same action 3x.'
     )
 
-    def __init__(self, adb_path: str = None):
+    def __init__(self, adb_path: str = None, backend=None):
         self.adb_path = adb_path or settings.adb_path
+        self._backend = backend  # DeviceBackend (injected or auto-detected)
         self._openai_client = None
         self._supports_vision = "openai" in settings.llm_base_url.lower() or "gpt" in settings.llm_model.lower()
         self._screen_dims: dict[str, tuple[int, int]] = {}  # device -> (w, h)
         self._package_cache: dict[str, dict[str, str]] = {}  # device -> {name -> package}
+
+    async def _get_backend(self, device: str):
+        """Get DeviceBackend for a device (lazy-init via backend_manager)."""
+        if self._backend:
+            return self._backend
+        from app.services.backend_manager import backend_manager
+        return await backend_manager.get_backend(device)
 
     async def resolve_package(self, device: str, name: str) -> str:
         """Resolve app name to package. Search installed packages on device."""
@@ -156,13 +164,10 @@ class ADBAgent:
             return self._package_cache[device][name_lower]
 
         # 2. Get all installed packages from device
-        _, result, _ = await self._run_adb(device, "shell", "pm", "list", "packages", "-3")
-        # Also include system packages for things like settings, chrome
-        _, result_sys, _ = await self._run_adb(device, "shell", "pm", "list", "packages")
-        all_packages = set()
-        for line in (result + "\n" + result_sys).strip().split("\n"):
-            if line.startswith("package:"):
-                all_packages.add(line.split(":", 1)[1].strip())
+        backend = await self._get_backend(device)
+        third_party = await backend.list_packages(device, third_party_only=True)
+        all_pkgs = await backend.list_packages(device, third_party_only=False)
+        all_packages = set(third_party + all_pkgs)
 
         # 3. Search using PACKAGE_HINTS keywords
         found = ""
@@ -220,49 +225,31 @@ class ADBAgent:
     async def get_screen_size(self, device: str) -> tuple[int, int]:
         """Get device screen dimensions, cached per device."""
         if device not in self._screen_dims:
-            _, out, _ = await self._run_adb(device, "shell", "wm", "size")
-            match = re.search(r'(\d+)x(\d+)', out)
-            if match:
-                self._screen_dims[device] = (int(match.group(1)), int(match.group(2)))
-            else:
-                self._screen_dims[device] = (1080, 2400)  # fallback
+            backend = await self._get_backend(device)
+            self._screen_dims[device] = await backend.get_screen_size(device)
         return self._screen_dims[device]
 
     # --- Screen capture (JPEG compressed) ---
 
     async def capture_screenshot(self, device: str, save_path: str = None) -> bytes:
-        """Capture screenshot, compress to JPEG for reduced token cost."""
-        code, _, err = await self._run_adb(device, "shell", "screencap", "-p", "/sdcard/screen.png")
-        if code != 0:
-            raise RuntimeError(f"screencap failed: {err}")
-
-        # Pull the file
+        """Capture screenshot via DeviceBackend, compress to JPEG."""
         if save_path is None:
             save_path = str(SCREENSHOTS_DIR / f"screen_{device.replace(':', '_')}.png")
 
-        code, _, err = await self._run_adb(device, "pull", "/sdcard/screen.png", save_path)
-        if code != 0:
-            raise RuntimeError(f"pull screenshot failed: {err}")
+        backend = await self._get_backend(device)
+        img_bytes = await backend.capture_screenshot(device, save_path)
 
-        # Compress to JPEG — reduces ~80% token cost for GPT-4o vision
+        # Keep reference for annotation
         try:
             from PIL import Image
-            img = Image.open(save_path)
-            if img.mode in ('RGBA', 'LA', 'P'):
-                img = img.convert('RGB')
-            if img.width > 750:
-                ratio = 750 / img.width
-                img = img.resize((750, int(img.height * ratio)), Image.LANCZOS)
-            jpg_path = save_path.replace('.png', '.jpg')
-            img.save(jpg_path, 'JPEG', quality=85)
-            self._last_pil_image = img  # Keep for annotation
-            self._last_jpg_path = jpg_path
-            return Path(jpg_path).read_bytes()
-        except ImportError:
-            logger.debug("Pillow not installed, using raw PNG")
+            import io
+            self._last_pil_image = Image.open(io.BytesIO(img_bytes))
+            self._last_jpg_path = save_path
+        except Exception:
             self._last_pil_image = None
             self._last_jpg_path = None
-            return Path(save_path).read_bytes()
+
+        return img_bytes
 
     def annotate_screenshot(
         self, screenshot_bytes: bytes, elements: list[UIElement]
@@ -315,24 +302,24 @@ class ADBAgent:
     # --- UI hierarchy ---
 
     async def dump_ui(self, device: str) -> list[UIElement]:
-        """Dump UI hierarchy and parse into UIElement list."""
-        # Dump to device
-        code, out, err = await self._run_adb(
-            device, "shell", "uiautomator", "dump", "/sdcard/ui.xml"
-        )
-        if code != 0:
-            logger.warning(f"uiautomator dump failed: {err}")
-            return []
+        """Dump UI hierarchy via DeviceBackend and convert to UIElement list."""
+        backend = await self._get_backend(device)
+        nodes = await backend.get_ui_tree(device)
 
-        # Pull XML
-        xml_path = str(SCREENSHOTS_DIR / f"ui_{device.replace(':', '_')}.xml")
-        code, _, err = await self._run_adb(device, "pull", "/sdcard/ui.xml", xml_path)
-        if code != 0:
-            logger.warning(f"pull ui.xml failed: {err}")
-            return []
-
-        # Parse XML
-        return self._parse_ui_xml(xml_path)
+        elements = []
+        for node in nodes:
+            elements.append(UIElement(
+                index=node.index,
+                text=node.text,
+                resource_id=node.resource_id,
+                class_name=node.class_name,
+                package=node.package,
+                content_desc=node.content_desc,
+                clickable=node.clickable,
+                scrollable=node.scrollable,
+                bounds=node.bounds,
+            ))
+        return elements
 
     def _parse_ui_xml(self, xml_path: str) -> list[UIElement]:
         """Parse uiautomator XML dump into UIElement objects."""
@@ -456,17 +443,17 @@ class ADBAgent:
         """Execute a single action on the device. Returns description."""
         act = action.get("action", "")
 
+        backend = await self._get_backend(device)
+
         if act == "tap":
             idx = action.get("index", 0)
             # We'll need elements context — caller should provide
             x, y = action.get("x", 0), action.get("y", 0)
-            await self._run_adb(device, "shell", "input", "tap", str(x), str(y))
-            return f"Tapped at ({x}, {y})"
+            return await backend.tap(device, x, y)
 
         elif act == "tap_xy":
             x, y = action["x"], action["y"]
-            await self._run_adb(device, "shell", "input", "tap", str(x), str(y))
-            return f"Tapped at ({x}, {y})"
+            return await backend.tap(device, x, y)
 
         elif act == "tap_text":
             text = action.get("text", "")
@@ -476,8 +463,7 @@ class ADBAgent:
             if found:
                 from app.services.behavior import human_behavior
                 cx, cy = human_behavior.jitter_tap(*found.center)
-                await self._run_adb(device, "shell", "input", "tap", str(cx), str(cy))
-                return f"Tapped '{text}' at ({cx}, {cy})"
+                return await backend.tap(device, cx, cy)
             else:
                 return f"NOT_FOUND: '{text}'"
 
@@ -489,8 +475,7 @@ class ADBAgent:
             if found:
                 from app.services.behavior import human_behavior
                 cx, cy = human_behavior.jitter_tap(*found.center)
-                await self._run_adb(device, "shell", "input", "tap", str(cx), str(cy))
-                return f"Tapped id='{rid}' at ({cx}, {cy})"
+                return await backend.tap(device, cx, cy)
             else:
                 return f"NOT_FOUND: id='{rid}'"
 
@@ -502,12 +487,7 @@ class ADBAgent:
             if found:
                 from app.services.behavior import human_behavior
                 cx, cy = human_behavior.jitter_tap(*found.center)
-                # Long press = swipe to same point with 1s duration
-                await self._run_adb(
-                    device, "shell", "input", "swipe",
-                    str(cx), str(cy), str(cx), str(cy), "1000"
-                )
-                return f"Long pressed '{text}' at ({cx}, {cy})"
+                return await backend.swipe(device, cx, cy, cx, cy, 1000)
             else:
                 return f"NOT_FOUND: '{text}'"
 
@@ -527,43 +507,23 @@ class ADBAgent:
                     "down":  (mid_x, h // 4, mid_x, h * 3 // 4),
                 }
                 coords = swipe_map.get(direction, (mid_x, h * 3 // 4, mid_x, h // 4))
-                await self._run_adb(
-                    device, "shell", "input", "swipe",
-                    str(coords[0]), str(coords[1]), str(coords[2]), str(coords[3]), str(dur)
+                return await backend.swipe(
+                    device, coords[0], coords[1], coords[2], coords[3], dur
                 )
-                return f"Swiped {direction}"
             else:
                 # Legacy: explicit coordinates
                 x1, y1 = action["x1"], action["y1"]
                 x2, y2 = action["x2"], action["y2"]
                 dur = action.get("duration_ms", 300)
-                await self._run_adb(
-                    device, "shell", "input", "swipe",
-                    str(x1), str(y1), str(x2), str(y2), str(dur)
-                )
-                return f"Swiped ({x1},{y1}) → ({x2},{y2})"
+                return await backend.swipe(device, x1, y1, x2, y2, dur)
 
         elif act == "type":
             text = action["text"]
-            # Proper escaping — handle spaces, special chars (android-adb-skill pattern)
-            escaped = ''.join(
-                f'\\{c}' if c in ' &|;()<>"\'\\\'\n' else c
-                for c in text
-            )
-            await self._run_adb(device, "shell", "input", "text", escaped)
-            return f"Typed: {text}"
+            return await backend.type_text(device, text)
 
         elif act == "key":
             keycode = action["keycode"]
-            key_map = {
-                "BACK": "4", "HOME": "3", "RECENT": "187",
-                "ENTER": "66", "DELETE": "67", "TAB": "61",
-                "VOLUME_UP": "24", "VOLUME_DOWN": "25",
-                "POWER": "26", "MENU": "82",
-            }
-            code = key_map.get(keycode.upper(), keycode)
-            await self._run_adb(device, "shell", "input", "keyevent", code)
-            return f"Pressed key: {keycode}"
+            return await backend.key_event(device, keycode)
 
         elif act == "wait":
             seconds = action.get("seconds", 2)
@@ -591,12 +551,9 @@ class ADBAgent:
                 if not package:
                     return f"App not found: {name}"
             # Kill app first to ensure clean start from home screen
-            await self._run_adb(device, "shell", "am", "force-stop", package)
+            await backend.force_stop(device, package)
             await asyncio.sleep(0.5)
-            await self._run_adb(
-                device, "shell", "monkey", "-p", package,
-                "-c", "android.intent.category.LAUNCHER", "1"
-            )
+            await backend.launch_app(device, package)
             logger.info(f"  📦 force-stop + launch: {package}")
             return f"Opened: {name or package}"
 
@@ -605,22 +562,14 @@ class ADBAgent:
             mid_x = w // 2
             from app.services.behavior import human_behavior
             dur = human_behavior.jitter_swipe_duration(400)
-            await self._run_adb(
-                device, "shell", "input", "swipe",
-                str(mid_x), str(h * 3 // 4), str(mid_x), str(h // 4), str(dur)
-            )
-            return "Scrolled down"
+            return await backend.swipe(device, mid_x, h * 3 // 4, mid_x, h // 4, dur)
 
         elif act == "scroll_up":
             w, h = await self.get_screen_size(device)
             mid_x = w // 2
             from app.services.behavior import human_behavior
             dur = human_behavior.jitter_swipe_duration(400)
-            await self._run_adb(
-                device, "shell", "input", "swipe",
-                str(mid_x), str(h // 4), str(mid_x), str(h * 3 // 4), str(dur)
-            )
-            return "Scrolled up"
+            return await backend.swipe(device, mid_x, h // 4, mid_x, h * 3 // 4, dur)
 
         elif act == "complete":
             return f"Task complete: {action.get('reason', 'done')}"
@@ -739,6 +688,7 @@ class ADBAgent:
         """
         steps_log: list[AgentStep] = []
         action_counts: dict[str, int] = {}  # Track all action types
+        backend = await self._get_backend(device)
         logger.info(f"🤖 Starting task on {device}: {task}")
 
         for step_num in range(1, max_steps + 1):
@@ -843,7 +793,7 @@ class ADBAgent:
                     success = action.get("success", True)
                     reason = action.get("reason", "Task completed")
                     # Return to home screen — natural behavior after finishing
-                    await self._run_adb(device, "shell", "input", "keyevent", "3")
+                    await backend.key_event(device, "HOME")
                     logger.info(f"✅ Task {'succeeded' if success else 'failed'}: {reason} → HOME")
                     return AgentResult(
                         success=success,
@@ -859,7 +809,7 @@ class ADBAgent:
                 logger.exception(f"Error at step {step_num}")
                 step = AgentStep(step_num=step_num, action="error", detail=str(e))
                 steps_log.append(step)
-                await self._run_adb(device, "shell", "input", "keyevent", "3")
+                await backend.key_event(device, "HOME")
                 return AgentResult(
                     success=False,
                     reason="Execution error",
@@ -868,7 +818,7 @@ class ADBAgent:
                     error=str(e),
                 )
 
-        await self._run_adb(device, "shell", "input", "keyevent", "3")
+        await backend.key_event(device, "HOME")
         return AgentResult(
             success=False,
             reason=f"Max steps ({max_steps}) reached without completing task",

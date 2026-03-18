@@ -39,6 +39,12 @@ async def lifespan(app: FastAPI):
     finally:
         session.close()
     
+    # Clean up orphaned tasks from previous server runs
+    from app.services.task_queue import task_queue
+    cleaned = task_queue.cleanup_orphaned()
+    if cleaned:
+        logging.info(f"🧹 Cleaned {cleaned} orphaned task(s) from previous run")
+
     # Start connection watchdog
     watchdog.start()
     

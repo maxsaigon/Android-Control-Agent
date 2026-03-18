@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AC Helper</string>
+    <string name="accessibility_description">Android Control Helper — enables remote device control via Accessibility API for automation tasks.</string>
+    <string name="notification_channel_name">AC Helper Service</string>
+    <string name="notification_title">AC Helper Running</string>
+    <string name="notification_text">WebSocket server active on port %d</string>
+</resources>

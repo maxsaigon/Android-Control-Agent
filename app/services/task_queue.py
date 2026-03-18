@@ -66,21 +66,57 @@ class TaskQueue:
             await self.submit(task_id)
 
     async def cancel(self, task_id: int) -> bool:
-        """Cancel a running task."""
+        """Cancel a running task.
+
+        Handles both active tasks (in _running_tasks) and orphaned tasks
+        (stuck as 'running' in DB after server restart).
+        """
+        # 1. Cancel the asyncio task if it exists
         bg_task = self._running_tasks.get(task_id)
         if bg_task and not bg_task.done():
             bg_task.cancel()
-            with Session(engine) as session:
-                task = session.get(Task, task_id)
-                if task:
+
+        # 2. Always update DB status
+        with Session(engine) as session:
+            task = session.get(Task, task_id)
+            if task and task.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
+                task.status = TaskStatus.CANCELLED
+                task.completed_at = datetime.now(timezone.utc)
+                session.add(task)
+                session.commit()
+                logger.info(f"Task {task_id} cancelled in DB")
+            else:
+                return False
+
+        # 3. Clean up
+        await self._notify(task_id, {"event": "cancelled"})
+        self._running_tasks.pop(task_id, None)
+        return True
+
+    def cleanup_orphaned(self) -> int:
+        """Mark orphaned running/pending tasks as cancelled.
+
+        Called on server startup to clean up tasks stuck from previous runs.
+        Returns number of cleaned tasks.
+        """
+        count = 0
+        with Session(engine) as session:
+            from sqlmodel import select
+            orphaned = session.exec(
+                select(Task).where(
+                    Task.status.in_([TaskStatus.RUNNING, TaskStatus.PENDING])  # type: ignore
+                )
+            ).all()
+            for task in orphaned:
+                if task.id not in self._running_tasks:
                     task.status = TaskStatus.CANCELLED
+                    task.error = "Cancelled: server restarted"
                     task.completed_at = datetime.now(timezone.utc)
                     session.add(task)
-                    session.commit()
-            await self._notify(task_id, {"event": "cancelled"})
-            del self._running_tasks[task_id]
-            return True
-        return False
+                    count += 1
+                    logger.info(f"Cleaned orphaned task {task.id}")
+            session.commit()
+        return count
 
     async def _execute(self, task_id: int) -> None:
         """Execute a task with device locking, concurrency control, and retry."""
