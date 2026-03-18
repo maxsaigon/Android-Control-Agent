@@ -1,0 +1,32 @@
+# DroidRun LLM Configuration
+# Uses GPT-4o for planning (Manager) and execution (Executor)
+# Uses GPT-4o-mini for fast/simple tasks to reduce costs
+
+llm_profiles:
+  manager:
+    provider: OpenAI
+    model: gpt-4o
+  executor:
+    provider: OpenAI
+    model: gpt-4o
+  fast_agent:
+    provider: OpenAI
+    model: gpt-4o-mini
+  scripter:
+    provider: OpenAI
+    model: gpt-4o
+
+agent:
+  reasoning: true
+  max_steps: 20
+  manager:
+    vision: true
+  executor:
+    vision: true
+  fast_agent:
+    vision: false
+    parallel_tools: true
+    safe_execution: false
+  scripter:
+    max_steps: 10
+    safe_execution: false

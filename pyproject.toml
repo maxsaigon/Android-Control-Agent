@@ -1,0 +1,16 @@
+[project]
+name = "android-control"
+version = "0.1.0"
+description = "AI-powered Android device control system using DroidRun + GPT-4o + FastAPI"
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "droidrun[openai]",
+    "fastapi[standard]",
+    "sqlmodel",
+    "python-dotenv",
+    "pydantic-settings",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest", "pytest-asyncio", "httpx"]

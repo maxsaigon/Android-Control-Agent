@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Android Control System</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-logo">
+            <span class="logo-icon">🤖</span>
+        </div>
+        <div class="sidebar-nav">
+            <button class="nav-btn active" data-section="dashboard" onclick="navigateTo('dashboard', this)" title="Dashboard">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                <span class="nav-label">Dashboard</span>
+            </button>
+            <button class="nav-btn" data-section="devices" onclick="navigateTo('devices', this)" title="Devices">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+                <span class="nav-label">Devices</span>
+            </button>
+            <button class="nav-btn" data-section="scheduler" onclick="navigateTo('scheduler', this)" title="Scheduler">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span class="nav-label">Scheduler</span>
+            </button>
+        </div>
+        <div class="sidebar-footer">
+            <span class="version-badge" id="version">v0.2</span>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-wrapper">
+        <!-- Top Bar -->
+        <header class="topbar">
+            <div class="topbar-left">
+                <button class="menu-toggle" onclick="toggleSidebar()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                </button>
+                <h1 class="page-title" id="pageTitle">Dashboard</h1>
+            </div>
+            <div class="topbar-right">
+                <div class="status-indicator" id="serverStatus">
+                    <span class="pulse"></span>
+                    <span>Connected</span>
+                </div>
+                <div class="queue-badge" id="queueBadge">
+                    <span class="badge-label">Queue</span>
+                    <span class="badge-value" id="queueCount">0</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- ============ DASHBOARD SECTION ============ -->
+        <section class="page-section active" id="sectionDashboard">
+            <!-- Stats Row -->
+            <div class="stats-row">
+                <div class="stat-card stat-devices">
+                    <div class="stat-icon">📱</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="statDevices">0</div>
+                        <div class="stat-label">Devices</div>
+                        <div class="stat-sub" id="statDevicesSub">—</div>
+                    </div>
+                </div>
+                <div class="stat-card stat-tasks">
+                    <div class="stat-icon">⚡</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="statTasksToday">0</div>
+                        <div class="stat-label">Tasks Today</div>
+                        <div class="stat-sub" id="statTasksSub">—</div>
+                    </div>
+                </div>
+                <div class="stat-card stat-cost">
+                    <div class="stat-icon">💰</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="statCost">$0</div>
+                        <div class="stat-label">Total Cost</div>
+                        <div class="stat-sub">All time AI</div>
+                    </div>
+                </div>
+                <div class="stat-card stat-rate">
+                    <div class="stat-icon">✅</div>
+                    <div class="stat-content">
+                        <div class="stat-number" id="statRate">100%</div>
+                        <div class="stat-label">Success Rate</div>
+                        <div class="stat-sub">All time</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Two-Column Content -->
+            <div class="content-grid">
+                <!-- Left: Quick Actions + Submit -->
+                <div class="content-col">
+                    <div class="panel actions-panel">
+                        <div class="panel-header">
+                            <h2>🚀 Quick Actions</h2>
+                            <select id="deviceSelect" class="device-inline-select" required>
+                                <option value="">Chọn device...</option>
+                            </select>
+                        </div>
+                        <div class="panel-body">
+                            <form id="taskForm" onsubmit="submitTask(event)">
+                                <!-- Action Cards -->
+                                <div class="action-cards" id="actionCards">
+                                    <div class="action-card card-tiktok" data-action="tiktok_browse" data-mode="script" onclick="selectAction(this)">
+                                        <span class="action-icon">🎵</span>
+                                        <span class="action-name">TikTok</span>
+                                        <span class="action-desc">Lướt video</span>
+                                        <span class="action-cost script">$0</span>
+                                    </div>
+                                    <div class="action-card card-youtube" data-action="youtube_watch" data-mode="script" onclick="selectAction(this)">
+                                        <span class="action-icon">▶️</span>
+                                        <span class="action-name">YouTube</span>
+                                        <span class="action-desc">Xem shorts</span>
+                                        <span class="action-cost script">$0</span>
+                                    </div>
+                                    <div class="action-card card-facebook" data-action="facebook_scroll" data-mode="script" onclick="selectAction(this)">
+                                        <span class="action-icon">📘</span>
+                                        <span class="action-name">Facebook</span>
+                                        <span class="action-desc">Lướt feed</span>
+                                        <span class="action-cost script">$0</span>
+                                    </div>
+                                    <div class="action-card card-instagram" data-action="instagram_scroll" data-mode="script" onclick="selectAction(this)">
+                                        <span class="action-icon">📷</span>
+                                        <span class="action-name">Instagram</span>
+                                        <span class="action-desc">Lướt feed</span>
+                                        <span class="action-cost script">$0</span>
+                                    </div>
+                                    <div class="action-card card-ai action-card-ai" data-action="custom" data-mode="ai" onclick="selectAction(this)">
+                                        <span class="action-icon">🧠</span>
+                                        <span class="action-name">Custom AI</span>
+                                        <span class="action-desc">AI Agent tùy chỉnh</span>
+                                        <span class="action-cost ai">$0.01+</span>
+                                    </div>
+                                </div>
+
+                                <!-- Script Config -->
+                                <div class="config-panel" id="scriptConfig" style="display:none">
+                                    <div class="config-title">⚙️ Cấu hình Script</div>
+                                    <div class="form-row">
+                                        <div class="form-group half">
+                                            <label>Số video/bài</label>
+                                            <input type="number" id="scriptCount" value="5" min="1" max="30">
+                                        </div>
+                                        <div class="form-group half">
+                                            <label>Thời gian xem (s)</label>
+                                            <input type="text" id="scriptViewTime" value="5-15" placeholder="5-15">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Tỷ lệ like</label>
+                                        <select id="scriptLikeChance">
+                                            <option value="0">Không like</option>
+                                            <option value="0.1">10%</option>
+                                            <option value="0.2">20%</option>
+                                            <option value="0.3" selected>30%</option>
+                                            <option value="0.5">50%</option>
+                                            <option value="0.8">80%</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- AI Config -->
+                                <div class="config-panel" id="aiConfig" style="display:none">
+                                    <div class="config-title">🧠 AI Task</div>
+                                    <div class="form-group">
+                                        <label>Lệnh cho AI <span class="required-badge">bắt buộc</span></label>
+                                        <textarea id="commandInput" rows="3" placeholder="Ví dụ: Tìm video nấu phở rồi comment 'Ngon quá!'"></textarea>
+                                    </div>
+                                    <details class="advanced-toggle">
+                                        <summary>⚙️ Advanced</summary>
+                                        <div class="form-row">
+                                            <div class="form-group half">
+                                                <label>Max Steps</label>
+                                                <input type="number" id="maxSteps" value="20" min="1" max="50">
+                                            </div>
+                                            <div class="form-group half">
+                                                <label>Max Retries</label>
+                                                <input type="number" id="maxRetries" value="2" min="0" max="5">
+                                            </div>
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Template</label>
+                                            <select id="templateSelect" onchange="onTemplateChange()">
+                                                <option value="">No template</option>
+                                            </select>
+                                        </div>
+                                    </details>
+                                </div>
+
+                                <!-- Cost Estimate -->
+                                <div class="cost-estimate" id="costEstimate">
+                                    <div class="cost-row">
+                                        <span>Mode</span>
+                                        <span id="estMode">—</span>
+                                    </div>
+                                    <div class="cost-row">
+                                        <span>Cost</span>
+                                        <span id="estCost" class="cost-value">—</span>
+                                    </div>
+                                </div>
+
+                                <!-- Batch Toggle -->
+                                <div class="form-group">
+                                    <label class="checkbox-label">
+                                        <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">
+                                        <span>Batch — chạy trên tất cả devices</span>
+                                    </label>
+                                </div>
+
+                                <!-- Hidden fields -->
+                                <input type="hidden" id="selectedAction" value="">
+                                <input type="hidden" id="executionMode" value="">
+
+                                <button type="submit" class="btn btn-primary btn-block" id="submitBtn" disabled>
+                                    Chọn hành động để bắt đầu
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Live Tasks -->
+                <div class="content-col">
+                    <div class="panel live-panel">
+                        <div class="panel-header">
+                            <h2>⚡ Live Tasks</h2>
+                            <span class="count-badge" id="runningCount">0</span>
+                        </div>
+                        <div class="panel-body scrollable" id="runningTasks">
+                            <div class="empty-state">
+                                <div class="empty-icon">🎯</div>
+                                <div class="empty-text">No tasks running</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Activity - Full Width -->
+            <div class="panel activity-panel">
+                <div class="panel-header">
+                    <h2>📋 Recent Activity</h2>
+                    <select id="historyFilter" class="filter-select" onchange="refreshHistory()">
+                        <option value="">Tất cả</option>
+                        <option value="completed">✅ Thành công</option>
+                        <option value="failed">❌ Thất bại</option>
+                        <option value="cancelled">🚫 Đã huỷ</option>
+                    </select>
+                </div>
+                <!-- Device Tabs -->
+                <div class="device-tabs" id="deviceTabs">
+                    <button class="device-tab active" data-device="all" onclick="selectDeviceTab(this)">Tất cả</button>
+                </div>
+                <!-- Stats Summary -->
+                <div class="history-stats" id="historyStats"></div>
+                <div class="panel-body scrollable" id="taskHistory">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ DEVICES SECTION ============ -->
+        <section class="page-section" id="sectionDevices">
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>📱 All Devices</h2>
+                    <button class="btn btn-sm btn-ghost" onclick="refreshDevices()">↻ Refresh</button>
+                </div>
+                <div class="panel-body" id="deviceList">
+                    <div class="loading">Loading devices...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ============ SCHEDULER SECTION ============ -->
+        <section class="page-section" id="sectionScheduler">
+            <div class="content-grid">
+                <!-- Left: Schedule List -->
+                <div class="content-col">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>⏰ Lịch hẹn giờ</h2>
+                            <span class="count-badge" id="scheduleCount">0</span>
+                        </div>
+                        <div class="panel-body scrollable" id="scheduleList">
+                            <div class="loading">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Create Schedule -->
+                <div class="content-col">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>➕ Tạo lịch mới</h2>
+                        </div>
+                        <div class="panel-body">
+                            <form id="scheduleForm" onsubmit="createSchedule(event)">
+                                <div class="form-group">
+                                    <label>📱 Device</label>
+                                    <select id="schedDevice" required>
+                                        <option value="">Chọn device...</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>📌 Tên kịch bản</label>
+                                    <input type="text" id="schedName" placeholder="Sáng lướt TikTok" required>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>🎯 Hành động</label>
+                                    <select id="schedAction" onchange="onSchedActionChange()" required>
+                                        <option value="tiktok_browse">🎵 TikTok — Lướt video</option>
+                                        <option value="youtube_watch">▶️ YouTube — Xem shorts</option>
+                                        <option value="facebook_scroll">📘 Facebook — Lướt feed</option>
+                                        <option value="instagram_scroll">📷 Instagram — Lướt feed</option>
+                                        <option value="custom">🧠 Custom AI</option>
+                                    </select>
+                                </div>
+
+                                <!-- AI Command (shown for custom) -->
+                                <div class="form-group" id="schedAiCmd" style="display:none">
+                                    <label>💬 Lệnh AI</label>
+                                    <textarea id="schedCommand" rows="2" placeholder="Tìm video nấu phở rồi comment..."></textarea>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group half">
+                                        <label>⏰ Bắt đầu</label>
+                                        <input type="time" id="schedStart" value="08:00" required>
+                                    </div>
+                                    <div class="form-group half">
+                                        <label>⏰ Kết thúc</label>
+                                        <input type="time" id="schedEnd" value="10:00" required>
+                                    </div>
+                                </div>
+
+                                <div class="form-group">
+                                    <label>📅 Ngày chạy</label>
+                                    <select id="schedDays">
+                                        <option value="daily">Hàng ngày</option>
+                                        <option value="mon,tue,wed,thu,fri">Thứ 2-6</option>
+                                        <option value="sat,sun">Cuối tuần</option>
+                                        <option value="mon,wed,fri">T2, T4, T6</option>
+                                        <option value="tue,thu,sat">T3, T5, T7</option>
+                                    </select>
+                                </div>
+
+                                <div class="form-row">
+                                    <div class="form-group half">
+                                        <label>🔁 Lặp lại</label>
+                                        <select id="schedRepeat">
+                                            <option value="1">1 lần</option>
+                                            <option value="2">2 lần</option>
+                                            <option value="3" selected>3 lần</option>
+                                            <option value="5">5 lần</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group half">
+                                        <label>⏳ Random delay</label>
+                                        <select id="schedDelay">
+                                            <option value="3-10">3-10 phút</option>
+                                            <option value="5-15" selected>5-15 phút</option>
+                                            <option value="10-30">10-30 phút</option>
+                                            <option value="15-45">15-45 phút</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <!-- Script config -->
+                                <details class="advanced-toggle" id="schedScriptConfig">
+                                    <summary>⚙️ Cấu hình Script</summary>
+                                    <div class="form-row">
+                                        <div class="form-group half">
+                                            <label>Số video</label>
+                                            <input type="number" id="schedScriptCount" value="5" min="1" max="30">
+                                        </div>
+                                        <div class="form-group half">
+                                            <label>Thời gian xem</label>
+                                            <input type="text" id="schedViewTime" value="5-15">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Tỷ lệ like</label>
+                                        <select id="schedLikeChance">
+                                            <option value="0">0%</option>
+                                            <option value="0.1">10%</option>
+                                            <option value="0.3" selected>30%</option>
+                                            <option value="0.5">50%</option>
+                                        </select>
+                                    </div>
+                                </details>
+
+                                <button type="submit" class="btn btn-primary btn-block">⏰ Tạo lịch hẹn giờ</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Toast notifications -->
+    <div id="toastContainer" class="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

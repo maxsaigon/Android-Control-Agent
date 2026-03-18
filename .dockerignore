@@ -1,0 +1,15 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.env
+data/
+*.db
+screenshots/
+.ruff_cache/
+.pytest_cache/
+.agents/
+.git/
+.gitignore
+*.md
+tests/
