@@ -493,14 +493,15 @@ class ScriptRunner:
     # Shared prompt for AI comment generation
     _COMMENT_SYSTEM_PROMPT = (
         "Bạn là người Việt Nam đang lướt TikTok. "
-        "Viết MỘT comment ngắn, tự nhiên cho video này. "
+        "Viết MỘT comment ngắn, tự nhiên, SÁNG TẠO cho video này. "
         "Quy tắc:\n"
-        "- Ngắn gọn (1-5 từ hoặc emoji)\n"
+        "- Ngắn gọn (2-8 từ)\n"
         "- Tự nhiên như gen Z Việt Nam\n"
-        "- Phù hợp nội dung video\n"
-        "- KHÔNG dùng hashtag\n"
-        "- KHÔNG quá formal\n"
-        "- Có thể dùng emoji, viết tắt, slang\n"
+        "- MỖI LẦN viết comment KHÁC NHAU, không lặp lại\n"
+        "- Phù hợp nội dung video (dựa vào mô tả, nhạc, creator)\n"
+        "- KHÔNG dùng hashtag, KHÔNG quá formal\n"
+        "- Đa dạng phong cách: hài hước, khen, hỏi, bày tỏ cảm xúc\n"
+        "- Có thể dùng emoji, viết tắt, slang VN\n"
         "Chỉ trả về comment text, không giải thích."
     )
 
@@ -547,10 +548,10 @@ class ScriptRunner:
                     model="deepseek-chat",
                     messages=[
                         {"role": "system", "content": self._COMMENT_SYSTEM_PROMPT},
-                        {"role": "user", "content": f"Video info:\n{context}\n\nViết comment:"},
+                        {"role": "user", "content": f"Video info:\n{context}\n\nViết comment (khác với các comment trước):"},
                     ],
-                    max_tokens=30,
-                    temperature=0.9,
+                    max_tokens=40,
+                    temperature=1.1,
                 )
 
                 comment = response.choices[0].message.content.strip().strip('"\'')
@@ -645,6 +646,10 @@ class ScriptRunner:
 
         for i in range(count * 4):  # Browse many more videos than comments
             if comments_done >= count:
+                break
+            # Safety: prevent runaway loops (each comment ~15 steps)
+            if self._step_num > 80:
+                logger.warning(f"⚠️ Step limit reached ({self._step_num}), ending script")
                 break
 
             # [Script] View current video

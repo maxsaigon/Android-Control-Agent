@@ -448,15 +448,37 @@ class TikTokController:
         return True
 
     async def type_text(self, device: str, text: str) -> bool:
-        """Type text using backend or ADB input."""
+        """Type text using backend or ADB.
+
+        For non-ASCII (Vietnamese, emoji), uses ADB clipboard broadcast
+        since `adb shell input text` only supports ASCII.
+        """
         if self._backend:
             await self._backend.type_text(device, text)
-        else:
+            return True
+
+        # Check if text is pure ASCII
+        is_ascii = all(ord(c) < 128 for c in text)
+
+        if is_ascii:
             escaped = ''.join(
                 f'\\{c}' if c in ' &|;<>"\'()' else c
                 for c in text
             )
             await self._adb._run_adb(device, "shell", "input", "text", escaped)
+        else:
+            # Use clipboard for Unicode (Vietnamese, emoji)
+            # Method: ADB broadcast to set clipboard, then paste
+            await self._adb._run_adb(
+                device, "shell", "am", "broadcast",
+                "-a", "clipper.set",
+                "-e", "text", text
+            )
+            await asyncio.sleep(0.3)
+            # Ctrl+V to paste
+            await self._adb._run_adb(
+                device, "shell", "input", "keyevent", "279"  # KEYCODE_PASTE
+            )
         return True
 
     async def send_comment(self, device: str) -> bool:
