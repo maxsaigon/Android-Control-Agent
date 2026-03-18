@@ -170,17 +170,30 @@ class TaskQueue:
 
                     await self._notify(task_id, {"event": "started"})
 
-                    result = await self._execute_with_retry(
-                        task_id=task_id,
-                        device_ip=device_ip,
-                        device_port=device_port,
-                        command=command,
-                        use_reasoning=use_reasoning,
-                        execution_mode=execution_mode,
-                        template=template,
-                        max_steps=max_steps,
-                        max_retries=max_retries,
-                    )
+                    # 10-minute timeout to prevent stuck tasks
+                    try:
+                        result = await asyncio.wait_for(
+                            self._execute_with_retry(
+                                task_id=task_id,
+                                device_ip=device_ip,
+                                device_port=device_port,
+                                command=command,
+                                use_reasoning=use_reasoning,
+                                execution_mode=execution_mode,
+                                template=template,
+                                max_steps=max_steps,
+                                max_retries=max_retries,
+                            ),
+                            timeout=600,  # 10 minutes
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"Task {task_id}: Timed out after 10 minutes")
+                        result = TaskResult(
+                            success=False,
+                            reason="Timeout",
+                            steps=0,
+                            error="Task timed out after 10 minutes",
+                        )
 
             # Update task in DB
             with Session(engine) as session:

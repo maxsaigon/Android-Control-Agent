@@ -134,7 +134,7 @@ class ScriptRunner:
             self._backend = await backend_manager.get_backend(device)
             result = await handler(**params)
             # Always go HOME after script
-            await self._backend.key_event(self._device, "HOME")
+            await self._safe_key_event("HOME")
             logger.info(
                 f"🔧 Script '{script_name}' done: "
                 f"{'✅' if result.success else '❌'} {result.reason} → HOME"
@@ -142,8 +142,10 @@ class ScriptRunner:
             return result
         except Exception as e:
             logger.exception(f"Script '{script_name}' error on {device}")
-            if self._backend:
-                await self._backend.key_event(self._device, "HOME")
+            try:
+                await self._safe_key_event("HOME")
+            except Exception:
+                pass
             return ScriptResult(
                 success=False,
                 reason="Script error",
@@ -154,13 +156,53 @@ class ScriptRunner:
 
     # --- Helper methods ---
 
+    async def _backend_call(self, method_name: str, *args, **kwargs):
+        """Call backend method with auto-fallback to ADB on Accessibility failure."""
+        if self._backend:
+            try:
+                method = getattr(self._backend, method_name)
+                return await method(self._device, *args, **kwargs)
+            except RuntimeError as e:
+                err_msg = str(e)
+                if "Service not running" in err_msg or "not connected" in err_msg.lower():
+                    logger.warning(
+                        f"⚠️ Accessibility failed ({err_msg}), falling back to ADB"
+                    )
+                    await self._fallback_to_adb()
+                    method = getattr(self._backend, method_name)
+                    return await method(self._device, *args, **kwargs)
+                raise
+        # No backend — use ADB agent directly
+        method = getattr(self._adb, method_name)
+        return await method(self._device, *args, **kwargs)
+
+    async def _fallback_to_adb(self):
+        """Switch backend from Accessibility to ADB for this run."""
+        from app.services.backend_manager import backend_manager
+        backend_manager.set_backend(self._device, "adb")
+        self._backend = backend_manager.adb
+        logger.info(f"🔄 Switched {self._device} to ADB backend")
+
+    async def _safe_key_event(self, key: str):
+        """Send key event with backend fallback."""
+        try:
+            await self._backend_call("key_event", key)
+        except Exception:
+            # Last resort: ADB directly
+            try:
+                key_map = {"HOME": "3", "BACK": "4", "ENTER": "66"}
+                keycode = key_map.get(key.upper(), key)
+                await self._adb._run_adb("-s", self._device, "shell", "input", "keyevent", keycode)
+            except Exception:
+                pass
+
     async def _adb_cmd(self, *args: str) -> str:
         """Run an ADB command via backend raw_shell or direct _run_adb."""
         if self._backend:
             try:
                 _, stdout, _ = await self._backend.raw_shell(self._device, *args)
                 return stdout
-            except NotImplementedError:
+            except (NotImplementedError, RuntimeError):
                 pass
         # Fallback to direct adb
         _, stdout, _ = await self._adb._run_adb(self._device, *args)
@@ -186,11 +228,11 @@ class ScriptRunner:
         if not package:
             raise RuntimeError(f"App not found: {app_name}")
 
-        if self._backend:
-            await self._backend.force_stop(self._device, package)
+        try:
+            await self._backend_call("force_stop", package)
             await asyncio.sleep(0.5)
-            await self._backend.launch_app(self._device, package)
-        else:
+            await self._backend_call("launch_app", package)
+        except Exception:
             await self._adb_cmd("shell", "am", "force-stop", package)
             await asyncio.sleep(0.5)
             await self._adb_cmd(
@@ -230,6 +272,19 @@ class ScriptRunner:
 
         return ""
 
+    async def _adb_screencap(self) -> bytes:
+        """Capture screenshot via ADB directly (bypasses backend)."""
+        proc = await asyncio.create_subprocess_exec(
+            self._adb.adb_path, "-s", self._device,
+            "shell", "screencap", "-p",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if not stdout:
+            raise RuntimeError("ADB screencap returned empty data")
+        return stdout
+
     async def _wait(self, lo: float, hi: float, label: str = "viewing"):
         """Wait a randomized duration."""
         duration = random.uniform(lo, hi)
@@ -243,9 +298,9 @@ class ScriptRunner:
         y1 = int(h * 0.75) + random.randint(-20, 20)
         y2 = int(h * 0.25) + random.randint(-20, 20)
         dur = random.randint(250, 450)
-        if self._backend:
-            await self._backend.swipe(self._device, x, y1, x, y2, dur)
-        else:
+        try:
+            await self._backend_call("swipe", x, y1, x, y2, dur)
+        except Exception:
             await self._adb_cmd(
                 "shell", "input", "swipe",
                 str(x), str(y1), str(x), str(y2), str(dur)
@@ -260,9 +315,9 @@ class ScriptRunner:
         y1 = int(h * 0.65) + random.randint(-20, 20)
         y2 = int(h * 0.35) + random.randint(-20, 20)
         dur = random.randint(300, 500)
-        if self._backend:
-            await self._backend.swipe(self._device, x, y1, x, y2, dur)
-        else:
+        try:
+            await self._backend_call("swipe", x, y1, x, y2, dur)
+        except Exception:
             await self._adb_cmd(
                 "shell", "input", "swipe",
                 str(x), str(y1), str(x), str(y2), str(dur)
@@ -277,11 +332,11 @@ class ScriptRunner:
         w, h = await self._adb.get_screen_size(self._device)
         x = w // 2 + random.randint(-50, 50)
         y = h // 2 + random.randint(-50, 50)
-        if self._backend:
-            await self._backend.tap(self._device, x, y)
+        try:
+            await self._backend_call("tap", x, y)
             await asyncio.sleep(0.15)
-            await self._backend.tap(self._device, x, y)
-        else:
+            await self._backend_call("tap", x, y)
+        except Exception:
             await self._adb_cmd("shell", "input", "tap", str(x), str(y))
             await asyncio.sleep(0.15)
             await self._adb_cmd("shell", "input", "tap", str(x), str(y))
@@ -510,8 +565,8 @@ class ScriptRunner:
         if settings.openai_api_key:
             try:
                 import base64
-                # Capture screenshot only when needed (saves time if DeepSeek works)
-                screenshot_bytes = await self._adb.capture_screenshot(self._device)
+                # Capture screenshot via ADB directly (Accessibility may not support it)
+                screenshot_bytes = await self._adb_screencap()
                 await self._step("screenshot", "captured for GPT-4o fallback")
 
                 client = openai.AsyncOpenAI(
