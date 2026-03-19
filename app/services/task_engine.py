@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +20,7 @@ class TaskResult:
     success: bool
     reason: str
     steps: int
+    step_log: list = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -103,6 +104,7 @@ class TaskEngine:
                 success=result.success,
                 reason=result.reason,
                 steps=result.steps,
+                step_log=result.step_log,
                 error=result.error,
             )
         except Exception as e:
@@ -129,6 +131,7 @@ class TaskEngine:
                 success=result.success,
                 reason=result.reason,
                 steps=result.steps,
+                step_log=getattr(result, 'step_log', []),
                 error=result.error,
             )
         except Exception as e:

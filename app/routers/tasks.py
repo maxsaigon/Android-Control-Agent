@@ -6,6 +6,7 @@ from sqlmodel import Session, select
 from app.database import get_session
 from app.models import (
     Task, TaskCreate, TaskRead, TaskStatus,
+    TaskLog, TaskLogRead,
     Device, BatchTaskCreate,
 )
 from app.services.task_queue import task_queue
@@ -145,6 +146,20 @@ def get_task(task_id: int, session: Session = Depends(get_session)):
     return task
 
 
+@router.get("/{task_id}/logs", response_model=list[TaskLogRead])
+def get_task_logs(task_id: int, session: Session = Depends(get_session)):
+    """Get all step logs for a task — detailed step-by-step report."""
+    task = session.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    logs = session.exec(
+        select(TaskLog)
+        .where(TaskLog.task_id == task_id)
+        .order_by(TaskLog.step)  # type: ignore
+    ).all()
+    return logs
+
+
 @router.post("/{task_id}/cancel")
 async def cancel_task(
     task_id: int, session: Session = Depends(get_session)
@@ -167,3 +182,4 @@ async def cancel_task(
         raise HTTPException(
             status_code=500, detail="Failed to cancel task"
         )
+

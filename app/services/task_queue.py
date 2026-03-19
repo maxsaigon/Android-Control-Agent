@@ -8,7 +8,7 @@ from typing import Dict
 from sqlmodel import Session
 
 from app.database import engine
-from app.models import Task, TaskStatus, Device, DeviceStatus
+from app.models import Task, TaskLog, TaskStatus, Device, DeviceStatus
 from app.services.task_engine import task_engine, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,17 @@ class TaskQueue:
                     task.error = result.error
                     task.completed_at = datetime.now(timezone.utc)
                     session.add(task)
+
+                    # Persist step_log to TaskLog table
+                    step_log = getattr(result, 'step_log', None) or []
+                    for entry in step_log:
+                        log = TaskLog(
+                            task_id=task_id,
+                            step=entry.get('step', 0) if isinstance(entry, dict) else getattr(entry, 'step_num', 0),
+                            action=entry.get('action', '') if isinstance(entry, dict) else getattr(entry, 'action', ''),
+                            detail=entry.get('detail', '') if isinstance(entry, dict) else getattr(entry, 'detail', ''),
+                        )
+                        session.add(log)
 
                     # Free up device
                     device = session.get(Device, device_id)

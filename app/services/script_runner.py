@@ -64,6 +64,9 @@ class ScriptRunner:
         "real", "🔥", "nhìn ngon quá", "cười xỉu", "đỉnh",
         "save lại coi tiếp", "cho xin nhạc", "follow rồi nha",
         "quá hay", "hhh", ":3", "💀💀", "giỏi quá",
+        # ASCII-safe comments (work as fallback without Unicode support)
+        "love this", "so good", "nice one", "lol", "omg",
+        "hahaha", "wow", "amazing", "cool", "best",
     ]
 
     def __init__(self):
@@ -688,12 +691,18 @@ class ScriptRunner:
                 if use_ai:
                     comment_text = await self._ai_generate_comment(self.TIKTOK_COMMENTS)
                 else:
-                    # Fallback: random from pool
-                    available = [c for c in self.TIKTOK_COMMENTS if c not in used_comments]
-                    if not available:
-                        available = list(self.TIKTOK_COMMENTS)
-                        used_comments.clear()
-                    comment_text = random.choice(available)
+                    # Prefer ASCII-safe comments (avoids mangled diacritics in fallback)
+                    ascii_safe = [c for c in self.TIKTOK_COMMENTS
+                                  if all(ord(ch) < 128 for ch in c)
+                                  and c not in used_comments]
+                    if ascii_safe:
+                        comment_text = random.choice(ascii_safe)
+                    else:
+                        available = [c for c in self.TIKTOK_COMMENTS if c not in used_comments]
+                        if not available:
+                            available = list(self.TIKTOK_COMMENTS)
+                            used_comments.clear()
+                        comment_text = random.choice(available)
                     used_comments.add(comment_text)
 
                 # [Controller] Tap comment icon (UI-hierarchy-based)
@@ -712,17 +721,30 @@ class ScriptRunner:
                 # [Controller] Tap comment input field
                 await tiktok.tap_comment_input(self._device)
                 await self._step("tap", "comment input field")
-                await self._wait(0.5, 1, "keyboard opening")
+                await self._wait(0.8, 1.5, "keyboard opening")
 
                 # [Controller] Type the comment
                 await tiktok.type_text(self._device, comment_text)
                 await self._step("type", f"typed: {comment_text}")
-                await self._wait(1, 3, "reviewing comment")
+                await self._wait(0.5, 1, "text settling")
+
+                # [Verify] Check if text was actually typed (excludes placeholder)
+                text_ok = await tiktok._verify_text_entered(self._device, comment_text)
+                if text_ok:
+                    await self._step("verify", "text confirmed in field")
+                else:
+                    # Retry with a guaranteed ASCII comment
+                    ascii_retry = random.choice(["nice", "love this", "wow", "lol", ":)"])
+                    await self._step("retry", f"field empty, retrying with '{ascii_retry}'")
+                    await tiktok.tap_comment_input(self._device)
+                    await self._wait(0.5, 1, "re-focusing input")
+                    await tiktok.type_text(self._device, ascii_retry)
+                    await self._wait(0.5, 1, "retry text settling")
 
                 # [Controller] Send comment
                 await tiktok.send_comment(self._device)
-                await self._step("key", f"sent comment [{comments_done+1}/{count}]")
-                await self._wait(1, 2, "comment sent")
+                await self._step("tap", f"sent comment [{comments_done+1}/{count}]")
+                await self._wait(1.5, 3, "comment posting")
 
                 # [Controller] Close comments
                 await tiktok.close_panel(self._device)

@@ -147,6 +147,18 @@ class TaskRead(SQLModel):
     completed_at: Optional[datetime]
 
 
+class TaskLogRead(SQLModel):
+    """Schema for task log responses."""
+
+    id: int
+    task_id: int
+    step: int
+    action: str
+    detail: Optional[str]
+    screenshot_path: Optional[str]
+    timestamp: datetime
+
+
 # --- Schedule models ---
 
 

@@ -55,11 +55,12 @@ function navigateTo(section, btn) {
     }
 
     // Update page title
-    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler' };
+    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler', history: 'History' };
     document.getElementById('pageTitle').textContent = titles[section] || 'Dashboard';
 
     // Load data for section
     if (section === 'scheduler') loadSchedules();
+    if (section === 'history') refreshHistory();
 }
 
 function toggleSidebar() {
@@ -889,7 +890,8 @@ function statusIcon(status) {
 
 async function refreshHistory() {
     try {
-        const filter = document.getElementById('historyFilter').value;
+        const filterEl = document.getElementById('historyFilter');
+        const filter = filterEl ? filterEl.value : '';
         let url = `${API}/api/tasks?limit=50`;
         if (filter) url += `&status=${filter}`;
         const res = await fetch(url);
@@ -903,25 +905,28 @@ async function refreshHistory() {
 
         // Stats
         const statsEl = document.getElementById('historyStats');
-        const success = tasks.filter(t => t.status === 'completed').length;
-        const failed = tasks.filter(t => t.status === 'failed').length;
-        const scriptTasks = tasks.filter(t => t.execution_mode === 'script').length;
-        const aiTasks = tasks.filter(t => t.execution_mode === 'ai' || t.execution_mode === 'auto').length;
-        const totalCost = tasks.reduce((s, t) => {
-            if (t.execution_mode === 'script') return s;
-            return s + parseFloat(calcTaskCost(t.steps_taken));
-        }, 0);
+        if (statsEl) {
+            const success = tasks.filter(t => t.status === 'completed').length;
+            const failed = tasks.filter(t => t.status === 'failed').length;
+            const scriptTasks = tasks.filter(t => t.execution_mode === 'script').length;
+            const aiTasks = tasks.filter(t => t.execution_mode === 'ai' || t.execution_mode === 'auto').length;
+            const totalCost = tasks.reduce((s, t) => {
+                if (t.execution_mode === 'script') return s;
+                return s + parseFloat(calcTaskCost(t.steps_taken));
+            }, 0);
 
-        statsEl.innerHTML = `
-            <span class="stat-item">Tổng: <span class="stat-value">${tasks.length}</span></span>
-            <span class="stat-item">✅ <span class="stat-value green">${success}</span></span>
-            <span class="stat-item">❌ <span class="stat-value red">${failed}</span></span>
-            <span class="stat-item">🔧 <span class="stat-value">${scriptTasks}</span></span>
-            <span class="stat-item">🧠 <span class="stat-value yellow">${aiTasks}</span></span>
-            <span class="stat-item">💰 <span class="stat-value yellow">$${totalCost.toFixed(4)}</span></span>
-        `;
+            statsEl.innerHTML = `
+                <span class="stat-item">Tổng: <span class="stat-value">${tasks.length}</span></span>
+                <span class="stat-item">✅ <span class="stat-value green">${success}</span></span>
+                <span class="stat-item">❌ <span class="stat-value red">${failed}</span></span>
+                <span class="stat-item">🔧 <span class="stat-value">${scriptTasks}</span></span>
+                <span class="stat-item">🧠 <span class="stat-value yellow">${aiTasks}</span></span>
+                <span class="stat-item">💰 <span class="stat-value yellow">$${totalCost.toFixed(4)}</span></span>
+            `;
+        }
 
         const container = document.getElementById('taskHistory');
+        if (!container) return;
         if (!tasks.length) {
             container.innerHTML = '<div class="empty-state"><div class="empty-icon">📋</div><div class="empty-text">Chưa có task nào</div></div>';
             return;
@@ -934,8 +939,8 @@ async function refreshHistory() {
             const modeClass = t.execution_mode === 'script' ? 'script' : 'ai';
             const modeLabel = t.execution_mode === 'script' ? '🔧 Script' : '🧠 AI';
             const cost = t.execution_mode === 'script' ? '$0' : '$' + calcTaskCost(t.steps_taken);
-            const cmd = t.command.length > 100 ? t.command.substring(0, 100) + '…' : t.command;
             const result = t.result || '';
+            const cmd = t.command.length > 80 ? t.command.substring(0, 80) + '…' : t.command;
             const time = t.completed_at
                 ? new Date(t.completed_at).toLocaleString('vi-VN', {
                     hour: '2-digit', minute: '2-digit',
@@ -948,12 +953,13 @@ async function refreshHistory() {
                 : '';
 
             return `
-                <div class="history-card">
+                <div class="history-card clickable" onclick="openTaskDetail(${t.id})">
                     <div class="history-card-header">
                         <span class="task-id">#${t.id}</span>
                         <span class="history-status status-${t.status}">${statusIcon(t.status)}</span>
                         <span class="mode-badge ${modeClass}">${modeLabel}</span>
                         <span class="history-device">📱 ${deviceName}</span>
+                        <span class="history-time">🕐 ${time}</span>
                     </div>
                     <div class="history-card-body">
                         ${result ? `<strong>${result}</strong>` : cmd}
@@ -962,13 +968,131 @@ async function refreshHistory() {
                         <span class="tag">⏱ ${duration}</span>
                         <span class="tag">📊 ${t.steps_taken} steps</span>
                         <span class="tag">💰 ${cost}</span>
-                        <span class="tag">🕐 ${time}</span>
+                        <span class="tag detail-hint">🔍 Chi tiết →</span>
                     </div>
                     ${errorHtml}
                 </div>
             `;
         }).join('');
     } catch (e) { /* retry */ }
+}
+
+// ===== TASK DETAIL MODAL =====
+
+async function openTaskDetail(taskId) {
+    const modal = document.getElementById('taskDetailModal');
+    const titleEl = document.getElementById('modalTitle');
+    const bodyEl = document.getElementById('modalBody');
+    modal.classList.add('open');
+    bodyEl.innerHTML = '<div class="loading">Loading step logs...</div>';
+
+    try {
+        // Fetch task info + logs in parallel
+        const [taskRes, logsRes] = await Promise.all([
+            fetch(`${API}/api/tasks/${taskId}`),
+            fetch(`${API}/api/tasks/${taskId}/logs`),
+        ]);
+        const task = await taskRes.json();
+        const logs = await logsRes.json();
+
+        const device = devices.find(d => d.id === task.device_id);
+        const deviceName = device ? device.name : `Device ${task.device_id}`;
+        const duration = formatDuration(task.started_at, task.completed_at);
+        const modeLabel = task.execution_mode === 'script' ? '🔧 Script' : '🧠 AI';
+
+        titleEl.textContent = `Task #${taskId} — ${deviceName}`;
+
+        // Analyze step logs for summary stats
+        let videoCount = 0, likeCount = 0, commentCount = 0, followCount = 0;
+        let commentTexts = [];
+        const actionIcons = {
+            tap: '👆', key: '⌨️', scroll: '📜', swipe: '👉', swipe_up: '📜',
+            type: '✏️', wait: '⏳', input: '✏️', error: '❌',
+            launch: '🚀', open: '📂', back: '◀️', verify: '✅',
+            retry: '🔄', double_tap: '❤️', ai_generate: '🧠', ai_fallback: '🤖',
+        };
+
+        logs.forEach(log => {
+            const d = (log.detail || '').toLowerCase();
+            if (log.action === 'swipe_up' || (log.action === 'swipe' && d.includes('next'))) videoCount++;
+            if (log.action === 'double_tap' && d.includes('like')) likeCount++;
+            if (log.action === 'tap' && d.includes('sent comment')) commentCount++;
+            if (log.action === 'tap' && d.includes('follow')) followCount++;
+            if (log.action === 'type' && log.detail) {
+                const match = log.detail.match(/typed:\s*(.+)/i);
+                if (match) commentTexts.push(match[1]);
+            }
+        });
+
+        // Build summary cards
+        let summaryHtml = '<div class="detail-summary">';
+        summaryHtml += `<div class="summary-card"><span class="summary-num">${videoCount}</span><span class="summary-label">Videos</span></div>`;
+        if (likeCount) summaryHtml += `<div class="summary-card like"><span class="summary-num">${likeCount}</span><span class="summary-label">Likes</span></div>`;
+        if (commentCount) summaryHtml += `<div class="summary-card comment"><span class="summary-num">${commentCount}</span><span class="summary-label">Comments</span></div>`;
+        if (followCount) summaryHtml += `<div class="summary-card follow"><span class="summary-num">${followCount}</span><span class="summary-label">Follows</span></div>`;
+        summaryHtml += `<div class="summary-card"><span class="summary-num">${duration}</span><span class="summary-label">Duration</span></div>`;
+        summaryHtml += '</div>';
+
+        // Task info header
+        let headerHtml = `
+            <div class="detail-header">
+                <span class="history-status status-${task.status}">${statusIcon(task.status)} ${task.status}</span>
+                <span class="mode-badge ${task.execution_mode === 'script' ? 'script' : 'ai'}">${modeLabel}</span>
+                <span>📱 ${deviceName}</span>
+            </div>
+            <div class="detail-command">${task.command}</div>
+            ${task.result ? `<div class="detail-result"><strong>📋 ${task.result}</strong></div>` : ''}
+            ${task.error ? `<div class="history-error">⚠️ ${task.error}</div>` : ''}
+        `;
+
+        // Comment list
+        let commentsHtml = '';
+        if (commentTexts.length) {
+            commentsHtml = '<div class="detail-comments"><h4>💬 Comments</h4><ul>' +
+                commentTexts.map(c => `<li>${c}</li>`).join('') + '</ul></div>';
+        }
+
+        // Step timeline
+        let timelineHtml = '<div class="detail-timeline"><h4>📊 Step Timeline</h4>';
+        if (logs.length) {
+            timelineHtml += logs.map(log => {
+                const icon = actionIcons[log.action] || '🔄';
+                const detail = log.detail || log.action;
+                const time = new Date(log.timestamp).toLocaleTimeString('vi-VN', {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit'
+                });
+                // Color based on action
+                let cls = '';
+                if (log.action === 'error' || log.action === 'retry') cls = 'step-warn';
+                else if (log.action === 'verify') cls = 'step-ok';
+                else if (log.action === 'type') cls = 'step-type';
+                else if (log.action === 'double_tap') cls = 'step-like';
+
+                return `
+                    <div class="timeline-step ${cls}">
+                        <span class="tl-num">#${log.step}</span>
+                        <span class="tl-icon">${icon}</span>
+                        <span class="tl-detail">${detail.length > 120 ? detail.substring(0, 120) + '…' : detail}</span>
+                        <span class="tl-time">${time}</span>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            timelineHtml += '<div class="empty-state"><div class="empty-text">Không có step logs (task cũ trước khi bật log)</div></div>';
+        }
+        timelineHtml += '</div>';
+
+        bodyEl.innerHTML = headerHtml + summaryHtml + commentsHtml + timelineHtml;
+
+    } catch (e) {
+        bodyEl.innerHTML = '<div class="empty-state"><div class="empty-text">Lỗi tải dữ liệu</div></div>';
+        console.error('openTaskDetail error:', e);
+    }
+}
+
+function closeTaskDetail(event) {
+    if (event && event.target !== event.currentTarget) return;
+    document.getElementById('taskDetailModal').classList.remove('open');
 }
 
 // ===== QUEUE STATUS =====

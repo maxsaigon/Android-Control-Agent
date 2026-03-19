@@ -278,36 +278,51 @@ class TikTokController:
         """Tap the comment input field at bottom of comment panel.
 
         When comment panel is open, the input field is at the bottom.
-        We use UI dump to find it, or fallback to bottom coordinates.
+        Must find the correct EditText (comment input, NOT search bar).
         """
         elements = await self.dump_ui(device)
+        w, h = await self._get_screen_size(device)
 
-        # Look for EditText or elements with "Add comment" hint
+        # Strategy 1: Find EditText in bottom half of screen (comment input)
+        # The search bar EditText is at the top; comment input is at bottom
+        comment_inputs = []
         for el in elements:
             if "EditText" in el.cls:
-                x, y = el.center
-                x += random.randint(-5, 5)
-                logger.info(f"  🎯 [comment_input] Found EditText at ({x}, {y})")
-                await self._tap(device, x, y)
-                return True
+                _, el_y = el.center
+                # Comment input is in bottom portion of screen (>60% height)
+                if el_y > h * 0.5:
+                    comment_inputs.append(el)
+                    logger.info(f"  📝 [comment_input] Found EditText at y={el_y} (bottom): '{el.text[:20] if el.text else el.content_desc[:20]}'")
 
-        # Try content-desc patterns for input field
+        if comment_inputs:
+            # Pick the one closest to the bottom
+            el = max(comment_inputs, key=lambda e: e.center[1])
+            x, y = el.center
+            x += random.randint(-5, 5)
+            logger.info(f"  🎯 [comment_input] Tapping bottom EditText at ({x}, {y})")
+            await self._tap(device, x, y)
+            await asyncio.sleep(0.5)  # Wait for keyboard
+            return True
+
+        # Strategy 2: Look for elements with comment-related text in bottom half
         for el in elements:
-            desc = el.content_desc.lower()
-            text = el.text.lower()
-            if any(kw in desc or kw in text for kw in ["comment", "add", "write", "say"]):
+            desc = el.content_desc.lower() if el.content_desc else ""
+            text = el.text.lower() if el.text else ""
+            _, el_y = el.center
+            if el_y > h * 0.5 and any(kw in desc or kw in text for kw in ["comment", "add comment", "add a comment"]):
                 if el.clickable:
                     x, y = el.center
                     logger.info(f"  🎯 [comment_input] Found via keyword at ({x}, {y})")
                     await self._tap(device, x, y)
+                    await asyncio.sleep(0.5)
                     return True
 
-        # Fallback to bottom of screen
-        w, h = await self._get_screen_size(device)
+        # Strategy 3: Fallback to bottom of comment panel area
         x = int(w * 0.40) + random.randint(-20, 20)
         y = int(h * 0.90) + random.randint(-5, 5)
         logger.info(f"  ⚠️ [comment_input] Using fallback coords ({x}, {y})")
         await self._tap(device, x, y)
+        await asyncio.sleep(0.5)
         return True
 
     async def get_video_info(self, device: str) -> dict:
@@ -463,6 +478,7 @@ class TikTokController:
                 re.compile(r"^Skip$", re.IGNORECASE),
                 re.compile(r"^Close$", re.IGNORECASE),
                 re.compile(r"^Dismiss$", re.IGNORECASE),
+                re.compile(r"^Yes$", re.IGNORECASE),       # content moderation popup
             ]
 
             found_button = False
@@ -558,10 +574,13 @@ class TikTokController:
         return True
 
     async def type_text(self, device: str, text: str) -> bool:
-        """Type text using backend or ADB.
+        """Type text into the focused field.
 
-        For non-ASCII (Vietnamese, emoji), uses ADB clipboard broadcast
-        since `adb shell input text` only supports ASCII.
+        Multiple strategies for reliable text input including Unicode:
+        1. Try ADBKeyboard broadcast (best for Unicode)
+        2. Try clipboard via service call + paste keyevent
+        3. Use 'input text' (works for ASCII only)
+        4. Last resort: strip to ASCII and use 'input text'
         """
         if self._backend:
             await self._backend.type_text(device, text)
@@ -571,32 +590,196 @@ class TikTokController:
         is_ascii = all(ord(c) < 128 for c in text)
 
         if is_ascii:
+            special_chars = ' &|;<>"\'()'
             escaped = ''.join(
-                f'\\{c}' if c in ' &|;<>"\'()' else c
+                f'\\{c}' if c in special_chars else c
                 for c in text
             )
             await self._adb._run_adb(device, "shell", "input", "text", escaped)
-        else:
-            # Use clipboard for Unicode (Vietnamese, emoji)
-            # Method: ADB broadcast to set clipboard, then paste
+            logger.info(f"  ✅ [type_text] ASCII input OK: '{text}'")
+            return True
+
+        # Unicode text - try multiple methods
+
+        # Method 1: ADBKeyboard IME broadcast (if ADBKeyboard is installed)
+        try:
+            import base64
+            encoded = base64.b64encode(text.encode('utf-8')).decode('ascii')
             await self._adb._run_adb(
-                device, "shell", "am", "broadcast",
+                device, "shell",
+                "am", "broadcast",
+                "-a", "ADB_INPUT_B64",
+                "--es", "msg", encoded
+            )
+            await asyncio.sleep(0.5)
+
+            # Verify if text appeared in field
+            if await self._verify_text_entered(device, text):
+                logger.info(f"  ✅ [type_text] ADBKeyboard OK: '{text}'")
+                return True
+            logger.warning("  ⚠️ [type_text] ADBKeyboard broadcast sent but no text in field")
+        except Exception as e:
+            logger.warning(f"  ⚠️ [type_text] ADBKeyboard method failed: {e}")
+
+        # Method 2: Use clipboard service call (works without extra apps)
+        try:
+            # Set clipboard text via service call
+            escaped_text = text.replace("'", "'\\''")
+            # Use content command to set clipboard text
+            await self._adb._run_adb(
+                device, "shell",
+                "sh", "-c",
+                f"service call clipboard 2 i32 1 i32 {len(text.encode('utf-16-le'))//2} "
+                f"s16 '{escaped_text}'"
+            )
+            await asyncio.sleep(0.3)
+            # Long press to bring up paste option, then paste
+            await self._adb._run_adb(
+                device, "shell", "input", "keyevent", "279"  # KEYCODE_PASTE
+            )
+            await asyncio.sleep(0.5)
+
+            if await self._verify_text_entered(device, text):
+                logger.info(f"  ✅ [type_text] Clipboard service OK: '{text}'")
+                return True
+            logger.warning("  ⚠️ [type_text] Clipboard service paste failed")
+        except Exception as e:
+            logger.warning(f"  ⚠️ [type_text] Clipboard service method failed: {e}")
+
+        # Method 3: Use 'am broadcast clipper.set' (requires Clipper app)
+        try:
+            await self._adb._run_adb(
+                device, "shell",
+                "am", "broadcast",
                 "-a", "clipper.set",
                 "-e", "text", text
             )
             await asyncio.sleep(0.3)
-            # Ctrl+V to paste
             await self._adb._run_adb(
-                device, "shell", "input", "keyevent", "279"  # KEYCODE_PASTE
+                device, "shell", "input", "keyevent", "279"
             )
+            await asyncio.sleep(0.5)
+
+            if await self._verify_text_entered(device, text):
+                logger.info(f"  ✅ [type_text] Clipper broadcast OK: '{text}'")
+                return True
+            logger.warning("  ⚠️ [type_text] Clipper broadcast paste failed")
+        except Exception as e:
+            logger.warning(f"  ⚠️ [type_text] Clipper method failed: {e}")
+
+        # Method 4: ASCII fallback - strip non-ASCII characters
+        ascii_text = ''.join(c if ord(c) < 128 else '' for c in text)
+        if not ascii_text:
+            # If no ASCII chars at all, use a generic emoji/emoticon comment
+            ascii_text = ":)"
+        special_chars = ' &|;<>"\'()'
+        escaped = ''.join(
+            f'\\{c}' if c in special_chars else c
+            for c in ascii_text
+        )
+        await self._adb._run_adb(device, "shell", "input", "text", escaped)
+        logger.warning(f"  ⚠️ [type_text] Used ASCII fallback: '{ascii_text}' (original: '{text}')")
         return True
 
+    async def _verify_text_entered(self, device: str, expected_text: str) -> bool:
+        """Verify that text was actually typed into the focused EditText.
+
+        Returns True only if EditText contains actual content (not placeholder).
+        """
+        # Placeholder/hint texts to ignore
+        placeholders = {"add comment...", "add a comment...", "thêm bình luận...",
+                        "viết bình luận...", "say something...", "add comment"}
+
+        elements = await self.dump_ui(device)
+        for el in elements:
+            if "EditText" not in el.cls:
+                continue
+            text_content = el.text.strip() if el.text else ""
+            if not text_content:
+                continue
+            # Ignore placeholder hints
+            if text_content.lower() in placeholders:
+                continue
+            # Found actual text in EditText
+            logger.info(f"  🔍 [verify] Text in EditText: '{text_content[:40]}'")
+            return True
+        return False
+
     async def send_comment(self, device: str) -> bool:
-        """Press Enter to send comment."""
-        if self._backend:
-            await self._backend.key_event(device, "ENTER")
+        """Tap Send button to post comment.
+
+        TikTok's comment input has a Send/Post button (arrow icon) on the
+        right side. ENTER key (keyevent 66) just adds a newline, so we must
+        tap the button.
+
+        Strategy:
+        1. UI dump → find Send/Post button by text, content-desc, or class
+        2. Fallback → tap right side of keyboard/input area where Send sits
+        """
+        elements = await self.dump_ui(device)
+
+        # 1. Look for send/post button in UI elements
+        send_patterns = [
+            re.compile(r"Post$", re.IGNORECASE),
+            re.compile(r"^Send$", re.IGNORECASE),
+            re.compile(r"^Đăng$", re.IGNORECASE),         # Vietnamese
+            re.compile(r"^Gửi$", re.IGNORECASE),           # Vietnamese
+            re.compile(r"send comment", re.IGNORECASE),
+            re.compile(r"post comment", re.IGNORECASE),
+        ]
+
+        for el in elements:
+            desc = el.content_desc
+            text = el.text
+            for pat in send_patterns:
+                if (desc and pat.search(desc)) or (text and pat.search(text)):
+                    x, y = el.center
+                    x += random.randint(-3, 3)
+                    y += random.randint(-3, 3)
+                    logger.info(f"  🎯 [send_comment] Found button: '{text or desc}' at ({x}, {y})")
+                    await self._tap(device, x, y)
+                    return True
+
+        # 2. Look for ImageView/ImageButton near the input area (send icon)
+        #    In TikTok, the send button is typically a small icon to the right
+        #    of the EditText input on the same row
+        edit_text_el = None
+        for el in elements:
+            if "EditText" in el.cls:
+                edit_text_el = el
+                break
+
+        if edit_text_el:
+            # Find clickable elements to the RIGHT of the EditText on same Y level
+            et_right = edit_text_el.bounds[2]  # right edge of edittext
+            et_cy = (edit_text_el.bounds[1] + edit_text_el.bounds[3]) // 2
+            best_send = None
+            for el in elements:
+                if not el.clickable:
+                    continue
+                el_cx, el_cy = el.center
+                # Same row (within 50px Y) and to the right of edittext
+                if abs(el_cy - et_cy) < 50 and el_cx > et_right:
+                    if best_send is None or el_cx < best_send.center[0]:
+                        best_send = el  # Pick leftmost one to the right
+
+            if best_send:
+                x, y = best_send.center
+                x += random.randint(-3, 3)
+                y += random.randint(-3, 3)
+                logger.info(f"  🎯 [send_comment] Found icon right of input at ({x}, {y})")
+                await self._tap(device, x, y)
+                return True
+
+        # 3. Fallback: tap the right side of the bottom input bar
+        w, h = await self._get_screen_size(device)
+        x = int(w * 0.92) + random.randint(-5, 5)  # Far right
+        if edit_text_el:
+            y = (edit_text_el.bounds[1] + edit_text_el.bounds[3]) // 2
         else:
-            await self._adb._run_adb(device, "shell", "input", "keyevent", "66")
+            y = int(h * 0.90) + random.randint(-5, 5)  # Bottom area
+        logger.info(f"  ⚠️ [send_comment] Using fallback coords ({x}, {y})")
+        await self._tap(device, x, y)
         return True
 
     async def close_panel(self, device: str) -> bool:
