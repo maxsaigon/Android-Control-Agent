@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: android-control
+Version: 0.1.0
+Summary: AI-powered Android device control system using DroidRun + GPT-4o + FastAPI
+Requires-Python: <3.14,>=3.11
+Requires-Dist: droidrun[openai]
+Requires-Dist: fastapi[standard]
+Requires-Dist: sqlmodel
+Requires-Dist: python-dotenv
+Requires-Dist: pydantic-settings
+Provides-Extra: dev
+Requires-Dist: ruff; extra == "dev"
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-asyncio; extra == "dev"
+Requires-Dist: httpx; extra == "dev"

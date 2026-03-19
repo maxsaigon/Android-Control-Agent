@@ -1,0 +1,11 @@
+droidrun[openai]
+fastapi[standard]
+sqlmodel
+python-dotenv
+pydantic-settings
+
+[dev]
+ruff
+pytest
+pytest-asyncio
+httpx

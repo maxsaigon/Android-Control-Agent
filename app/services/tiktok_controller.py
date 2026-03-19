@@ -414,13 +414,123 @@ class TikTokController:
         logger.error("  ❌ Recovery failed — TikTok not in foreground")
         return False
 
+    async def dismiss_popups(self, device: str, max_attempts: int = 5) -> int:
+        """Dismiss TikTok startup popups, dialogs, and overlays.
+
+        Handles:
+        - Policy update dialogs ("Got it", "Accept", "OK", "Allow")
+        - LIVE stream webviews (press BACK to return to feed)
+        - Age verification, cookie consent, etc.
+
+        Returns number of popups dismissed.
+        """
+        dismissed = 0
+
+        for attempt in range(max_attempts):
+            # Dump UI to check for dialog elements
+            _, xml_raw, _ = await self._adb._run_adb(
+                device, "shell", "cat", "/sdcard/_ui.xml"
+            )
+            # Re-dump fresh UI
+            await self._adb._run_adb(
+                device, "shell", "uiautomator", "dump", "/sdcard/_ui.xml"
+            )
+            _, xml_raw, _ = await self._adb._run_adb(
+                device, "shell", "cat", "/sdcard/_ui.xml"
+            )
+
+            xml_start = xml_raw.find("<?xml")
+            if xml_start < 0:
+                xml_start = xml_raw.find("<hierarchy")
+            if xml_start < 0:
+                break
+
+            xml_clean = xml_raw[xml_start:]
+            try:
+                root = ET.fromstring(xml_clean)
+            except ET.ParseError:
+                break
+
+            # Look for common dismiss buttons in ALL packages (dialogs may not be TikTok pkg)
+            dismiss_patterns = [
+                re.compile(r"^Got it$", re.IGNORECASE),
+                re.compile(r"^Accept$", re.IGNORECASE),
+                re.compile(r"^OK$", re.IGNORECASE),
+                re.compile(r"^Allow$", re.IGNORECASE),
+                re.compile(r"^Agree$", re.IGNORECASE),
+                re.compile(r"^Continue$", re.IGNORECASE),
+                re.compile(r"^Not now$", re.IGNORECASE),
+                re.compile(r"^Skip$", re.IGNORECASE),
+                re.compile(r"^Close$", re.IGNORECASE),
+                re.compile(r"^Dismiss$", re.IGNORECASE),
+            ]
+
+            found_button = False
+            for node in root.iter("node"):
+                text = node.get("text", "")
+                desc = node.get("content-desc", "")
+                clickable = node.get("clickable", "") == "true"
+
+                if not clickable:
+                    continue
+
+                for pattern in dismiss_patterns:
+                    if pattern.search(text) or pattern.search(desc):
+                        # Found a dismiss button — tap it
+                        bounds_str = node.get("bounds", "")
+                        m = re.findall(r"\d+", bounds_str)
+                        if len(m) == 4:
+                            cx = (int(m[0]) + int(m[2])) // 2
+                            cy = (int(m[1]) + int(m[3])) // 2
+                            await self._tap(device, cx, cy)
+                            dismissed += 1
+                            found_button = True
+                            logger.info(
+                                f"  🔘 Dismissed popup: '{text or desc}' at ({cx}, {cy})"
+                            )
+                            await asyncio.sleep(1.5)
+                            break
+                if found_button:
+                    break
+
+            if not found_button:
+                # Check if we're on a webview/LIVE page (no feed elements visible)
+                has_feed = False
+                for node in root.iter("node"):
+                    desc = node.get("content-desc", "")
+                    if "For You" in desc or "Home" == desc:
+                        has_feed = True
+                        break
+
+                if not has_feed:
+                    # Not on feed — try BACK to escape webview/LIVE
+                    await self._adb._run_adb(
+                        device, "shell", "input", "keyevent", "4"
+                    )
+                    dismissed += 1
+                    logger.info("  ⬅️ Pressed BACK to escape non-feed page")
+                    await asyncio.sleep(1.5)
+                else:
+                    # On feed, no popups — we're good
+                    break
+
+        if dismissed > 0:
+            logger.info(f"  ✅ Dismissed {dismissed} popup(s)/overlay(s)")
+        return dismissed
+
     async def ensure_on_feed(self, device: str) -> bool:
         """Ensure we're on TikTok feed (not profile, inbox, etc.).
 
-        Taps Home tab if not already there.
+        Steps:
+        1. Check TikTok is foreground (recover if not)
+        2. Dismiss any popups/dialogs
+        3. Tap Home tab if not on feed
         """
         if not await self.is_tiktok_foreground(device):
             await self.recover(device)
+
+        # Dismiss any startup popups first
+        await self.dismiss_popups(device)
 
         # Check if we're on feed by looking for feed elements
         elements = await self.dump_ui(device)

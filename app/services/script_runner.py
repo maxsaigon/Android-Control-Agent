@@ -356,6 +356,11 @@ class ScriptRunner:
         await self._open_app("tiktok")
         await self._wait(3, 5, "app loading")
 
+        # Dismiss popups and ensure on feed
+        tiktok = self._get_tiktok_controller()
+        await tiktok.ensure_on_feed(self._device)
+        await self._step("ensure_feed", "dismissed popups, on For You feed")
+
         for i in range(count):
             # View current video
             await self._wait(view_time_min, view_time_max, f"watching video {i+1}/{count}")
@@ -381,6 +386,11 @@ class ScriptRunner:
         """Warm-up TikTok account: open → view videos passively → no interactions."""
         await self._open_app("tiktok")
         await self._wait(3, 5, "app loading")
+
+        # Dismiss popups and ensure on feed
+        tiktok = self._get_tiktok_controller()
+        await tiktok.ensure_on_feed(self._device)
+        await self._step("ensure_feed", "dismissed popups, on For You feed")
 
         for i in range(count):
             # View current video — longer than normal browsing
@@ -427,6 +437,11 @@ class ScriptRunner:
         """Like TikTok videos: browse feed + double-tap or tap heart."""
         await self._open_app("tiktok")
         await self._wait(3, 5, "app loading")
+
+        # Dismiss popups and ensure on feed
+        tiktok = self._get_tiktok_controller()
+        await tiktok.ensure_on_feed(self._device)
+        await self._step("ensure_feed", "dismissed popups, on For You feed")
 
         likes_done = 0
         consecutive_likes = 0
@@ -640,6 +655,11 @@ class ScriptRunner:
         await self._open_app("tiktok")
         await self._wait(3, 5, "app loading")
 
+        # Dismiss popups and ensure on feed
+        tiktok = self._get_tiktok_controller()
+        await tiktok.ensure_on_feed(self._device)
+        await self._step("ensure_feed", "dismissed popups, on For You feed")
+
         comments_done = 0
         used_comments = set()
         videos_since_last_comment = 0
@@ -741,6 +761,11 @@ class ScriptRunner:
         """Follow TikTok accounts from feed: browse → tap avatar → follow."""
         await self._open_app("tiktok")
         await self._wait(3, 5, "app loading")
+
+        # Dismiss popups and ensure on feed
+        tiktok = self._get_tiktok_controller()
+        await tiktok.ensure_on_feed(self._device)
+        await self._step("ensure_feed", "dismissed popups, on For You feed")
 
         follows_done = 0
         videos_since_last_follow = 0
