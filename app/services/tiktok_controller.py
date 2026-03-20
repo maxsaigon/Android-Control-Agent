@@ -106,21 +106,39 @@ class TikTokController:
         return self._backend
 
     async def _tap(self, device: str, x: int, y: int):
-        """Tap via backend or ADB."""
+        """Tap via backend (preferred) or ADB (fallback)."""
+        await self._get_backend()
         if self._backend:
             await self._backend.tap(device, x, y)
         else:
+            # FALLBACK: ADB — only when Accessibility backend unavailable
             await self._adb._run_adb(device, "shell", "input", "tap", str(x), str(y))
 
     async def _get_screen_size(self, device: str) -> tuple[int, int]:
-        """Get cached screen dimensions."""
+        """Get cached screen dimensions (Accessibility preferred, ADB fallback)."""
         if device not in self._screen_cache:
+            await self._get_backend()
+            if self._backend:
+                try:
+                    w, h = await self._backend.get_screen_size(device)
+                    self._screen_cache[device] = (w, h)
+                    return (w, h)
+                except Exception:
+                    pass
+            # FALLBACK: ADB
             w, h = await self._adb.get_screen_size(device)
             self._screen_cache[device] = (w, h)
         return self._screen_cache[device]
 
     async def dump_ui(self, device: str) -> list[UIElement]:
-        """Dump TikTok UI hierarchy and return parsed elements."""
+        """Dump TikTok UI hierarchy and return parsed elements.
+
+        TODO: [ACCESSIBILITY-MIGRATE] Use backend.get_ui_tree() instead of
+        uiautomator dump. Requires format adapter: Accessibility returns JSON
+        with flat list of UINode objects, this method returns UIElement from
+        XML parsing. Both contain same info (text, content_desc, bounds, etc.)
+        but in different data classes.
+        """
         try:
             _, stdout, _ = await self._adb._run_adb(
                 device, "shell",
@@ -370,19 +388,108 @@ class TikTokController:
 
         return info
 
+    async def read_comments(self, device: str, max_count: int = 10) -> list[dict]:
+        """Read visible comments from the open comment panel.
+
+        Scrapes comment text from UI hierarchy when comment panel is open.
+        Returns list of dicts: [{"user": "username", "text": "comment"}, ...]
+
+        Used to provide context to AI for generating relevant, opinionated
+        comments that reference the discussion happening in the video.
+        """
+        elements = await self.dump_ui(device)
+        comments = []
+
+        # TikTok comment panel structure:
+        # - Each comment has a TextView with username (usually truncated)
+        # - Followed by a TextView with comment text
+        # - Comments are in a RecyclerView/ListView
+        # Strategy: collect all visible text elements in the comment panel area,
+        # filter out UI chrome (buttons, timestamps, counts)
+
+        ignore_patterns = {
+            "reply", "replies", "like", "likes", "report",
+            "view more", "see more", "hide", "got it",
+            "add comment", "newest", "oldest", "most relevant",
+        }
+
+        for el in elements:
+            text = el.text.strip() if el.text else ""
+            if not text:
+                continue
+
+            # Skip short texts (timestamps like "1d", "2h")
+            if len(text) <= 3 and not any(c.isalpha() for c in text):
+                continue
+
+            # Skip UI chrome
+            if text.lower() in ignore_patterns:
+                continue
+
+            # Skip count-only strings ("1.2K", "234")
+            if re.match(r'^[\d,.KMB]+$', text):
+                continue
+
+            # Skip if it's in the bottom input area or top header
+            _, el_y = el.center
+            if el_y < 100 or el_y > 1800:  # Rough bounds for comment area
+                continue
+
+            # Skip elements that are common buttons/actions
+            desc = el.content_desc.lower() if el.content_desc else ""
+            if any(kw in desc for kw in ["profile", "follow", "share", "like"]):
+                continue
+
+            # This looks like a comment or username
+            # Try to pair: if it's a short text followed by longer text,
+            # it's likely username + comment
+            comments.append({"text": text})
+
+            if len(comments) >= max_count:
+                break
+
+        # Post-process: try to identify username vs comment text pairs
+        # Typical pattern: username is shorter, comment is longer
+        paired = []
+        i = 0
+        while i < len(comments):
+            text = comments[i]["text"]
+            # If this looks like a username (short, no spaces)
+            if len(text) < 20 and " " not in text and i + 1 < len(comments):
+                paired.append({
+                    "user": text,
+                    "text": comments[i + 1]["text"]
+                })
+                i += 2
+            else:
+                paired.append({"user": "?", "text": text})
+                i += 1
+
+        logger.info(f"  📖 [read_comments] Found {len(paired)} comments")
+        return paired
+
     async def is_tiktok_foreground(self, device: str) -> bool:
         """Check if TikTok is currently the foreground app.
 
-        Note: We must NOT pass '|' or 'grep' as ADB args — they get sent
-        to the device shell as commands, not interpreted as a pipe.
-        Instead, we dump the full output and filter in Python.
+        Prioritizes Accessibility backend (get_foreground_app) over ADB.
+
+        TODO: [ACCESSIBILITY-MIGRATE] Once Accessibility is stable, remove
+        ADB dumpsys fallback path entirely.
         """
+        # Try Accessibility first
+        await self._get_backend()
+        if self._backend:
+            try:
+                pkg = await self._backend.get_foreground_app(device)
+                return TIKTOK_PACKAGE in pkg
+            except Exception:
+                pass
+        # FALLBACK: ADB dumpsys
         try:
             _, stdout, _ = await self._adb._run_adb(
                 device, "shell",
                 "dumpsys", "activity", "activities"
             )
-            # Filter for resumed/focused activity lines in Python
             for line in stdout.splitlines():
                 if ("mResumedActivity" in line or "mFocusedActivity" in line):
                     if TIKTOK_PACKAGE in line:
@@ -400,11 +507,13 @@ class TikTokController:
             return False
 
         logger.warning("🔄 TikTok not in foreground — recovering...")
+        await self._get_backend()
 
         # Try pressing BACK first (maybe hit a dialog)
         if self._backend:
             await self._backend.key_event(device, "BACK")
         else:
+            # FALLBACK: ADB
             await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
         await asyncio.sleep(1)
 
@@ -416,6 +525,7 @@ class TikTokController:
         if self._backend:
             await self._backend.launch_app(device, TIKTOK_PACKAGE)
         else:
+            # FALLBACK: ADB monkey launch
             await self._adb._run_adb(
                 device, "shell", "monkey", "-p", TIKTOK_PACKAGE,
                 "-c", "android.intent.category.LAUNCHER", "1"
@@ -520,9 +630,13 @@ class TikTokController:
 
                 if not has_feed:
                     # Not on feed — try BACK to escape webview/LIVE
-                    await self._adb._run_adb(
-                        device, "shell", "input", "keyevent", "4"
-                    )
+                    if self._backend:
+                        await self._backend.key_event(device, "BACK")
+                    else:
+                        # FALLBACK: ADB
+                        await self._adb._run_adb(
+                            device, "shell", "input", "keyevent", "4"
+                        )
                     dismissed += 1
                     logger.info("  ⬅️ Pressed BACK to escape non-feed page")
                     await asyncio.sleep(1.5)
@@ -577,11 +691,15 @@ class TikTokController:
         """Type text into the focused field.
 
         Multiple strategies for reliable text input including Unicode:
+        0. Try AccessibilityBackend (ACTION_SET_TEXT — full Unicode support!)
         1. Try ADBKeyboard broadcast (best for Unicode)
         2. Try clipboard via service call + paste keyevent
         3. Use 'input text' (works for ASCII only)
         4. Last resort: strip to ASCII and use 'input text'
         """
+        # Lazy-init backend (auto-detects AccessibilityBackend if available)
+        await self._get_backend()
+
         if self._backend:
             await self._backend.type_text(device, text)
             return True
@@ -705,25 +823,170 @@ class TikTokController:
             return True
         return False
 
+    async def _find_pink_send_button(self, device: str) -> tuple[int, int] | None:
+        """Find TikTok's pink Send button via raw screencap pixel analysis.
+
+        The Send button is INVISIBLE to uiautomator dump (it's rendered as
+        a SurfaceView overlay). The only reliable method is scanning the
+        screenshot for the distinctive pink/red circle (TikTok brand color).
+
+        Uses file-based approach: screencap → device file → adb pull → local
+        read, because _run_adb decodes stdout to string (corrupting binary).
+
+        TODO: [ACCESSIBILITY-MIGRATE] Use backend.capture_screenshot() which
+        sends PNG via WebSocket (binary-safe). Eliminates file I/O on device
+        and adb pull overhead.
+
+        Returns (x, y) center of the button, or None if not found.
+        """
+        import struct
+        import tempfile
+        import os
+        try:
+            # Save raw screencap to device file
+            await self._adb._run_adb(
+                device, "shell", "screencap", "/sdcard/_pink.dump"
+            )
+
+            # Pull to local temp file (binary-safe)
+            local_path = os.path.join(tempfile.gettempdir(), "_pink.dump")
+            ret, _, stderr = await self._adb._run_adb(
+                device, "pull", "/sdcard/_pink.dump", local_path
+            )
+            if ret != 0:
+                logger.warning(f"  ⚠️ [find_pink] pull failed: {stderr}")
+                return None
+
+            # Read raw binary locally
+            with open(local_path, "rb") as f:
+                raw_bytes = f.read()
+
+            # Cleanup
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+            await self._adb._run_adb(
+                device, "shell", "rm", "-f", "/sdcard/_pink.dump"
+            )
+
+            if len(raw_bytes) < 16:
+                logger.warning("  ⚠️ [find_pink] screencap file too small")
+                return None
+
+            # Parse header: width(4 LE), height(4 LE), format(4 LE)
+            w = struct.unpack('<I', raw_bytes[:4])[0]
+            h = struct.unpack('<I', raw_bytes[4:8])[0]
+            pixel_data = raw_bytes[12:]  # skip 12-byte header
+
+            expected = w * h * 4
+            if len(pixel_data) < expected * 0.9:
+                logger.warning(f"  ⚠️ [find_pink] Incomplete data: {len(pixel_data)}/{expected}")
+                return None
+
+            # Scan for pink pixels: R>230, G<120, B<140, (R-G)>100
+            # Only scan right half (x > w*0.7) and middle section (y: 40%-80%)
+            # This avoids false positives from TikTok hearts/reactions
+            x_start = int(w * 0.7)
+            y_start = int(h * 0.4)
+            y_end = int(h * 0.8)
+
+            pink_xs = []
+            pink_ys = []
+            for y in range(y_start, y_end, 2):  # Step by 2 for speed
+                for x in range(x_start, w, 2):
+                    offset = (y * w + x) * 4
+                    if offset + 4 > len(pixel_data):
+                        continue
+                    r = pixel_data[offset]
+                    g = pixel_data[offset + 1]
+                    b = pixel_data[offset + 2]
+                    if r > 230 and g < 120 and b < 140 and (r - g) > 100:
+                        pink_xs.append(x)
+                        pink_ys.append(y)
+
+            if len(pink_xs) < 20:
+                logger.warning(f"  ⚠️ [find_pink] Too few pink pixels ({len(pink_xs)})")
+                return None
+
+            cx = (min(pink_xs) + max(pink_xs)) // 2
+            cy = (min(pink_ys) + max(pink_ys)) // 2
+            bw = max(pink_xs) - min(pink_xs)
+            bh = max(pink_ys) - min(pink_ys)
+
+            # Sanity check: the Send button is a circle ~80-160px wide
+            if bw < 40 or bw > 200 or bh < 40 or bh > 200:
+                logger.warning(
+                    f"  ⚠️ [find_pink] Unusual size {bw}x{bh}, may not be Send button"
+                )
+
+            logger.info(
+                f"  🎯 [find_pink] Send button at ({cx},{cy}) "
+                f"size={bw}x{bh} pixels={len(pink_xs)}"
+            )
+            return (cx, cy)
+
+        except Exception as e:
+            logger.warning(f"  ⚠️ [find_pink] Error: {e}")
+            return None
+
+    async def _realistic_tap(self, device: str, x: int, y: int, duration_ms: int = 80):
+        """Tap with realistic press duration.
+
+        TikTok SILENTLY REJECTS instant 0ms taps from 'input tap' as bot
+        behavior. Uses a swipe-to-same-point with duration to simulate a
+        real finger press-and-release that TikTok accepts.
+
+        Prioritizes Accessibility backend (dispatchGesture with duration)
+        over ADB 'input swipe' for consistency.
+        """
+        dur = duration_ms + random.randint(-20, 20)
+        dur = max(40, dur)
+        await self._get_backend()
+        if self._backend:
+            # Accessibility: swipe to same point = press with duration
+            await self._backend.swipe(device, x, y, x, y, dur)
+        else:
+            # FALLBACK: ADB input swipe
+            await self._adb._run_adb(
+                device, "shell", "input", "swipe",
+                str(x), str(y), str(x), str(y), str(dur)
+            )
+
     async def send_comment(self, device: str) -> bool:
         """Tap Send button to post comment.
 
-        TikTok's comment input has a Send/Post button (arrow icon) on the
-        right side. ENTER key (keyevent 66) just adds a newline, so we must
-        tap the button.
+        TikTok's Send button (pink arrow ↑ icon) is INVISIBLE to uiautomator
+        dump — it's rendered as a SurfaceView overlay that the UI hierarchy
+        cannot see. We use raw screencap pixel analysis to find it.
+
+        CRITICAL: Must use _realistic_tap (80ms swipe-tap) instead of
+        _tap (0ms instant). TikTok silently rejects 0ms taps as bot behavior.
 
         Strategy:
-        1. UI dump → find Send/Post button by text, content-desc, or class
-        2. Fallback → tap right side of keyboard/input area where Send sits
+        1. Screenshot → find pink Send button via pixel color detection
+        2. UI dump → find Send/Post button by text (fallback for other TikTok versions)
+        3. Hardcoded fallback coordinates
         """
+        # 1. PRIMARY: Find pink Send button via screenshot pixel analysis
+        pos = await self._find_pink_send_button(device)
+        if pos:
+            x, y = pos
+            x += random.randint(-3, 3)
+            y += random.randint(-3, 3)
+            logger.info(f"  🎯 [send_comment] Pink button at ({x}, {y})")
+            await self._realistic_tap(device, x, y)
+            return True
+
+        # 2. FALLBACK: Try UI dump for text-based Send button
+        logger.info("  ℹ️ [send_comment] Pink button not found, trying UI dump")
         elements = await self.dump_ui(device)
 
-        # 1. Look for send/post button in UI elements
         send_patterns = [
             re.compile(r"Post$", re.IGNORECASE),
             re.compile(r"^Send$", re.IGNORECASE),
-            re.compile(r"^Đăng$", re.IGNORECASE),         # Vietnamese
-            re.compile(r"^Gửi$", re.IGNORECASE),           # Vietnamese
+            re.compile(r"^Đăng$", re.IGNORECASE),
+            re.compile(r"^Gửi$", re.IGNORECASE),
             re.compile(r"send comment", re.IGNORECASE),
             re.compile(r"post comment", re.IGNORECASE),
         ]
@@ -736,50 +999,17 @@ class TikTokController:
                     x, y = el.center
                     x += random.randint(-3, 3)
                     y += random.randint(-3, 3)
-                    logger.info(f"  🎯 [send_comment] Found button: '{text or desc}' at ({x}, {y})")
-                    await self._tap(device, x, y)
+                    logger.info(f"  🎯 [send_comment] Found text button: '{text or desc}' at ({x}, {y})")
+                    await self._realistic_tap(device, x, y)
                     return True
 
-        # 2. Look for ImageView/ImageButton near the input area (send icon)
-        #    In TikTok, the send button is typically a small icon to the right
-        #    of the EditText input on the same row
-        edit_text_el = None
-        for el in elements:
-            if "EditText" in el.cls:
-                edit_text_el = el
-                break
-
-        if edit_text_el:
-            # Find clickable elements to the RIGHT of the EditText on same Y level
-            et_right = edit_text_el.bounds[2]  # right edge of edittext
-            et_cy = (edit_text_el.bounds[1] + edit_text_el.bounds[3]) // 2
-            best_send = None
-            for el in elements:
-                if not el.clickable:
-                    continue
-                el_cx, el_cy = el.center
-                # Same row (within 50px Y) and to the right of edittext
-                if abs(el_cy - et_cy) < 50 and el_cx > et_right:
-                    if best_send is None or el_cx < best_send.center[0]:
-                        best_send = el  # Pick leftmost one to the right
-
-            if best_send:
-                x, y = best_send.center
-                x += random.randint(-3, 3)
-                y += random.randint(-3, 3)
-                logger.info(f"  🎯 [send_comment] Found icon right of input at ({x}, {y})")
-                await self._tap(device, x, y)
-                return True
-
-        # 3. Fallback: tap the right side of the bottom input bar
+        # 3. LAST RESORT: hardcoded position for 1080-wide screens
         w, h = await self._get_screen_size(device)
-        x = int(w * 0.92) + random.randint(-5, 5)  # Far right
-        if edit_text_el:
-            y = (edit_text_el.bounds[1] + edit_text_el.bounds[3]) // 2
-        else:
-            y = int(h * 0.90) + random.randint(-5, 5)  # Bottom area
-        logger.info(f"  ⚠️ [send_comment] Using fallback coords ({x}, {y})")
-        await self._tap(device, x, y)
+        # Send button is at ~89% X, ~57% Y (when keyboard is open)
+        x = int(w * 0.89) + random.randint(-5, 5)
+        y = int(h * 0.575) + random.randint(-5, 5)
+        logger.warning(f"  ⚠️ [send_comment] Using hardcoded fallback ({x}, {y})")
+        await self._realistic_tap(device, x, y)
         return True
 
     async def close_panel(self, device: str) -> bool:
@@ -789,9 +1019,11 @@ class TikTokController:
         Verifies panel is actually closed before returning.
         """
         for attempt in range(3):
+            await self._get_backend()
             if self._backend:
                 await self._backend.key_event(device, "BACK")
             else:
+                # FALLBACK: ADB
                 await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
             await asyncio.sleep(0.6)
 
@@ -829,22 +1061,258 @@ class TikTokController:
         if self._backend:
             await self._backend.key_event(device, "BACK")
         else:
+            # FALLBACK: ADB
             await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
         await asyncio.sleep(0.5)
         return True
 
     async def swipe_next(self, device: str) -> bool:
-        """Swipe up to next video."""
+        """Swipe up to next video (Accessibility preferred)."""
         w, h = await self._get_screen_size(device)
         x = w // 2 + random.randint(-30, 30)
         y1 = int(h * 0.75) + random.randint(-20, 20)
         y2 = int(h * 0.25) + random.randint(-20, 20)
         dur = random.randint(250, 450)
+        await self._get_backend()
         if self._backend:
             await self._backend.swipe(device, x, y1, x, y2, dur)
         else:
+            # FALLBACK: ADB
             await self._adb._run_adb(
                 device, "shell", "input", "swipe",
                 str(x), str(y1), str(x), str(y2), str(dur)
             )
         return True
+
+    # ---- Post-action verification methods ----
+
+    async def get_like_button_state(self, device: str) -> dict:
+        """Get the current state of the like button.
+
+        Returns dict with:
+        - found: bool — whether button was found
+        - liked: bool — whether video is currently liked
+        - desc: str — raw content-desc text
+        """
+        elements = await self.dump_ui(device)
+        el = self.find_element(elements, "like")
+        if not el:
+            return {"found": False, "liked": False, "desc": ""}
+
+        desc = el.content_desc.lower() if el.content_desc else ""
+        # TikTok uses "Unlike" or "Liked" when already liked
+        is_liked = any(kw in desc for kw in ["unlike", "liked", "bỏ thích"])
+        return {"found": True, "liked": is_liked, "desc": el.content_desc}
+
+    async def verify_like_state(
+        self, device: str, expected_liked: bool = True
+    ) -> bool:
+        """Verify the like button is in the expected state.
+
+        Call AFTER tapping like. Checks if content-desc changed to
+        "Unlike video" (= liked) vs "Like video" (= not liked).
+
+        Returns True if button state matches expected.
+        """
+        await asyncio.sleep(1)  # Give UI time to update
+        state = await self.get_like_button_state(device)
+        if not state["found"]:
+            logger.warning("  ❓ [verify_like] Like button not found in UI dump")
+            return False
+
+        matched = state["liked"] == expected_liked
+        if matched:
+            logger.info(f"  ✅ [verify_like] Confirmed: liked={state['liked']} ('{state['desc'][:40]}')")
+        else:
+            logger.warning(
+                f"  ❌ [verify_like] State mismatch: expected liked={expected_liked}, "
+                f"got liked={state['liked']} ('{state['desc'][:40]}')"
+            )
+        return matched
+
+    async def verify_comment_posted(
+        self,
+        device: str,
+        comment_text: str,
+        timeout: float = 3.0,
+    ) -> bool:
+        """Verify a comment was successfully posted.
+
+        Checks TWO signals after tapping Send:
+        1. EditText exists AND is now empty (cleared = comment was submitted)
+        2. Comment text appears as a TextView in the comment list
+
+        BOTH signals together = confirmed. EditText cleared alone = likely OK.
+        No EditText found = panel was closed (= failed, not success).
+
+        Args:
+            device: ADB device target
+            comment_text: The text that was sent
+            timeout: Max seconds to wait before checking
+        """
+        await asyncio.sleep(timeout)
+        elements = await self.dump_ui(device)
+
+        # First check: is the comment panel still open?
+        has_edit_text = False
+        edit_cleared = False
+        edit_still_has_text = False
+        placeholders = {"add comment...", "add a comment...", "thêm bình luận...",
+                        "viết bình luận...", "say something...", "add comment",
+                        "replying to", ""}
+        for el in elements:
+            if "EditText" not in el.cls:
+                continue
+            has_edit_text = True
+            text_content = (el.text or "").strip().lower()
+            if text_content in placeholders or text_content.startswith("replying"):
+                edit_cleared = True
+            elif comment_text.strip().lower() in text_content:
+                edit_still_has_text = True
+            break
+
+        if not has_edit_text:
+            # Panel closed = send likely failed (tap hit X or outside)
+            logger.warning("  ❌ [verify_comment] Panel closed (no EditText) — send likely missed")
+            return False
+
+        if edit_still_has_text:
+            # Text still in field = send button was NOT tapped correctly
+            logger.warning(f"  ❌ [verify_comment] Text still in field — send button missed")
+            return False
+
+        # Signal 2: Comment text found in a TextView (not EditText)
+        text_found = False
+        needle = comment_text.strip().lower()
+        # Only do substring matching for longer comments (4+ chars)
+        # Short comments like "wow" would false-positive match too easily
+        min_len_for_match = 4
+        for el in elements:
+            if "EditText" in el.cls:
+                continue
+            el_text = (el.text or "").strip().lower()
+            if not el_text:
+                continue
+            # Exact match always works
+            if needle == el_text:
+                text_found = True
+                logger.info(f"  🔍 [verify_comment] Exact match in UI: '{el.text[:50]}'")
+                break
+            # Substring match only for longer comments
+            if len(needle) >= min_len_for_match and needle in el_text:
+                text_found = True
+                logger.info(f"  🔍 [verify_comment] Substring match in UI: '{el.text[:50]}'")
+                break
+
+        if edit_cleared and text_found:
+            logger.info("  ✅ [verify_comment] CONFIRMED: input cleared + text found")
+            return True
+        elif edit_cleared:
+            logger.info("  ✅ [verify_comment] LIKELY OK: input cleared (text not visible, may be scrolled)")
+            return True
+        elif text_found:
+            logger.info("  ✅ [verify_comment] CONFIRMED: text found in comment list")
+            return True
+        else:
+            logger.warning("  ❌ [verify_comment] FAILED: input NOT cleared, text NOT found")
+            return False
+
+    async def verify_follow_state(self, device: str) -> bool:
+        """Verify follow action succeeded.
+
+        After tapping Follow, the button text changes to:
+        - "Following" / "Friends" (English)
+        - "Đang follow" / "Bạn bè" (Vietnamese)
+        - Or the Follow button disappears entirely
+
+        Returns True if follow appears to have worked.
+        """
+        await asyncio.sleep(1.5)
+        elements = await self.dump_ui(device)
+
+        # Check if follow button still shows "Follow" (= not followed yet)
+        follow_el = self.find_element(elements, "follow")
+        if not follow_el:
+            # Follow button gone = likely changed to "Following"
+            # Look for Following/Friends text
+            for el in elements:
+                desc = (el.content_desc or "").lower()
+                text = (el.text or "").lower()
+                if any(kw in desc or kw in text for kw in
+                       ["following", "friends", "đang follow", "bạn bè", "unfollow"]):
+                    logger.info(f"  ✅ [verify_follow] Confirmed: '{el.text or el.content_desc}'")
+                    return True
+
+            # Follow button gone but no "Following" found — ambiguous
+            logger.info("  ✅ [verify_follow] Follow button gone (likely succeeded)")
+            return True
+
+        # Follow button still present — check if it now says "Following"
+        desc = (follow_el.content_desc or "").lower()
+        text = (follow_el.text or "").lower()
+        if any(kw in desc or kw in text for kw in ["following", "friends", "đang follow"]):
+            logger.info(f"  ✅ [verify_follow] Confirmed via button text change")
+            return True
+
+        logger.warning(f"  ❌ [verify_follow] Still showing Follow button: '{follow_el.content_desc}'")
+        return False
+
+    async def capture_verification_screenshot(
+        self, device: str, action_name: str
+    ) -> str:
+        """Capture a debug screenshot for verification failures.
+
+        Saves to /sdcard/_verify_{action}_{timestamp}.png on device,
+        then pulls to local screenshots/ directory.
+
+        TODO: [ACCESSIBILITY-MIGRATE] Use backend.capture_screenshot()
+        which sends screenshot via WebSocket (no file I/O on device).
+
+        Returns local file path or empty string on failure.
+        """
+        import time
+        ts = int(time.time())
+        remote_path = f"/sdcard/_verify_{action_name}_{ts}.png"
+        local_dir = "screenshots"
+
+        try:
+            import os
+            os.makedirs(local_dir, exist_ok=True)
+            local_path = os.path.join(local_dir, f"verify_{action_name}_{ts}.png")
+
+            await self._adb._run_adb(
+                device, "shell", "screencap", "-p", remote_path
+            )
+            await self._adb._run_adb(
+                device, "pull", remote_path, local_path
+            )
+            # Clean up remote file
+            await self._adb._run_adb(
+                device, "shell", "rm", "-f", remote_path
+            )
+            logger.info(f"  📸 [verify_screenshot] Saved: {local_path}")
+            return local_path
+        except Exception as e:
+            logger.warning(f"  ⚠️ [verify_screenshot] Failed to capture: {e}")
+            return ""
+
+    async def get_comment_count(self, device: str) -> int | None:
+        """Get current comment count from the comment icon.
+
+        Returns int count or None if not found.
+        """
+        elements = await self.dump_ui(device)
+        el = self.find_element(elements, "comment")
+        if not el or not el.content_desc:
+            return None
+
+        # Parse count from "Read or add comments. 1234"
+        m = re.search(r"([\d,.]+)", el.content_desc)
+        if m:
+            count_str = m.group(1).replace(",", "").replace(".", "")
+            try:
+                return int(count_str)
+            except ValueError:
+                pass
+        return None
+

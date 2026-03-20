@@ -74,6 +74,24 @@ class TaskLog(SQLModel, table=True):
     )
 
 
+class DeviceToken(SQLModel, table=True):
+    """Token for authenticating device cloud connections (SaaS mode).
+
+    Each token maps to a specific device and user. The Android Helper APK
+    uses this token to connect to: wss://server/ws/device/{token}
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    device_id: int = Field(foreign_key="device.id")
+    user_id: int = 1  # TODO: proper FK when User model is added
+    token: str = Field(index=True, unique=True)  # secrets.token_urlsafe(32)
+    name: str = ""  # Human-readable label
+    is_active: bool = True
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
 # --- Pydantic schemas for API request/response ---
 
 

@@ -5,4 +5,5 @@
     <string name="notification_channel_name">AC Helper Service</string>
     <string name="notification_title">AC Helper Running</string>
     <string name="notification_text">WebSocket server active on port %d</string>
+    <string name="notification_text_cloud">Cloud mode — connected to server</string>
 </resources>

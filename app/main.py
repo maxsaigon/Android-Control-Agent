@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from app.database import create_db_and_tables, get_session
 from app.models import Device, DeviceStatus
-from app.routers import devices, tasks, ws, schedules
+from app.routers import devices, tasks, ws, schedules, device_ws
 from app.services.connection_watchdog import watchdog
 from app.services.scheduler import scheduler
 
@@ -84,6 +84,8 @@ app.include_router(devices.router)
 app.include_router(tasks.router)
 app.include_router(ws.router)
 app.include_router(schedules.router)
+app.include_router(device_ws.router)         # Cloud device WebSocket
+app.include_router(device_ws.token_router)    # Device token management
 
 # Serve static files (dashboard)
 import pathlib
@@ -116,7 +118,8 @@ def list_templates():
 
 @app.get("/api/health")
 def health():
-    """Detailed health check with watchdog status."""
+    """Detailed health check with watchdog and device hub status."""
+    from app.services.device_hub import device_hub
     return {
         "status": "healthy",
         "services": {
@@ -124,6 +127,7 @@ def health():
             "ai_agent": "available",
         },
         "watchdog": watchdog.status,
+        "device_hub": device_hub.status,
     }
 
 
