@@ -1110,7 +1110,8 @@ async function refreshQueueStatus() {
 // ===== WEBSOCKET =====
 
 function subscribeTask(taskId) {
-    const ws = new WebSocket(`ws://${location.host}/ws/tasks/${taskId}`);
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProto}//${location.host}/ws/tasks/${taskId}`);
     ws.onmessage = (e) => {
         const data = JSON.parse(e.data);
         if (data.event === 'started') {
