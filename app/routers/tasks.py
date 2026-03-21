@@ -42,6 +42,16 @@ def running_tasks(session: Session = Depends(get_session)):
     return tasks
 
 
+@router.get("/running/live")
+def running_tasks_live():
+    """Get live step data for all running tasks (REST polling fallback).
+    
+    Returns a dict keyed by task_id with current action, detail, and recent steps.
+    Used when WebSocket is unavailable (e.g., through Cloudflare tunnel).
+    """
+    return task_queue.get_live_steps()
+
+
 @router.get("/queue-status")
 def queue_status():
     """Get task queue status (running count, concurrency, device locks)."""

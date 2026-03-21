@@ -44,6 +44,8 @@ class TaskQueue:
         self._device_locks: Dict[int, asyncio.Lock] = {}
         # Global concurrency limiter
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # Live step data for REST polling (fallback when WebSocket unavailable)
+        self._live_steps: Dict[int, dict] = {}
 
     def _get_device_lock(self, device_id: int) -> asyncio.Lock:
         """Get or create a lock for a specific device."""
@@ -302,6 +304,30 @@ class TaskQueue:
 
             # Step callback for real-time progress
             async def on_step(step):
+                # Store in memory for REST polling fallback
+                if task_id not in self._live_steps:
+                    self._live_steps[task_id] = {"steps": [], "started_at": None}
+                live = self._live_steps[task_id]
+                live["current_step"] = step.step_num
+                live["action"] = step.action
+                live["detail"] = step.detail
+                live["steps"].append({
+                    "step_num": step.step_num,
+                    "action": step.action,
+                    "detail": step.detail,
+                })
+                # Keep only last 10 steps in memory
+                if len(live["steps"]) > 10:
+                    live["steps"] = live["steps"][-10:]
+
+                # Incrementally update steps_taken in DB
+                with Session(engine) as session:
+                    task_obj = session.get(Task, task_id)
+                    if task_obj:
+                        task_obj.steps_taken = step.step_num
+                        session.add(task_obj)
+                        session.commit()
+
                 await self._notify(
                     task_id,
                     {
@@ -359,6 +385,13 @@ class TaskQueue:
         """Notify all subscribers of a task update."""
         for queue in self._subscribers.get(task_id, []):
             await queue.put(data)
+        # Clean up live steps on task completion
+        if data.get("event") in ("completed", "failed", "cancelled"):
+            self._live_steps.pop(task_id, None)
+
+    def get_live_steps(self) -> Dict[int, dict]:
+        """Get live step data for all running tasks (REST polling fallback)."""
+        return dict(self._live_steps)
 
     def is_running(self, task_id: int) -> bool:
         """Check if a task is currently running."""

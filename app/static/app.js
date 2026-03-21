@@ -754,8 +754,27 @@ function calcTaskCost(steps) {
 
 async function refreshRunning() {
     try {
-        const res = await fetch(`${API}/api/tasks/running`);
+        const [res, liveRes] = await Promise.all([
+            fetch(`${API}/api/tasks/running`),
+            fetch(`${API}/api/tasks/running/live`).catch(() => null),
+        ]);
         const tasks = await res.json();
+
+        // Merge live step data from REST polling (WebSocket fallback)
+        if (liveRes && liveRes.ok) {
+            const liveData = await liveRes.json();
+            for (const [taskId, stepInfo] of Object.entries(liveData)) {
+                const tid = parseInt(taskId);
+                if (!liveStepData[tid]) {
+                    liveStepData[tid] = { steps: [], started_at: Date.now() };
+                }
+                liveStepData[tid].action = stepInfo.action;
+                liveStepData[tid].detail = stepInfo.detail;
+                liveStepData[tid].current_step = stepInfo.current_step;
+                liveStepData[tid].steps = stepInfo.steps || [];
+            }
+        }
+
         const container = document.getElementById('runningTasks');
         document.getElementById('runningCount').textContent = tasks.length;
 
