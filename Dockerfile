@@ -25,8 +25,8 @@ COPY config.yaml ./
 # Data + screenshots + downloads volumes
 RUN mkdir -p /data /app/screenshots /app/static/downloads
 
-# Copy helper APK if available
-COPY android-helper/app/build/outputs/apk/debug/app-debug.apk /app/static/downloads/ac-helper.apk
+# Copy pre-built helper APK for download page
+COPY app/static/downloads/ /app/static/downloads/
 
 ENV PYTHONUNBUFFERED=1
 
