@@ -14,7 +14,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 from sqlmodel import Session, select
 
 from app.database import engine
-from app.models import Device, DeviceStatus, DeviceToken
+from app.models import Device, DeviceStatus, DeviceToken, User
 
 logger = logging.getLogger(__name__)
 
@@ -124,12 +124,97 @@ async def device_connect(websocket: WebSocket, token: str):
                 session.commit()
 
 
-# --- REST API for device token management ---
+# --- REST API for device registration + token management ---
 
 from fastapi import APIRouter as _AR
 from pydantic import BaseModel
 
 token_router = APIRouter(prefix="/api/device-tokens", tags=["device-tokens"])
+register_router = APIRouter(prefix="/api/device", tags=["device-registration"])
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    device_name: str
+
+
+class RegisterResponse(BaseModel):
+    token: str
+    device_id: int
+    device_name: str
+
+
+@register_router.post("/register", response_model=RegisterResponse)
+def register_device(req: RegisterRequest):
+    """Register a device using login credentials.
+
+    Auto-creates the device and token. If a device with the same name
+    already exists for this user, reuses it (creates a new token).
+
+    This replaces the old manual flow of:
+    1. Create device on dashboard
+    2. Create token
+    3. Copy token to phone
+    """
+    import secrets
+    from fastapi import HTTPException
+
+    with Session(engine) as session:
+        # 1. Validate credentials
+        user = session.exec(
+            select(User).where(User.username == req.username)
+        ).first()
+        if not user or user.password != req.password:
+            raise HTTPException(401, "Invalid username or password")
+
+        # 2. Find or create device
+        device = session.exec(
+            select(Device).where(
+                Device.name == req.device_name,
+                Device.adb_port == 0,  # Cloud devices have adb_port=0
+            )
+        ).first()
+
+        if not device:
+            device = Device(
+                name=req.device_name,
+                ip_address="cloud",
+                adb_port=0,
+            )
+            session.add(device)
+            session.commit()
+            session.refresh(device)
+            logger.info(f"📱 Auto-created cloud device: {device.name} (id={device.id})")
+
+        # 3. Deactivate old tokens for this device
+        old_tokens = session.exec(
+            select(DeviceToken).where(
+                DeviceToken.device_id == device.id,
+                DeviceToken.is_active == True,
+            )
+        ).all()
+        for t in old_tokens:
+            t.is_active = False
+            session.add(t)
+
+        # 4. Create new token
+        token = DeviceToken(
+            device_id=device.id,
+            user_id=user.id,
+            token=secrets.token_urlsafe(32),
+            name=f"Auto: {req.device_name}",
+        )
+        session.add(token)
+        session.commit()
+        session.refresh(token)
+        logger.info(f"🔑 Auto-created token for device {device.id} (user={user.username})")
+
+        return RegisterResponse(
+            token=token.token,
+            device_id=device.id,
+            device_name=device.name,
+        )
 
 
 class TokenCreateRequest(BaseModel):

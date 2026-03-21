@@ -88,6 +88,9 @@ class ConnectionWatchdog:
             try:
                 await asyncio.sleep(PING_INTERVAL)
                 for key, info in list(self._devices.items()):
+                    # Skip cloud devices — they maintain their own WebSocket heartbeat
+                    if info["port"] == 0:
+                        continue
                     await self._check_device(key, info)
             except asyncio.CancelledError:
                 break
@@ -105,6 +108,9 @@ class ConnectionWatchdog:
             try:
                 await asyncio.sleep(KEEPALIVE_INTERVAL)
                 for key, info in list(self._devices.items()):
+                    # Skip cloud devices — they have their own heartbeat
+                    if info["port"] == 0:
+                        continue
                     if info["status"] == "online":
                         try:
                             target = f"{info['ip']}:{info['port']}"

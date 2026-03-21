@@ -51,17 +51,21 @@ class TaskEngine:
         - "ai": always use AI Agent (paid)
         - "auto": use ScriptRunner if template matches, else AI Agent
         """
-        device_target = f"{device_ip}:{device_port}"
-
-        # Ensure device is connected
-        connected = await device_manager.ensure_connected(device_ip, device_port)
-        if not connected:
-            return TaskResult(
-                success=False,
-                reason="Device not reachable",
-                steps=0,
-                error=f"Cannot connect to {device_target}",
-            )
+        # Cloud devices use "cloud:{id}" format — no ADB connection needed
+        is_cloud = device_ip.startswith("cloud:")
+        if is_cloud:
+            device_target = device_ip  # "cloud:3"
+        else:
+            device_target = f"{device_ip}:{device_port}"
+            # Ensure device is connected via ADB
+            connected = await device_manager.ensure_connected(device_ip, device_port)
+            if not connected:
+                return TaskResult(
+                    success=False,
+                    reason="Device not reachable",
+                    steps=0,
+                    error=f"Cannot connect to {device_target}",
+                )
 
         # Decide routing
         use_script = self._should_use_script(execution_mode, template)

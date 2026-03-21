@@ -1,0 +1,34 @@
+# Docker Compose for Cloud deployment (m.buonme.com)
+# Usage:
+#   docker compose -f docker-compose.cloud.yml up -d
+#   docker compose -f docker-compose.cloud.yml logs -f
+
+services:
+  app:
+    build: .
+    container_name: android-control
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - app-data:/data
+      - ./screenshots:/app/screenshots
+    environment:
+      - DATABASE_URL=sqlite:////data/android_control.db
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflare-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - app
+
+volumes:
+  app-data:

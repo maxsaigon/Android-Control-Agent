@@ -257,12 +257,21 @@ class ScriptRunner:
             if cached:
                 return cached
 
-        # Get installed packages
-        result = await self._adb_cmd("shell", "pm", "list", "packages")
+        # Get installed packages — use backend for cloud devices
         packages = set()
-        for line in result.strip().split("\n"):
-            if line.startswith("package:"):
-                packages.add(line.split(":", 1)[1].strip())
+        if self._device.startswith("cloud:"):
+            # Cloud device: use list_packages via backend
+            try:
+                pkg_list = await self._backend_call("list_packages", True)
+                packages = set(pkg_list) if isinstance(pkg_list, list) else set()
+            except Exception as e:
+                logger.warning(f"Cloud list_packages failed: {e}")
+        else:
+            # ADB device: use shell command
+            result = await self._adb_cmd("shell", "pm", "list", "packages")
+            for line in result.strip().split("\n"):
+                if line.startswith("package:"):
+                    packages.add(line.split(":", 1)[1].strip())
 
         # Search with hints
         hints = APP_PACKAGES.get(name_lower, [name_lower])
@@ -298,7 +307,7 @@ class ScriptRunner:
 
     async def _swipe_up(self):
         """Swipe up to next content."""
-        w, h = await self._adb.get_screen_size(self._device)
+        w, h = await self._backend_call("get_screen_size")
         x = w // 2 + random.randint(-30, 30)
         y1 = int(h * 0.75) + random.randint(-20, 20)
         y2 = int(h * 0.25) + random.randint(-20, 20)
@@ -315,7 +324,7 @@ class ScriptRunner:
 
     async def _scroll_down(self):
         """Scroll down (shorter swipe than full page)."""
-        w, h = await self._adb.get_screen_size(self._device)
+        w, h = await self._backend_call("get_screen_size")
         x = w // 2 + random.randint(-30, 30)
         y1 = int(h * 0.65) + random.randint(-20, 20)
         y2 = int(h * 0.35) + random.randint(-20, 20)
@@ -334,7 +343,7 @@ class ScriptRunner:
         """Randomly double-tap to like (TikTok style)."""
         if random.random() > chance:
             return
-        w, h = await self._adb.get_screen_size(self._device)
+        w, h = await self._backend_call("get_screen_size")
         x = w // 2 + random.randint(-50, 50)
         y = h // 2 + random.randint(-50, 50)
         try:

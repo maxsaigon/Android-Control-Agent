@@ -148,9 +148,16 @@ class TaskQueue:
             template = task.template
             max_steps = task.max_steps
             max_retries = task.max_retries
-            device_ip = device.ip_address
-            device_port = device.adb_port
             device_id = device.id
+
+            # Cloud devices: use cloud:{id} prefix instead of IP
+            is_cloud = device.adb_port == 0 or device.ip_address.startswith("cloud")
+            if is_cloud:
+                device_ip = f"cloud:{device.id}"
+                device_port = 0
+            else:
+                device_ip = device.ip_address
+                device_port = device.adb_port
 
         await self._notify(task_id, {"event": "queued"})
 

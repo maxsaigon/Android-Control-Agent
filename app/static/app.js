@@ -61,6 +61,7 @@ function navigateTo(section, btn) {
     // Load data for section
     if (section === 'scheduler') loadSchedules();
     if (section === 'history') refreshHistory();
+    // Token management removed — devices now use login-based registration
 }
 
 function toggleSidebar() {
@@ -95,6 +96,7 @@ async function refreshDevices() {
         devices = await res.json();
         renderDevices();
         updateDeviceSelect();
+
     } catch (e) {
         document.getElementById('serverStatus').innerHTML =
             '<span class="pulse" style="background:var(--red)"></span><span style="color:var(--red)">Disconnected</span>';
@@ -1403,3 +1405,5 @@ function onSchedActionChange() {
         if (scriptConfig) scriptConfig.style.display = '';
     }
 }
+
+// Token management removed — devices now use login-based registration via /api/device/register

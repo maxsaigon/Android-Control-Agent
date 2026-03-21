@@ -83,10 +83,21 @@ class DeviceToken(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     device_id: int = Field(foreign_key="device.id")
-    user_id: int = 1  # TODO: proper FK when User model is added
+    user_id: int = Field(default=1, foreign_key="user.id")
     token: str = Field(index=True, unique=True)  # secrets.token_urlsafe(32)
     name: str = ""  # Human-readable label
     is_active: bool = True
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+class User(SQLModel, table=True):
+    """Simple user model for device registration authentication."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    username: str = Field(index=True, unique=True)
+    password: str  # Plain text for internal tool
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
