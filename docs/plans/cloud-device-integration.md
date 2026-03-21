@@ -1,6 +1,6 @@
-# Cloud Device System — Master Plan 🔄 IN PROGRESS
+# Cloud Device System — Master Plan ✅ PHASE 1 COMPLETE
 **Created**: 2026-03-20  
-**Last Updated**: 2026-03-20  
+**Last Updated**: 2026-03-21  
 
 ## Tổng quan
 
@@ -21,8 +21,7 @@ Mục tiêu: Biến Android Control từ LAN-only thành **SaaS platform** — d
 | CloudBackend | `app/services/cloud_backend.py` | Implementation DeviceBackend interface — 13 commands (tap, swipe, type, screenshot, UI tree, etc.) |
 | BackendManager | `app/services/backend_manager.py` | Router: `cloud:` prefix → CloudBackend, còn lại → ADB/Accessibility |
 | WebSocket Endpoint | `app/routers/device_ws.py` | `wss://server/ws/device/{token}` — xác thực token, register device, route messages |
-| Token API | `app/routers/device_ws.py` | CRUD endpoints: create/list/revoke device tokens |
-| Token UI | `app/static/app.js` + `index.html` | Token management UI trong Devices tab |
+| Register API | `app/routers/device_ws.py` | `POST /api/device/register` — login-based auto-registration (thay thế manual token) |
 
 #### Device-side (Android APK)
 | Component | File | Mô tả |
@@ -30,8 +29,8 @@ Mục tiêu: Biến Android Control từ LAN-only thành **SaaS platform** — d
 | CloudWebSocketClient | `CloudWebSocketClient.java` | WebSocket client kết nối OUT tới server, auto-reconnect |
 | CommandHandler | `CommandHandler.java` | Route 13 commands: tap, swipe, long_press, type_text, click_node, global_action, get_ui_tree, screenshot, get_screen_size, get_device_info, get_foreground_app, launch_app, force_stop, list_packages |
 | AccessibilityService | `HelperAccessibilityService.java` | Thực hiện gesture/UI inspection qua Android Accessibility API |
-| MainActivity | `MainActivity.java` | UI cấu hình server URL + token + mode (LAN/Cloud) |
-| ConnectionConfig | `ConnectionConfig.java` | Lưu trữ cấu hình kết nối |
+| MainActivity | `MainActivity.java` | Cloud mode UI: login form (username, password, device name) |
+| ConnectionConfig | `ConnectionConfig.java` | Lưu trữ cấu hình kết nối + register URL builder |
 | WebSocketService | `WebSocketService.java` | Foreground service giữ kết nối alive |
 | BootReceiver | `BootReceiver.java` | Tự động reconnect khi boot |
 
@@ -55,9 +54,6 @@ Device (Internet)                        Server (m.buonme.com)
 
 **Goal**: Fix task execution pipeline để hoạt động với cloud device
 
-### Vấn đề gốc
-Task runner luôn dùng ADB cho mọi device — không nhận ra cloud device cần route qua CloudBackend.
-
 ### Đã fix
 | File | Bug | Fix |
 |------|-----|-----|
@@ -74,57 +70,67 @@ Task runner luôn dùng ADB cho mọi device — không nhận ra cloud device c
 **Goal**: Deploy lên server thật, expose qua internet
 
 ### Đã hoàn thành
-- **Docker**: `Dockerfile` + `docker-compose.cloud.yml` (app + cloudflared)
+- **Docker**: `Dockerfile` + `docker-compose.yml` (app + cloudflared)
 - **Deploy script**: `deploy/cloud-setup.sh` (rsync → docker build → start)
-- **Cloudflare Tunnel**: 4 QUIC connections, route `m.buonme.com` → `localhost:8080`
-- **SSH key auth**: Passwordless access tới `max@max.local`
-- **Endpoint**: `/download/helper.apk` (478KB) + `/set` (onboarding page)
+- **Cloudflare Tunnel**: QUIC connections, route `m.buonme.com` → `localhost:8001`
+- **Build**: Gradle 8.9 + APK committed to `app/static/downloads/ac-helper.apk`
+- **Endpoint**: `/download/helper.apk` (474KB) + `/set` (onboarding page)
 - **Health**: `https://m.buonme.com/api/health` ✅ healthy
 
 ---
 
-## Phase 1D: End-to-End Cloud Testing 📋 PLANNED
+## Phase 1D: Device Registration Simplification ✅ COMPLETE
 
-**Goal**: Test thực tế — cài APK lên phone, kết nối qua `m.buonme.com`, chạy task
+**Goal**: Đơn giản hóa quy trình đăng ký device — bỏ manual token, dùng login
 
-### Tasks cần làm
+### Đã hoàn thành
 
-#### 1D.1: Chuẩn bị Device Token trên Cloud Server
-- [ ] Tạo device trong DB trên cloud server (không phải local)
-- [ ] Tạo token cho device đó
-- [ ] Verify token API hoạt động qua `m.buonme.com`
+#### Server-side
+- [x] `User` model (username, password) trong `models.py`
+- [x] `POST /api/device/register` — credential validation + auto tạo device/token
+- [x] Default admin user (`admin/admin`) tạo tự động khi server start
+- [x] Bỏ Token CRUD API / UI khỏi dashboard
 
-#### 1D.2: Cài và Test APK trên Phone
-- [ ] Download APK từ `m.buonme.com/download/helper.apk`
-- [ ] Cài đặt APK, enable Accessibility Service
-- [ ] Cấu hình Cloud mode: server URL = `m.buonme.com`, nhập token
-- [ ] Verify WebSocket connection thành công (check hub-status)
+#### Android APK  
+- [x] Cloud mode UI: nhập server URL + username + password + device name
+- [x] HTTP POST registration → nhận token → auto-connect WebSocket
+- [x] Build APK thành công, install trên 2 physical devices
 
-#### 1D.3: Chạy Task qua Cloud
-- [ ] Giao task TikTok Browse cho cloud device từ dashboard
-- [ ] Verify task execution: open app → browse → swipe
-- [ ] Check task history: đầy đủ steps + logs
-- [ ] Test screenshot capture qua cloud
+#### Dashboard Fixes
+- [x] Live Task: REST polling fallback (`/api/tasks/running/live`) — ko phụ thuộc WebSocket
+- [x] Incremental `steps_taken` update trong DB (real-time progress bar)
+- [x] Auto-detect `ws://` vs `wss://` cho HTTPS pages
+- [x] Try/catch WebSocket errors → fix dual-toast bug
+- [x] Cache-busting `?v=` trên static JS/CSS (bypass Cloudflare cache)
 
-#### 1D.4: Stability Testing  
-- [ ] Test auto-reconnect khi mất internet tạm thời
-- [ ] Test heartbeat hoạt động liên tục
-- [ ] Test multiple tasks liên tiếp
-- [ ] Verify device status update (online/offline) trên dashboard
-
-### Acceptance Criteria
-- ✅ Phone connect qua `wss://m.buonme.com/ws/device/{token}`
-- ✅ Dashboard hiển thị device online
-- ✅ Task chạy thành công trên cloud device
-- ✅ Screenshot capture hoạt động
-- ✅ Auto-reconnect khi mất kết nối
+### New User Flow
+```
+Old (5 bước):  Dashboard tạo device → tạo token → copy → paste vào phone → connect
+New (2 bước):  Phone nhập login info + device name → tap Connect → xong!
+```
 
 ---
 
-## Tương lai (sau Phase 1D)
+## Phase 1E: End-to-End Cloud Testing ✅ COMPLETE
+
+**Goal**: Test thực tế — cài APK lên phone, kết nối qua `m.buonme.com`, chạy task
+
+### Kết quả
+
+- [x] APK cài thành công trên 2 physical device (`357784090426808`, `357784090671791`)
+- [x] Device kết nối thành công qua `wss://m.buonme.com/ws/device/{token}`
+- [x] Dashboard hiển thị device online
+- [x] Task TikTok Browse (#14) chạy thành công: 14 steps, 77 giây
+- [x] Live Task hiển thị real-time progress (REST polling)
+- [x] Task history + step logs đầy đủ
+- [x] Automated tests: 7/7 passed (register, auth, reuse, WS, heartbeat, hub, cleanup)
+
+---
+
+## Tương lai (Phase 2+)
 
 ### Phase 2: Multi-tenancy & Auth
-- User registration/login
+- User registration/login (email, password hashing)
 - Mỗi user có device riêng, token riêng
 - Role-based access (admin/operator)
 
