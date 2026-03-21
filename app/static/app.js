@@ -663,7 +663,7 @@ async function submitTask(e) {
             const data = await res.json();
             if (res.ok) {
                 toast(`🚀 Task #${data.id} đã gửi`, 'success');
-                subscribeTask(data.id);
+                try { subscribeTask(data.id); } catch (_) { /* WebSocket optional */ }
             } else {
                 toast(`❌ ${data.detail}`, 'error');
             }
