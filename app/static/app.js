@@ -1636,8 +1636,9 @@ function openAssignModal(videoId, videoTitle) {
     const deviceOptions = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
     const modal = document.createElement('div');
     modal.id = 'assignModal';
-    modal.className = 'modal-overlay';
-    modal.style.cssText = 'display:flex;z-index:200';
+    modal.className = 'modal-overlay open';
+    modal.style.cssText = 'z-index:9999';
+
     modal.innerHTML = `
     <div class="modal-content" onclick="event.stopPropagation()" style="max-width:400px">
         <div class="modal-header">
