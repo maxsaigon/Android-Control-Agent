@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from app.database import create_db_and_tables, get_session
 from app.models import Device, DeviceStatus, User
 from app.routers import devices, tasks, ws, schedules, device_ws
+from app.routers.videos import router as videos_router, account_router as accounts_router
 from app.services.connection_watchdog import watchdog
 from app.services.scheduler import scheduler
 
@@ -101,6 +102,8 @@ app.include_router(schedules.router)
 app.include_router(device_ws.router)         # Cloud device WebSocket
 app.include_router(device_ws.token_router)    # Device token management
 app.include_router(device_ws.register_router) # Device registration (login-based)
+app.include_router(videos_router)             # Video management
+app.include_router(accounts_router)           # Device-account mappings
 
 # Serve static files (dashboard)
 import pathlib

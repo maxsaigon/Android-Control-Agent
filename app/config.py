@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Paths
     screenshots_dir: str = str(SCREENSHOTS_DIR)
 
+    # Video Management
+    video_storage_dir: str = str(DATA_DIR / "videos")  # Server-side video cache
+    device_video_path: str = "/sdcard/DCIM/AndroidControl"  # Path on device
+
     model_config = {
         "env_file": str(RUNTIME_DIR / ".env"),
         "env_file_encoding": "utf-8",
@@ -56,3 +60,4 @@ settings = Settings()
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+Path(settings.video_storage_dir).mkdir(parents=True, exist_ok=True)
