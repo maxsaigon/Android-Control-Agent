@@ -62,9 +62,11 @@ Khi cần thay đổi file thuộc agent khác → ghi vào `HANDOFF.md` + thôn
 
 ### Bước 1: Mỗi agent đọc tài liệu
 ```bash
-cat .agents/RULES.md                    # Global rules
-cat .agents/skills/<name>/SKILL.md      # Skill documentation
-cat <platform>-action.md                 # Knowledge base (nếu có)
+cat .agents/workflows/agent-standard-workflow.md   # ← ĐỌC TRƯỚC TIÊN
+cat .agents/RULES.md                               # Global rules
+cat .agents/skills/<name>/SKILL.md                 # Skill documentation
+cat docs/plans/_index.md                           # Plan registry — task này thuộc plan nào?
+cat <platform>-action.md                           # Knowledge base (nếu có)
 ```
 
 ### Bước 2: Git branch
@@ -80,8 +82,12 @@ git checkout -b feat/ai-brain/campaign-manager
 - Anti-detection behaviors bắt buộc
 - Post-action verification bắt buộc
 
-### Bước 4: Update Knowledge Base
+### Bước 4a: Update Knowledge Base
 Gặp vấn đề mới? → Ghi vào `<platform>-action.md`
+
+### Bước 4b: Update Plan File + _index.md
+- Nếu task thuộc plan đang có → cập nhật status các checkbox trong plan file
+- Khi hoàn thành → đổi status `docs/plans/_index.md` sang `✅ COMPLETE`
 
 ### Bước 5: Commit
 ```bash
@@ -123,12 +129,15 @@ docs(tiktok): update tiktok-action.md with upload issues
 
 ## 🔧 KHI AGENT ĐƯỢC GỌI
 
-1. ✅ Đọc `.agents/RULES.md`
-2. ✅ Đọc `.agents/skills/<name>/SKILL.md`
-3. ✅ Đọc knowledge base (`<platform>-action.md`) nếu có
-4. ✅ `git status` — check uncommitted changes
-5. ✅ Xác nhận file ownership
-6. ✅ **KHÔNG chạm venv**
-7. ✅ Test / verify trước khi commit
-8. ✅ Update knowledge base nếu gặp issue mới
-9. ✅ Commit theo convention
+1. ✅ Đọc `.agents/workflows/agent-standard-workflow.md` ← **ĐỌC TRƯỚC TIÊN**
+2. ✅ Đọc `.agents/RULES.md`
+3. ✅ Đọc `.agents/skills/<name>/SKILL.md`
+4. ✅ Đọc `docs/plans/_index.md` — xác định task thuộc plan nào
+5. ✅ Đọc knowledge base (`<platform>-action.md`) nếu có
+6. ✅ `git status` — check uncommitted changes
+7. ✅ Xác nhận file ownership
+8. ✅ **KHÔNG chạm venv**
+9. ✅ Test / verify trước khi commit
+10. ✅ Update knowledge base nếu gặp issue mới
+11. ✅ Cập nhật plan file + `_index.md` khi hoàn thành
+12. ✅ Commit theo convention

@@ -3,6 +3,11 @@
 > Rules này áp dụng cho **TẤT CẢ agents** làm việc trên project Android Control.
 > Mỗi agent PHẢI đọc file này trước khi bắt đầu bất kỳ công việc nào.
 
+> [!IMPORTANT]
+> **Trước khi làm bất cứ thứ gì**, đọc workflow chuẩn:
+> `cat .agents/workflows/agent-standard-workflow.md`
+> Đây là quy trình bắt buộc từ NHẬN PROMPT → HOÀN THÀNH.
+
 ---
 
 ## 1. File Ownership Matrix
@@ -38,8 +43,11 @@
 > - Chạy `pip install`, `python -m venv`, hoặc bất kỳ lệnh thay đổi packages
 > - Xóa/di chuyển `data/` directory
 > - Hardcode absolute paths
+> - Tạo thư mục `.agent/` hoặc bất kỳ thư mục agent nào ngoài `.agents/`
 
 Nếu cần package mới → ghi vào `pyproject.toml` + thông báo user.
+
+**Skill mới phải đặt trong `.agents/skills/<name>/`** — không bao giờ đặt ngoài `.agents/`.
 
 ---
 
@@ -121,7 +129,19 @@ class PlatformController:
 
 ---
 
-## 5. Knowledge Base Rules
+## 5. Plan Management (BẮT BUỘC)
+
+> [!IMPORTANT]
+> Mọi task đều cần plan entry. Không có ngoại lệ.
+
+1. **Đọc `docs/plans/_index.md`** trước khi bắt đầu
+2. **Nếu task mới** → Tạo `docs/plans/<feature>.md` + đăng ký vào `_index.md`
+3. **Khi hoàn thành** → Cập nhật plan status → `✅ COMPLETE` và update `_index.md`
+4. **KHÔNG xóa plan cũ** — chỉ thay đổi status
+
+---
+
+## 6. Knowledge Base Rules
 
 Mỗi platform agent PHẢI duy trì file knowledge base:
 

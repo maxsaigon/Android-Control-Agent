@@ -11,6 +11,48 @@ let isConfirming = false;
 let liveStepData = {};  // {taskId: {current_step, action, detail, steps: [...], started_at}}
 let subscribedTasks = new Set();
 
+// ===== AUTH =====
+
+/**
+ * Global fetch wrapper — redirects to /login on 401 Unauthorized.
+ * Replace all direct fetch() calls with apiFetch() for API requests.
+ * For backward compat, we also patch the native fetch below.
+ */
+let _authRedirectPending = false;
+const _originalFetch = window.fetch.bind(window);
+window.fetch = async function(url, opts) {
+  const res = await _originalFetch(url, opts);
+  if (res.status === 401 && !_authRedirectPending) {
+    // Only redirect for API calls (not for /auth/* itself)
+    const urlStr = typeof url === 'string' ? url : url?.url || '';
+    if (!urlStr.includes('/auth/')) {
+      _authRedirectPending = true;
+      console.warn('🔒 Session expired — redirecting to login');
+      window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+    }
+  }
+  return res;
+};
+
+async function logout() {
+  try {
+    await _originalFetch('/auth/logout', { method: 'POST', credentials: 'include' });
+  } catch (_) { /* ignore */ }
+  window.location.href = '/login';
+}
+
+// Load current user info into header
+async function loadUserInfo() {
+  try {
+    const res = await _originalFetch('/auth/me', { credentials: 'include' });
+    if (res.ok) {
+      const data = await res.json();
+      const el = document.getElementById('currentUser');
+      if (el) el.textContent = `👤 ${data.username}`;
+    }
+  } catch (_) { /* optional */ }
+}
+
 // ===== INITIALIZATION =====
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -18,6 +60,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function init() {
+    loadUserInfo();  // Load user info async (non-blocking)
     await Promise.all([
         refreshDevices(),
         loadTemplates(),

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # Auth / Session
+    secret_key: str = "CHANGE-THIS-IN-PRODUCTION-USE-RANDOM-32-CHARS"
+    session_expire_hours: int = 24  # Session cookie lifetime
+
     # DroidRun
     droidrun_config_path: str = str(PROJECT_ROOT / "config.yaml")
 

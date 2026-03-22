@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login — Android Control System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-deep:    #0a0a12;
+      --bg-card:    rgba(255,255,255,0.04);
+      --border:     rgba(255,255,255,0.10);
+      --border-focus: rgba(99,179,237,0.60);
+      --accent:     #e94560;
+      --accent-2:   #c62a71;
+      --blue:       #63b3ed;
+      --text-pri:   #f0f0f5;
+      --text-sec:   #8888aa;
+      --success:    #48bb78;
+      --error:      #fc8181;
+      --radius-lg:  16px;
+      --radius-md:  10px;
+      --radius-sm:  8px;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: var(--bg-deep);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Background glow effects */
+    body::before, body::after {
+      content: '';
+      position: fixed;
+      border-radius: 50%;
+      filter: blur(80px);
+      pointer-events: none;
+      z-index: 0;
+    }
+    body::before {
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(233,69,96,0.15) 0%, transparent 70%);
+      top: -150px; left: -150px;
+    }
+    body::after {
+      width: 400px; height: 400px;
+      background: radial-gradient(circle, rgba(99,179,237,0.12) 0%, transparent 70%);
+      bottom: -100px; right: -100px;
+    }
+
+    /* Card */
+    .card {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 420px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 40px 36px;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+    }
+
+    /* Logo / Header */
+    .logo {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .logo-icon {
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      border-radius: 18px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px;
+      margin: 0 auto 16px;
+      box-shadow: 0 8px 24px rgba(233,69,96,0.35);
+    }
+    .logo h1 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text-pri);
+      letter-spacing: -0.3px;
+      margin-bottom: 4px;
+    }
+    .logo p {
+      font-size: 13px;
+      color: var(--text-sec);
+    }
+
+    /* Form */
+    .form-group {
+      margin-bottom: 18px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-sec);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 8px;
+    }
+    input {
+      width: 100%;
+      padding: 13px 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      color: var(--text-pri);
+      font-size: 15px;
+      font-family: inherit;
+      transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+      outline: none;
+    }
+    input::placeholder { color: var(--text-sec); }
+    input:focus {
+      border-color: var(--border-focus);
+      background: rgba(99,179,237,0.06);
+      box-shadow: 0 0 0 3px rgba(99,179,237,0.12);
+    }
+
+    /* Button */
+    .btn {
+      width: 100%;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+      color: white;
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 15px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+      position: relative;
+      overflow: hidden;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(233,69,96,0.4); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn .btn-text { transition: opacity 0.2s; }
+    .btn.loading .btn-text { opacity: 0; }
+    .btn .spinner {
+      position: absolute; inset: 0;
+      display: none; align-items: center; justify-content: center;
+    }
+    .btn.loading .spinner { display: flex; }
+    .spinner::after {
+      content: '';
+      width: 18px; height: 18px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Error / Success alert */
+    .alert {
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 20px;
+      display: none;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid;
+      animation: fadeIn 0.2s ease;
+    }
+    .alert.show { display: flex; }
+    .alert.error {
+      background: rgba(252,129,129,0.08);
+      border-color: rgba(252,129,129,0.25);
+      color: var(--error);
+    }
+    .alert.success {
+      background: rgba(72,187,120,0.08);
+      border-color: rgba(72,187,120,0.25);
+      color: var(--success);
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+
+    /* Footer */
+    .footer {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 12px;
+      color: rgba(136,136,170,0.5);
+    }
+
+    /* Input with icon */
+    .input-wrap { position: relative; }
+    .input-icon {
+      position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      color: var(--text-sec); font-size: 16px; pointer-events: none;
+    }
+    .input-wrap input { padding-left: 42px; }
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <div class="logo">
+    <div class="logo-icon">🤖</div>
+    <h1>Android Control</h1>
+    <p>Đăng nhập để tiếp tục</p>
+  </div>
+
+  <div class="alert error" id="errorAlert">
+    <span>⚠️</span>
+    <span id="errorMsg">Sai tên đăng nhập hoặc mật khẩu</span>
+  </div>
+
+  <form id="loginForm" autocomplete="on">
+    <div class="form-group">
+      <label for="username">Tên đăng nhập</label>
+      <div class="input-wrap">
+        <span class="input-icon">👤</span>
+        <input
+          id="username"
+          name="username"
+          type="text"
+          placeholder="admin"
+          autocomplete="username"
+          required
+        />
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="password">Mật khẩu</label>
+      <div class="input-wrap">
+        <span class="input-icon">🔑</span>
+        <input
+          id="password"
+          name="password"
+          type="password"
+          placeholder="••••••••"
+          autocomplete="current-password"
+          required
+        />
+      </div>
+    </div>
+
+    <button type="submit" class="btn" id="loginBtn">
+      <span class="btn-text">Đăng nhập</span>
+      <span class="spinner"></span>
+    </button>
+  </form>
+
+  <div class="footer">Android Control System · Nội bộ</div>
+</div>
+
+<script>
+  const form = document.getElementById('loginForm');
+  const btn  = document.getElementById('loginBtn');
+  const errorAlert = document.getElementById('errorAlert');
+  const errorMsg   = document.getElementById('errorMsg');
+
+  function showError(msg) {
+    errorMsg.textContent = msg;
+    errorAlert.className = 'alert error show';
+  }
+  function hideError() {
+    errorAlert.className = 'alert error';
+  }
+  function setLoading(on) {
+    btn.disabled = on;
+    btn.classList.toggle('loading', on);
+  }
+
+  // Get ?next= param for redirect after login
+  const nextUrl = new URLSearchParams(window.location.search).get('next') || '/dashboard';
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    hideError();
+    setLoading(true);
+
+    const username = document.getElementById('username').value.trim();
+    const password = document.getElementById('password').value;
+
+    try {
+      const res = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+        credentials: 'include',
+      });
+
+      if (res.ok) {
+        // Login success — redirect
+        window.location.href = nextUrl;
+      } else {
+        const data = await res.json().catch(() => ({}));
+        showError(data.detail || 'Đăng nhập thất bại. Vui lòng thử lại.');
+        setLoading(false);
+      }
+    } catch (err) {
+      showError('Lỗi kết nối server. Vui lòng thử lại.');
+      setLoading(false);
+    }
+  });
+
+  // Auto-focus username
+  document.getElementById('username').focus();
+
+  // Enter key on either field submits form (already handled by form submit)
+</script>
+</body>
+</html>

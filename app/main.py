@@ -7,11 +7,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.config import settings
 from app.database import create_db_and_tables, get_session
 from app.models import Device, DeviceStatus, User
 from app.routers import devices, tasks, ws, schedules, device_ws
+from app.routers.auth import router as auth_router
 from app.routers.videos import router as videos_router, account_router as accounts_router
+from app.middleware.auth_middleware import AuthMiddleware
 from app.services.connection_watchdog import watchdog
 from app.services.scheduler import scheduler
 
@@ -83,9 +87,25 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=lifespan,
+    # Disable /docs in cloud — require auth via middleware instead
+    docs_url="/docs",
+    redoc_url=None,
 )
 
-# CORS — allow all origins for development
+# 1. Session middleware (MUST be first — required by AuthMiddleware)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+    session_cookie="acs_session",
+    max_age=settings.session_expire_hours * 3600,
+    https_only=False,  # Set True if using HTTPS-only deployment
+    same_site="lax",
+)
+
+# 2. Auth middleware (protects all routes)
+app.add_middleware(AuthMiddleware)
+
+# 3. CORS — allow all origins for development
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -95,6 +115,7 @@ app.add_middleware(
 )
 
 # Register routers
+app.include_router(auth_router)               # Auth: login/logout/me
 app.include_router(devices.router)
 app.include_router(tasks.router)
 app.include_router(ws.router)
@@ -111,9 +132,15 @@ _static_dir = pathlib.Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 
 
+@app.get("/login")
+def login_page():
+    """Serve the login page."""
+    return FileResponse(str(_static_dir / "login.html"))
+
+
 @app.get("/dashboard")
 def dashboard():
-    """Serve the web dashboard."""
+    """Serve the web dashboard (requires auth)."""
     return FileResponse(str(_static_dir / "index.html"))
 
 @app.get("/")
