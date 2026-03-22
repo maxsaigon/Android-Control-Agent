@@ -6,7 +6,7 @@
     <title>Android Control System</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/style.css?v=20260321b">
+    <link rel="stylesheet" href="/static/style.css?v=20260322c">
 </head>
 <body>
     <!-- Sidebar Navigation -->
@@ -30,6 +30,10 @@
             <button class="nav-btn" data-section="history" onclick="navigateTo('history', this)" title="History">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
                 <span class="nav-label">History</span>
+            </button>
+            <button class="nav-btn" data-section="videos" onclick="navigateTo('videos', this)" title="Videos">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
+                <span class="nav-label">Videos</span>
             </button>
         </div>
         <div class="sidebar-footer">
@@ -496,6 +500,131 @@
                     <div class="loading">Loading...</div>
                 </div>
             </div>
+        </section>
+
+        <!-- ============ VIDEOS SECTION ============ -->
+        <section class="page-section" id="sectionVideos">
+
+            <!-- Row 1: Upload + Device Accounts -->
+            <div class="content-grid">
+
+                <!-- Upload Panel -->
+                <div class="content-col">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>📤 Upload Video</h2>
+                            <span class="count-badge" id="videoCount">0</span>
+                        </div>
+                        <div class="panel-body">
+                            <!-- Drop Zone -->
+                            <div class="upload-zone" id="uploadZone"
+                                 ondragover="onDragOver(event)"
+                                 ondragleave="onDragLeave(event)"
+                                 ondrop="onDrop(event)"
+                                 onclick="document.getElementById('videoFileInput').click()">
+                                <div class="upload-icon">🎬</div>
+                                <div class="upload-hint">Kéo thả video vào đây<br><span class="upload-hint-sub">hoặc click để chọn file</span></div>
+                                <input type="file" id="videoFileInput" accept="video/*,.mp4,.mov,.avi,.mkv,.webm,.m4v" style="display:none" onchange="onFileSelect(event)">
+                            </div>
+
+                            <!-- Upload form (shown after file selected) -->
+                            <div id="uploadForm" style="display:none; margin-top:12px">
+                                <div class="upload-file-info" id="uploadFileInfo"></div>
+                                <div class="form-group" style="margin-top:10px">
+                                    <label>Tiêu đề (tuỳ chọn)</label>
+                                    <input type="text" id="videoTitle" placeholder="Tên video...">
+                                </div>
+                                <div class="form-group">
+                                    <label>Tags (tuỳ chọn)</label>
+                                    <input type="text" id="videoTags" placeholder="hài, review, trending...">
+                                </div>
+                                <div style="display:flex;gap:8px">
+                                    <button class="btn btn-primary" style="flex:1" onclick="uploadVideo()">⬆️ Upload</button>
+                                    <button class="btn btn-ghost" onclick="cancelUpload()">✕</button>
+                                </div>
+                                <div class="upload-progress" id="uploadProgress" style="display:none">
+                                    <div class="progress-bar-wrap"><div class="progress-bar-fill" id="uploadProgressBar"></div></div>
+                                    <span id="uploadProgressLabel">Đang upload...</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Device Accounts Panel -->
+                <div class="content-col">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h2>🎭 Device Accounts</h2>
+                            <button class="btn btn-sm btn-ghost" onclick="refreshDeviceAccounts()">↻</button>
+                        </div>
+                        <div class="panel-body">
+                            <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">Map mỗi device → tài khoản MXH để auto-assign video.</p>
+                            <form id="accountForm" onsubmit="saveDeviceAccount(event)">
+                                <div class="form-group">
+                                    <label>📱 Device</label>
+                                    <select id="accountDevice" required>
+                                        <option value="">Chọn device...</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>🌐 Platform</label>
+                                    <select id="accountPlatform" required>
+                                        <option value="tiktok">🎵 TikTok</option>
+                                        <option value="youtube">▶️ YouTube</option>
+                                        <option value="instagram">📷 Instagram</option>
+                                        <option value="facebook">📘 Facebook</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>👤 Username</label>
+                                    <input type="text" id="accountName" placeholder="@tiktok_account_A">
+                                </div>
+                                <div class="form-group">
+                                    <label>📝 Ghi chú</label>
+                                    <input type="text" id="accountNotes" placeholder="Tuỳ chọn...">
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-block">💾 Lưu Account</button>
+                            </form>
+                            <div class="account-list" id="accountList" style="margin-top:16px"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 2: Video Library -->
+            <div class="panel video-library-panel" style="margin-top: 16px">
+                <div class="panel-header">
+                    <h2>🎬 Video Library</h2>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <select id="videoPlatformFilter" class="filter-select" onchange="refreshVideos()">
+                            <option value="">Tất cả platform</option>
+                            <option value="tiktok">🎵 TikTok</option>
+                            <option value="youtube">▶️ YouTube</option>
+                            <option value="instagram">📷 Instagram</option>
+                            <option value="facebook">📘 Facebook</option>
+                        </select>
+                        <button class="btn btn-sm btn-ghost" onclick="refreshVideos()">↻ Refresh</button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="video-grid" id="videoGrid">
+                        <div class="loading">Loading videos...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 3: Assignment Matrix -->
+            <div class="panel" style="margin-top: 16px">
+                <div class="panel-header">
+                    <h2>📊 Assignment Matrix</h2>
+                    <button class="btn btn-sm btn-ghost" onclick="refreshAssignments()">↻ Refresh</button>
+                </div>
+                <div class="panel-body scrollable" id="assignmentMatrix">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+
         </section>
 
         <!-- Task Detail Modal -->

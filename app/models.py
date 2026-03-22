@@ -1,9 +1,9 @@
-"""Data models for Device, Task, and TaskLog."""
+"""Data models for Device, Task, TaskLog, Video, and VideoAssignment."""
 
 from sqlmodel import SQLModel, Field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Optional, List
 
 
 class DeviceStatus(str, Enum):
@@ -289,3 +289,158 @@ class ScheduleRead(SQLModel):
     next_run: Optional[datetime]
     created_at: datetime
 
+
+
+# =============================================================================
+# Video Management Models
+# =============================================================================
+
+
+class VideoStatus(str, Enum):
+    AVAILABLE = "available"
+    ARCHIVED = "archived"
+
+
+class PushStatus(str, Enum):
+    PENDING = "pending"
+    PUSHED = "pushed"
+    UPLOADED = "uploaded"
+    FAILED = "failed"
+
+
+class Video(SQLModel, table=True):
+    """Represents a video file stored on the server."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    filename: str  # Original filename
+    filepath: str  # /data/videos/xxx.mp4
+    file_hash: str = Field(index=True)  # SHA-256 — deduplication
+    file_size: int  # Bytes
+    duration: Optional[float] = None  # Seconds
+    title: Optional[str] = None  # User-defined title
+    tags: Optional[str] = None  # Comma-separated tags
+    status: VideoStatus = VideoStatus.AVAILABLE
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+class VideoAssignment(SQLModel, table=True):
+    """Assignment of a video to a specific device/platform.
+
+    Constraint: UNIQUE(video_id, platform) — 1 video per platform.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    video_id: int = Field(foreign_key="video.id")
+    device_id: int = Field(foreign_key="device.id")
+    platform: str  # tiktok / youtube / instagram / facebook
+    push_status: PushStatus = PushStatus.PENDING
+    device_path: Optional[str] = None  # /sdcard/DCIM/xxx.mp4
+    pushed_at: Optional[datetime] = None
+    uploaded_at: Optional[datetime] = None
+    task_id: Optional[int] = None  # Link to upload Task
+    error: Optional[str] = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+class DeviceAccount(SQLModel, table=True):
+    """Maps a device to a social media account.
+
+    Each device can have 1 account on each platform.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    device_id: int = Field(foreign_key="device.id")
+    platform: str  # tiktok / youtube / instagram / facebook
+    account_name: Optional[str] = None  # @username
+    notes: Optional[str] = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+# --- Pydantic schemas for Video API ---
+
+
+class VideoRead(SQLModel):
+    """Schema for video responses."""
+
+    id: int
+    filename: str
+    filepath: str
+    file_hash: str
+    file_size: int
+    duration: Optional[float]
+    title: Optional[str]
+    tags: Optional[str]
+    status: VideoStatus
+    created_at: datetime
+
+
+class VideoAssignmentRead(SQLModel):
+    """Schema for assignment responses."""
+
+    id: int
+    video_id: int
+    device_id: int
+    platform: str
+    push_status: PushStatus
+    device_path: Optional[str]
+    pushed_at: Optional[datetime]
+    uploaded_at: Optional[datetime]
+    task_id: Optional[int]
+    error: Optional[str]
+    created_at: datetime
+
+
+class VideoDetail(SQLModel):
+    """Video with its assignments."""
+
+    id: int
+    filename: str
+    filepath: str
+    file_hash: str
+    file_size: int
+    duration: Optional[float]
+    title: Optional[str]
+    tags: Optional[str]
+    status: VideoStatus
+    created_at: datetime
+    assignments: List[VideoAssignmentRead] = []
+
+
+class AssignCreate(SQLModel):
+    """Schema for assigning a video to a device."""
+
+    device_id: int
+    platform: str
+
+
+class AutoAssignCreate(SQLModel):
+    """Schema for auto-assign request."""
+
+    video_ids: Optional[List[int]] = None  # None = all available videos
+    platform: str
+
+
+class DeviceAccountCreate(SQLModel):
+    """Schema for creating/updating a device-account mapping."""
+
+    device_id: int
+    platform: str
+    account_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DeviceAccountRead(SQLModel):
+    """Schema for device-account responses."""
+
+    id: int
+    device_id: int
+    platform: str
+    account_name: Optional[str]
+    notes: Optional[str]
+    created_at: datetime

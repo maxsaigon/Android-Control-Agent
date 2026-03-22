@@ -55,13 +55,18 @@ function navigateTo(section, btn) {
     }
 
     // Update page title
-    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler', history: 'History' };
+    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler', history: 'History', videos: 'Video Library' };
     document.getElementById('pageTitle').textContent = titles[section] || 'Dashboard';
 
     // Load data for section
     if (section === 'scheduler') loadSchedules();
     if (section === 'history') refreshHistory();
-    // Token management removed — devices now use login-based registration
+    if (section === 'videos') {
+        refreshVideos();
+        refreshAssignments();
+        refreshDeviceAccounts();
+        _populateAccountDeviceSelect();
+    }
 }
 
 function toggleSidebar() {
@@ -173,6 +178,8 @@ function updateDeviceSelect() {
     sel.innerHTML = '<option value="">Chọn device...</option>' +
         devices.map(d => `<option value="${d.id}">${d.name} (${d.ip_address}) — ${d.status}</option>`).join('');
     if (current) sel.value = current;
+    // Also update account device select on Videos tab
+    _populateAccountDeviceSelect();
 }
 
 async function connectDevice(id) {
@@ -1427,3 +1434,381 @@ function onSchedActionChange() {
 }
 
 // Token management removed — devices now use login-based registration via /api/device/register
+
+// ===== VIDEO MANAGEMENT =====
+
+let selectedVideoFile = null;
+let videoList = [];
+
+// --- Upload ---
+
+function onDragOver(e) {
+    e.preventDefault();
+    document.getElementById('uploadZone').classList.add('drag-over');
+}
+
+function onDragLeave(e) {
+    document.getElementById('uploadZone').classList.remove('drag-over');
+}
+
+function onDrop(e) {
+    e.preventDefault();
+    document.getElementById('uploadZone').classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file) showFilePreview(file);
+}
+
+function onFileSelect(e) {
+    const file = e.target.files[0];
+    if (file) showFilePreview(file);
+}
+
+function showFilePreview(file) {
+    selectedVideoFile = file;
+    const info = document.getElementById('uploadFileInfo');
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    info.innerHTML = `🎬 <strong>${file.name}</strong> · ${sizeMB} MB`;
+    document.getElementById('uploadForm').style.display = 'block';
+    document.getElementById('videoTitle').value = file.name.replace(/\.[^/.]+$/, '');
+}
+
+function cancelUpload() {
+    selectedVideoFile = null;
+    document.getElementById('uploadForm').style.display = 'none';
+    document.getElementById('videoFileInput').value = '';
+}
+
+async function uploadVideo() {
+    if (!selectedVideoFile) { toast('Chọn file trước', 'error'); return; }
+
+    const title = document.getElementById('videoTitle').value.trim();
+    const tags  = document.getElementById('videoTags').value.trim();
+
+    const formData = new FormData();
+    formData.append('file', selectedVideoFile);
+    if (title) formData.append('title', title);
+    if (tags)  formData.append('tags', tags);
+
+    const progress = document.getElementById('uploadProgress');
+    const bar = document.getElementById('uploadProgressBar');
+    progress.style.display = 'block';
+    bar.style.width = '20%';
+
+    try {
+        const res = await fetch(`${API}/api/videos/upload`, {
+            method: 'POST',
+            body: formData,
+        });
+        bar.style.width = '100%';
+        const data = await res.json();
+
+        if (res.status === 200 && data._duplicate) {
+            toast('⚠️ Video này đã tồn tại, dùng bản cũ', 'info');
+        } else if (res.status === 201) {
+            toast(`✅ Upload thành công: ${data.title || data.filename}`, 'success');
+        } else {
+            toast(`❌ ${data.detail || 'Upload thất bại'}`, 'error');
+        }
+        cancelUpload();
+        refreshVideos();
+        refreshAssignments();
+        // Update badge count
+        const cnt = document.getElementById('videoCount');
+        if (cnt) cnt.textContent = parseInt(cnt.textContent || '0') + 1;
+    } catch (e) {
+        toast(`Upload lỗi: ${e.message}`, 'error');
+    } finally {
+        progress.style.display = 'none';
+        bar.style.width = '0%';
+    }
+}
+
+// --- Video Library ---
+
+async function refreshVideos() {
+    const platform = document.getElementById('videoPlatformFilter')?.value || '';
+    try {
+        const url = platform
+            ? `${API}/api/videos?platform=${platform}`
+            : `${API}/api/videos`;
+        const res = await fetch(url);
+        videoList = await res.json();
+        renderVideoGrid(videoList);
+
+        const cnt = document.getElementById('videoCount');
+        if (cnt) cnt.textContent = videoList.length;
+    } catch (e) { /* retry */ }
+}
+
+function renderVideoGrid(videos) {
+    const container = document.getElementById('videoGrid');
+    if (!container) return;
+
+    if (!videos.length) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-icon">🎬</div><div class="empty-text">Chưa có video nào<br><small style="color:var(--text-muted)">Upload video ở panel bên trên</small></div></div>';
+        return;
+    }
+
+    container.innerHTML = videos.map(v => {
+        const sizeMB = (v.file_size / 1024 / 1024).toFixed(1);
+        const assignments = v.assignments || [];
+        const platformBadges = assignments.map(a => {
+            const icons = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
+            return `<span class="platform-badge ${a.push_status}" title="${a.push_status}">${icons[a.platform] || '?'} ${a.platform}</span>`;
+        }).join('');
+
+        const hasAssignment = assignments.length > 0;
+        return `
+        <div class="video-card">
+            <div class="video-thumb">
+                🎬
+                <span class="video-size-badge">${sizeMB}MB</span>
+            </div>
+            <div class="video-info">
+                <div class="video-title" title="${v.title || v.filename}">${v.title || v.filename}</div>
+                <div class="video-meta">${v.tags ? v.tags.split(',').slice(0,2).join(', ') : 'No tags'}</div>
+                <div class="video-platforms">${platformBadges || '<span style="color:var(--text-muted);font-size:11px">Chưa assign</span>'}</div>
+            </div>
+            <div class="video-actions">
+                <button class="btn btn-xs btn-primary" onclick="openAssignModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\'")}')">📌 Assign</button>
+                <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${v.id})">🗑️</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// --- Assign Modal (inline, quick) ---
+
+let _assignVideoId = null;
+
+function openAssignModal(videoId, videoTitle) {
+    _assignVideoId = videoId;
+
+    // Build quick inline assign form in a toast-like panel
+    const deviceOptions = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+    const modal = document.createElement('div');
+    modal.id = 'assignModal';
+    modal.className = 'modal-overlay';
+    modal.style.cssText = 'display:flex;z-index:200';
+    modal.innerHTML = `
+    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:400px">
+        <div class="modal-header">
+            <h3>📌 Assign: ${videoTitle}</h3>
+            <button class="modal-close" onclick="document.getElementById('assignModal').remove()">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>📱 Device</label>
+                <select id="assignDeviceSel">${deviceOptions}</select>
+            </div>
+            <div class="form-group">
+                <label>🌐 Platform</label>
+                <select id="assignPlatformSel">
+                    <option value="tiktok">🎵 TikTok</option>
+                    <option value="youtube">▶️ YouTube</option>
+                    <option value="instagram">📷 Instagram</option>
+                    <option value="facebook">📘 Facebook</option>
+                </select>
+            </div>
+            <button class="btn btn-primary btn-block" onclick="doAssignVideo()">✅ Assign Video</button>
+        </div>
+    </div>`;
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+}
+
+async function doAssignVideo() {
+    const deviceId = parseInt(document.getElementById('assignDeviceSel').value);
+    const platform = document.getElementById('assignPlatformSel').value;
+    if (!deviceId) { toast('Chọn device', 'error'); return; }
+
+    try {
+        const res = await fetch(`${API}/api/videos/${_assignVideoId}/assign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_id: deviceId, platform }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            toast(`✅ Assigned thành công → ${platform}`, 'success');
+            document.getElementById('assignModal')?.remove();
+            refreshVideos();
+            refreshAssignments();
+        } else {
+            toast(`❌ ${data.detail}`, 'error');
+        }
+    } catch (e) { toast(`Lỗi: ${e.message}`, 'error'); }
+}
+
+// --- Push ---
+
+async function pushAssignment(assignmentId, btnEl) {
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳'; }
+    try {
+        const res = await fetch(`${API}/api/videos/assignments/${assignmentId}/push`, { method: 'POST' });
+        const data = await res.json();
+        if (res.ok) {
+            toast(`✅ ${data.message}`, 'success');
+        } else {
+            toast(`❌ ${data.detail}`, 'error');
+        }
+        refreshAssignments();
+        refreshVideos();
+    } catch (e) {
+        toast(`Push lỗi: ${e.message}`, 'error');
+    } finally {
+        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '📤 Push'; }
+    }
+}
+
+// --- Delete video ---
+
+async function deleteVideo(videoId) {
+    if (!confirm('Xoá video này? (Soft-delete, assignments vẫn còn)')) return;
+    try {
+        await fetch(`${API}/api/videos/${videoId}`, { method: 'DELETE' });
+        toast('🗑️ Đã xoá video', 'success');
+        refreshVideos();
+        refreshAssignments();
+    } catch (e) { toast('Xoá thất bại', 'error'); }
+}
+
+// --- Assignment Matrix ---
+
+async function refreshAssignments() {
+    try {
+        const [assignRes, videoRes] = await Promise.all([
+            fetch(`${API}/api/videos/assignments`),
+            fetch(`${API}/api/videos`),
+        ]);
+        const assignments = await assignRes.json();
+        const vids = await videoRes.json();
+        renderAssignmentMatrix(assignments, vids);
+    } catch (e) { /* retry */ }
+}
+
+function renderAssignmentMatrix(assignments, vids) {
+    const container = document.getElementById('assignmentMatrix');
+    if (!container) return;
+
+    if (!assignments.length) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-text">Chưa có assignment nào</div></div>';
+        return;
+    }
+
+    const videoMap = Object.fromEntries(vids.map(v => [v.id, v]));
+    const deviceMap = Object.fromEntries(devices.map(d => [d.id, d]));
+    const platformIcons = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
+    const statusLabel = {
+        pending:  '<span class="push-status-badge pending">⏳ Pending</span>',
+        pushed:   '<span class="push-status-badge pushed">📱 Pushed</span>',
+        uploaded: '<span class="push-status-badge uploaded">✅ Uploaded</span>',
+        failed:   '<span class="push-status-badge failed">❌ Failed</span>',
+    };
+
+    const rows = assignments.map(a => {
+        const vid = videoMap[a.video_id];
+        const dev = deviceMap[a.device_id];
+        const icon = platformIcons[a.platform] || '?';
+        const st = statusLabel[a.push_status] || a.push_status;
+        const pushBtn = a.push_status === 'pending' || a.push_status === 'failed'
+            ? `<button class="btn btn-xs btn-primary" onclick="pushAssignment(${a.id}, this)">📤 Push</button>`
+            : '';
+        return `<tr>
+            <td>${vid ? (vid.title || vid.filename) : `#${a.video_id}`}</td>
+            <td>${dev ? dev.name : `#${a.device_id}`}</td>
+            <td>${icon} ${a.platform}</td>
+            <td>${st}</td>
+            <td style="white-space:nowrap">${pushBtn}</td>
+        </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+    <div class="assignment-table-wrap">
+    <table class="assignment-table">
+        <thead><tr>
+            <th>Video</th><th>Device</th><th>Platform</th><th>Status</th><th>Action</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+    </table>
+    </div>`;
+}
+
+// --- Device Accounts ---
+
+let deviceAccounts = [];
+
+async function refreshDeviceAccounts() {
+    try {
+        const res = await fetch(`${API}/api/device-accounts`);
+        deviceAccounts = await res.json();
+        renderAccountList(deviceAccounts);
+    } catch (e) { /* retry */ }
+}
+
+function renderAccountList(accounts) {
+    const container = document.getElementById('accountList');
+    if (!container) return;
+    if (!accounts.length) {
+        container.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:12px">Chưa có account nào</div>';
+        return;
+    }
+    const devMap = Object.fromEntries(devices.map(d => [d.id, d]));
+    const icons  = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
+    container.innerHTML = accounts.map(a => {
+        const dev = devMap[a.device_id];
+        return `
+        <div class="account-list-item">
+            <div>
+                <div class="account-name">${a.account_name || '(unnamed)'}</div>
+                <div class="account-plat">${icons[a.platform] || '?'} ${a.platform} · ${dev ? dev.name : `#${a.device_id}`}</div>
+            </div>
+            <button class="btn btn-xs btn-danger" onclick="deleteDeviceAccount(${a.id})">🗑️</button>
+        </div>`;
+    }).join('');
+}
+
+async function saveDeviceAccount(e) {
+    e.preventDefault();
+    const deviceId = parseInt(document.getElementById('accountDevice').value);
+    const platform = document.getElementById('accountPlatform').value;
+    const accountName = document.getElementById('accountName').value.trim();
+    const notes = document.getElementById('accountNotes').value.trim();
+
+    if (!deviceId) { toast('Chọn device', 'error'); return; }
+
+    try {
+        const res = await fetch(`${API}/api/device-accounts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_id: deviceId, platform, account_name: accountName || null, notes: notes || null }),
+        });
+        if (res.ok) {
+            toast('✅ Đã lưu account', 'success');
+            document.getElementById('accountForm').reset();
+            refreshDeviceAccounts();
+        } else {
+            const err = await res.json();
+            toast(`❌ ${err.detail}`, 'error');
+        }
+    } catch (e) { toast(`Lỗi: ${e.message}`, 'error'); }
+}
+
+async function deleteDeviceAccount(id) {
+    try {
+        await fetch(`${API}/api/device-accounts/${id}`, { method: 'DELETE' });
+        toast('🗑️ Đã xoá mapping', 'success');
+        refreshDeviceAccounts();
+    } catch (e) { toast('Xoá thất bại', 'error'); }
+}
+
+// Populate account device select from global devices list
+function _populateAccountDeviceSelect() {
+    const sel = document.getElementById('accountDevice');
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">Chọn device...</option>' +
+        devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+    if (cur) sel.value = cur;
+}
+
