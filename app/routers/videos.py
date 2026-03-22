@@ -84,6 +84,11 @@ async def upload_video(
     return video_dict
 
 
+# NOTE: All static-path routes MUST be declared BEFORE dynamic /{video_id} routes.
+# FastAPI matches routes in declaration order — static wins over dynamic only if
+# declared first. Putting /assignments or /auto-assign after /{video_id} causes
+# FastAPI to capture "assignments" as video_id and return 422/404.
+
 @router.get("/assignments")
 def get_assignments(
     video_id: Optional[int] = None,
@@ -93,6 +98,40 @@ def get_assignments(
     """Get full assignment matrix. Filter by video_id or device_id."""
     return video_service.get_assignments(session, video_id=video_id, device_id=device_id)
 
+
+@router.post("/auto-assign", status_code=201)
+def auto_assign(
+    body: dict,
+    session: Session = Depends(get_session),
+):
+    """Round-robin auto-assign videos to devices that have DeviceAccount for this platform.
+
+    Body: { "platform": "tiktok", "video_ids": [1,2,3] }  (video_ids optional)
+    """
+    platform = body.get("platform")
+    if not platform:
+        raise HTTPException(400, "platform is required")
+
+    video_ids = body.get("video_ids")
+    assignments = video_service.auto_assign(session, str(platform).lower(), video_ids)
+    return {"assigned": len(assignments), "assignments": assignments}
+
+
+@router.post("/assignments/{assignment_id}/push")
+async def push_to_device(
+    assignment_id: int,
+    session: Session = Depends(get_session),
+):
+    """ADB push the video file to the assigned device."""
+    success, message = await video_service.push_to_device(session, assignment_id)
+    if not success:
+        if "not found" in message.lower():
+            raise HTTPException(404, message)
+        raise HTTPException(500, message)
+    return {"success": True, "message": message}
+
+
+# --- Dynamic {video_id} routes last ---
 
 @router.get("/{video_id}")
 def get_video(video_id: int, session: Session = Depends(get_session)):
@@ -137,38 +176,6 @@ def assign_video(
         raise HTTPException(409, error)
 
     return assignment
-
-
-@router.post("/auto-assign", status_code=201)
-def auto_assign(
-    body: dict,
-    session: Session = Depends(get_session),
-):
-    """Round-robin auto-assign videos to devices that have DeviceAccount for this platform.
-
-    Body: { "platform": "tiktok", "video_ids": [1,2,3] }  (video_ids optional)
-    """
-    platform = body.get("platform")
-    if not platform:
-        raise HTTPException(400, "platform is required")
-
-    video_ids = body.get("video_ids")
-    assignments = video_service.auto_assign(session, str(platform).lower(), video_ids)
-    return {"assigned": len(assignments), "assignments": assignments}
-
-
-@router.post("/assignments/{assignment_id}/push")
-async def push_to_device(
-    assignment_id: int,
-    session: Session = Depends(get_session),
-):
-    """ADB push the video file to the assigned device."""
-    success, message = await video_service.push_to_device(session, assignment_id)
-    if not success:
-        if "not found" in message.lower():
-            raise HTTPException(404, message)
-        raise HTTPException(500, message)
-    return {"success": True, "message": message}
 
 
 # =============================================================================
