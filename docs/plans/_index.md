@@ -9,7 +9,8 @@
 |---|-----------|--------|---------|
 | 1 | [cloud-device-integration.md](cloud-device-integration.md) | ✅ COMPLETE | Phase 1A–1E hoàn thành. Cloud infra, APK, deploy, E2E testing done |
 | 2 | [saas_website_plan.md](saas_website_plan.md) | 📋 PLANNED | SaaS marketing website (Next.js). Chưa bắt đầu |
-| 3 | [video-management-system.md](video-management-system.md) | 🔄 IN PROGRESS | Video library management, device assignment, adb push, duplicate prevention |
+| 3 | [video-management-system.md](video-management-system.md) | ✅ COMPLETE | Video library management, device assignment, adb push, duplicate prevention |
+| 4 | [proxy-antidetect-management.md](proxy-antidetect-management.md) | 📋 PLANNED | Proxy per-device, antidetect fingerprint spoofing, bypass platform detection, proxy pool management |
 
 ## Completed Features (No Separate Plan Files)
 
