@@ -1614,7 +1614,7 @@ function renderVideoGrid(videos) {
             </div>
             <div class="video-actions">
                 <button class="btn btn-xs btn-primary" onclick="openAssignModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\'")}')">📌 Assign</button>
-                <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${v.id})">🗑️</button>
+                <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${v.id}, this)">🗑️</button>
             </div>
         </div>`;
     }).join('');
@@ -1626,6 +1626,11 @@ let _assignVideoId = null;
 
 function openAssignModal(videoId, videoTitle) {
     _assignVideoId = videoId;
+
+    if (!devices.length) {
+        toast('⚠️ Chưa có device nào. Hãy thêm device trước.', 'error');
+        return;
+    }
 
     // Build quick inline assign form in a toast-like panel
     const deviceOptions = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
@@ -1658,6 +1663,7 @@ function openAssignModal(videoId, videoTitle) {
     </div>`;
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
     document.body.appendChild(modal);
+
 }
 
 async function doAssignVideo() {
@@ -1704,17 +1710,48 @@ async function pushAssignment(assignmentId, btnEl) {
     }
 }
 
-// --- Delete video ---
+// --- Delete video — double-click confirm (same pattern as deleteDevice) ---
 
-async function deleteVideo(videoId) {
-    if (!confirm('Xoá video này? (Soft-delete, assignments vẫn còn)')) return;
+let _deleteVideoConfirmId = null;
+let _deleteVideoConfirmTimer = null;
+
+function deleteVideo(videoId, btnEl) {
+    if (_deleteVideoConfirmId === videoId) {
+        // Second click — actually delete
+        clearTimeout(_deleteVideoConfirmTimer);
+        _deleteVideoConfirmId = null;
+        _doDeleteVideo(videoId, btnEl);
+    } else {
+        // First click — show confirmation
+        if (_deleteVideoConfirmTimer) clearTimeout(_deleteVideoConfirmTimer);
+        _deleteVideoConfirmId = videoId;
+        if (btnEl) {
+            btnEl.textContent = '⚠️ Sure?';
+            btnEl.classList.add('btn-warning');
+        }
+        // Auto-reset after 3 seconds
+        _deleteVideoConfirmTimer = setTimeout(() => {
+            _deleteVideoConfirmId = null;
+            if (btnEl) {
+                btnEl.textContent = '🗑️';
+                btnEl.classList.remove('btn-warning');
+            }
+        }, 3000);
+    }
+}
+
+async function _doDeleteVideo(videoId, btnEl) {
     try {
         await fetch(`${API}/api/videos/${videoId}`, { method: 'DELETE' });
         toast('🗑️ Đã xoá video', 'success');
         refreshVideos();
         refreshAssignments();
-    } catch (e) { toast('Xoá thất bại', 'error'); }
+    } catch (e) {
+        toast('Xoá thất bại', 'error');
+        if (btnEl) { btnEl.textContent = '🗑️'; btnEl.classList.remove('btn-warning'); }
+    }
 }
+
 
 // --- Assignment Matrix ---
 
