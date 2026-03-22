@@ -45,11 +45,22 @@ class TaskScheduler:
 
     async def _loop(self):
         """Main loop — check every 30 seconds."""
+        cleanup_counter = 0  # Run video cleanup every ~1 hour (120 × 30s)
         while self._running:
             try:
                 await self._check_schedules()
             except Exception as e:
                 logger.error(f"⏰ Scheduler error: {e}")
+
+            # Video file cleanup — every ~1 hour
+            cleanup_counter += 1
+            if cleanup_counter >= 120:
+                cleanup_counter = 0
+                try:
+                    await self._cleanup_video_files()
+                except Exception as e:
+                    logger.error(f"🗑️ Video cleanup error: {e}")
+
             await asyncio.sleep(30)
 
     async def _check_schedules(self):
@@ -215,6 +226,18 @@ class TaskScheduler:
 
             from app.services.task_queue import task_queue
             asyncio.create_task(task_queue.submit(task.id))
+
+    async def _cleanup_video_files(self):
+        """Delete physical video files that were pushed > 3 days ago.
+
+        DB records preserved — only disk files removed to save storage.
+        """
+        from app.services.video_service import video_service
+
+        with Session(engine) as session:
+            cleaned = video_service.cleanup_pushed_videos(session, max_age_days=3)
+            if cleaned:
+                logger.info(f"🗑️ Scheduled cleanup: {cleaned} video files removed")
 
 
 # Singleton

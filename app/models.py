@@ -320,6 +320,7 @@ class Video(SQLModel, table=True):
     title: Optional[str] = None  # User-defined title
     tags: Optional[str] = None  # Comma-separated tags
     status: VideoStatus = VideoStatus.AVAILABLE
+    file_cleaned_at: Optional[datetime] = None  # When physical file was deleted (auto-cleanup)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

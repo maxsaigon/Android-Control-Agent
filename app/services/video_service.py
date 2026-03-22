@@ -5,7 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +45,7 @@ def _video_to_dict(v: Video) -> dict:
         "title": v.title,
         "tags": v.tags,
         "status": v.status,
+        "file_cleaned_at": v.file_cleaned_at,
         "created_at": v.created_at,
     }
 
@@ -504,6 +505,84 @@ class VideoService:
             "notes": account.notes,
             "created_at": account.created_at,
         }
+
+    # ------------------------------------------------------------------
+    # Auto-cleanup: delete physical files after push (keep DB records)
+    # ------------------------------------------------------------------
+
+    def cleanup_pushed_videos(
+        self,
+        session: Session,
+        max_age_days: int = 3,
+    ) -> int:
+        """Delete physical video files that have been pushed to all assigned
+        devices more than `max_age_days` ago.
+
+        DB records (Video + VideoAssignment) are preserved — only the
+        file on disk is removed to free storage.
+
+        Returns:
+            Number of files cleaned up.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cleaned = 0
+
+        videos = session.exec(
+            select(Video).where(
+                Video.status == VideoStatus.AVAILABLE,
+                Video.file_cleaned_at == None,  # noqa: E711  (SQLAlchemy IS NULL)
+            )
+        ).all()
+
+        for video in videos:
+            # Get all assignments for this video
+            assignments = session.exec(
+                select(VideoAssignment).where(
+                    VideoAssignment.video_id == video.id
+                )
+            ).all()
+
+            # Skip if no assignments at all
+            if not assignments:
+                continue
+
+            # ALL assignments must be pushed/uploaded (not pending/failed)
+            all_pushed = all(
+                a.push_status in (PushStatus.PUSHED, PushStatus.UPLOADED)
+                for a in assignments
+            )
+            if not all_pushed:
+                continue
+
+            # Check if the LATEST push was > max_age_days ago
+            latest_push = max(
+                (a.pushed_at for a in assignments if a.pushed_at),
+                default=None,
+            )
+            if not latest_push or latest_push > cutoff:
+                continue
+
+            # Safe to delete physical file
+            filepath = video.filepath
+            if os.path.exists(filepath):
+                try:
+                    os.remove(filepath)
+                    logger.info(
+                        f"🗑️ Cleaned video file: {filepath} "
+                        f"(id={video.id}, pushed {max_age_days}+ days ago)"
+                    )
+                except OSError as e:
+                    logger.warning(f"Failed to clean {filepath}: {e}")
+                    continue
+
+            video.file_cleaned_at = datetime.now(timezone.utc)
+            cleaned += 1
+
+        if cleaned:
+            session.commit()
+            logger.info(f"🗑️ Video cleanup: {cleaned} files removed")
+
+        return cleaned
 
 
 # Singleton
