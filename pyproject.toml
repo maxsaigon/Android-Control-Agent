@@ -10,6 +10,7 @@ dependencies = [
     "sqlmodel",
     "python-dotenv",
     "pydantic-settings",
+    "itsdangerous",          # required by starlette SessionMiddleware
 ]
 
 [project.optional-dependencies]

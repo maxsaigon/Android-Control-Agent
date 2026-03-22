@@ -92,26 +92,34 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# 1. Session middleware (MUST be first — required by AuthMiddleware)
-app.add_middleware(
-    SessionMiddleware,
-    secret_key=settings.secret_key,
-    session_cookie="acs_session",
-    max_age=settings.session_expire_hours * 3600,
-    https_only=False,  # Set True if using HTTPS-only deployment
-    same_site="lax",
-)
+# NOTE: Starlette applies middleware in REVERSE order of add_middleware() calls.
+# The LAST middleware added wraps the OUTERMOST layer (runs first).
+# Correct execution order: CORS → Session → Auth → Route handlers
+#
+# Therefore we add them in reverse order:
 
-# 2. Auth middleware (protects all routes)
-app.add_middleware(AuthMiddleware)
-
-# 3. CORS — allow all origins for development
+# 3. CORS (added last = outermost = runs first)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+# 2. Auth middleware (runs after Session, so request.session is available)
+app.add_middleware(AuthMiddleware)
+
+# 1. Session middleware (added first = innermost = runs last before route)
+#    But since Auth needs session, Session must actually run BEFORE Auth.
+#    In Starlette's reverse model: add SessionMiddleware AFTER AuthMiddleware.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.secret_key,
+    session_cookie="acs_session",
+    max_age=settings.session_expire_hours * 3600,
+    https_only=False,  # Set True if HTTPS-only
+    same_site="lax",
 )
 
 # Register routers

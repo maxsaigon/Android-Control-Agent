@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir \
     python-dotenv \
     pydantic-settings \
     websockets \
-    Pillow
+    Pillow \
+    itsdangerous
 
 # Copy app code
 COPY app/ ./app/
