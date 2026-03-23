@@ -12,6 +12,7 @@
 | 3 | [video-management-system.md](video-management-system.md) | ✅ COMPLETE | Video library management, device assignment, adb push, duplicate prevention |
 | 4 | [proxy-antidetect-management.md](proxy-antidetect-management.md) | 📋 PLANNED | Proxy per-device, antidetect fingerprint spoofing, bypass platform detection, proxy pool management |
 | 5 | [auth-protection.md](auth-protection.md) | ✅ COMPLETE | Session-based auth middleware — bảo vệ toàn bộ dashboard và API khỏi truy cập public |
+| 6 | [ai-video-metadata.md](ai-video-metadata.md) | 🔄 IN PROGRESS | AI auto-suggest Title/Tags/Description cho video — GPT-4o-mini Vision + keyframe analysis |
 
 ## Completed Features (No Separate Plan Files)
 

@@ -8,6 +8,7 @@ from sqlmodel import Session
 
 from app.database import get_session
 from app.services.video_service import video_service
+from app.services.ai_metadata_service import ai_metadata_service
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,57 @@ async def push_to_device(
             raise HTTPException(404, message)
         raise HTTPException(500, message)
     return {"success": True, "message": message}
+
+
+# --- AI Metadata endpoints (static paths, before dynamic /{video_id}) ---
+
+
+@router.post("/{video_id}/ai-suggest")
+async def ai_suggest_metadata(
+    video_id: int,
+    body: dict = None,
+    session: Session = Depends(get_session),
+):
+    """Trigger AI metadata generation for a video.
+
+    Body (optional): { "platform": "tiktok" }
+    Default platform: tiktok
+    """
+    platform = (body or {}).get("platform", "tiktok")
+
+    result = await ai_metadata_service.generate_suggestions(
+        session, video_id, platform=str(platform).lower()
+    )
+    if result is None:
+        raise HTTPException(
+            500,
+            "AI metadata generation failed. Check server logs for details.",
+        )
+    return result
+
+
+@router.post("/{video_id}/apply-ai")
+def apply_ai_suggestions(
+    video_id: int,
+    body: dict = None,
+    session: Session = Depends(get_session),
+):
+    """Apply AI suggestions to actual video fields.
+
+    Body (optional): { "apply_title": true, "apply_tags": true, "apply_description": true }
+    All default to true.
+    """
+    opts = body or {}
+    result = ai_metadata_service.apply_suggestions(
+        session,
+        video_id,
+        apply_title=opts.get("apply_title", True),
+        apply_tags=opts.get("apply_tags", True),
+        apply_description=opts.get("apply_description", True),
+    )
+    if result is None:
+        raise HTTPException(404, "Video not found or no AI suggestions available")
+    return result
 
 
 # --- Dynamic {video_id} routes last ---

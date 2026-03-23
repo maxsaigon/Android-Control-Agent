@@ -1601,11 +1601,14 @@ function renderVideoGrid(videos) {
         }).join('');
 
         const hasAssignment = assignments.length > 0;
+        const hasAi = v.ai_title || v.ai_tags || v.ai_description;
+        const aiIndicator = hasAi ? '<span class="ai-badge" title="AI đã gợi ý">✨</span>' : '';
         return `
         <div class="video-card">
             <div class="video-thumb">
                 🎬
                 <span class="video-size-badge">${sizeMB}MB</span>
+                ${aiIndicator}
             </div>
             <div class="video-info">
                 <div class="video-title" title="${v.title || v.filename}">${v.title || v.filename}</div>
@@ -1613,8 +1616,9 @@ function renderVideoGrid(videos) {
                 <div class="video-platforms">${platformBadges || '<span style="color:var(--text-muted);font-size:11px">Chưa assign</span>'}</div>
             </div>
             <div class="video-actions">
-                <button class="btn btn-xs btn-primary" onclick="openAssignModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\'")}')">📌 Assign</button>
-                <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${v.id}, this)">🗑️</button>
+                <button class="btn btn-xs btn-accent" onclick="openAiSuggestModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\\'")}')" title="AI gợi ý Title/Tags/Description">🤖 AI</button>
+                <button class="btn btn-xs btn-primary" onclick="openAssignModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\\'")}')" title="Assign cho device">📌</button>
+                <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${v.id}, this)" title="Xoá video">🗑️</button>
             </div>
         </div>`;
     }).join('');
@@ -1753,6 +1757,120 @@ async function _doDeleteVideo(videoId, btnEl) {
     }
 }
 
+// --- AI Metadata Suggest ---
+
+function openAiSuggestModal(videoId, videoTitle) {
+    const video = videoList.find(v => v.id === videoId);
+    const hasExisting = video && (video.ai_title || video.ai_tags || video.ai_description);
+
+    const modal = document.createElement('div');
+    modal.id = 'aiSuggestModal';
+    modal.className = 'modal-overlay open';
+    modal.style.cssText = 'z-index:9999';
+
+    let existingHtml = '';
+    if (hasExisting) {
+        existingHtml = `
+            <div class="ai-suggest-existing">
+                <h4>✨ Gợi ý hiện có</h4>
+                <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${video.ai_title || '—'}</span></div>
+                <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${video.ai_tags || '—'}</span></div>
+                <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${video.ai_description || '—'}</span></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn btn-xs btn-primary" onclick="applyAiSuggestions(${videoId})">✅ Apply</button>
+                    <button class="btn btn-xs btn-ghost" onclick="requestAiSuggest(${videoId})">🔄 Tạo lại</button>
+                </div>
+            </div>
+            <hr style="border-color:rgba(255,255,255,0.1);margin:16px 0">`;
+    }
+
+    modal.innerHTML = `
+    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:480px">
+        <div class="modal-header">
+            <h3>🤖 AI Suggest: ${videoTitle}</h3>
+            <button class="modal-close" onclick="document.getElementById('aiSuggestModal').remove()">×</button>
+        </div>
+        <div class="modal-body">
+            ${existingHtml}
+            <div class="form-group">
+                <label>🌐 Platform target</label>
+                <select id="aiPlatformSel">
+                    <option value="tiktok">🎵 TikTok</option>
+                    <option value="youtube">▶️ YouTube</option>
+                    <option value="instagram">📷 Instagram</option>
+                    <option value="facebook">📘 Facebook</option>
+                </select>
+            </div>
+            <button class="btn btn-primary btn-block" onclick="requestAiSuggest(${videoId})">
+                ${hasExisting ? '🔄 Tạo gợi ý mới' : '🤖 Tạo gợi ý AI'}
+            </button>
+            <div id="aiSuggestResult" style="margin-top:16px"></div>
+        </div>
+    </div>`;
+    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    document.body.appendChild(modal);
+}
+
+async function requestAiSuggest(videoId) {
+    const platform = document.getElementById('aiPlatformSel')?.value || 'tiktok';
+    const resultDiv = document.getElementById('aiSuggestResult');
+    if (resultDiv) {
+        resultDiv.innerHTML = '<div style="text-align:center;padding:24px"><div class="spinner"></div><div style="margin-top:12px;color:var(--text-muted);font-size:13px">🤖 AI đang phân tích keyframes...<br><small>Thường mất 5-15 giây</small></div></div>';
+    }
+
+    try {
+        const res = await fetch(`${API}/api/videos/${videoId}/ai-suggest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ platform }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ ${data.detail || 'AI generation failed'}</div>`;
+            toast('❌ AI suggest thất bại', 'error');
+            return;
+        }
+
+        toast('✨ AI đã tạo gợi ý thành công!', 'success');
+
+        if (resultDiv) {
+            resultDiv.innerHTML = `
+                <div class="ai-suggest-result">
+                    <h4>✨ Kết quả AI</h4>
+                    <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${data.ai_title || '—'}</span></div>
+                    <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${data.ai_tags || '—'}</span></div>
+                    <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${data.ai_description || '—'}</span></div>
+                    <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="applyAiSuggestions(${videoId})">✅ Apply gợi ý → Video</button>
+                </div>`;
+        }
+
+        refreshVideos();
+    } catch (e) {
+        if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ Lỗi: ${e.message}</div>`;
+        toast(`AI lỗi: ${e.message}`, 'error');
+    }
+}
+
+async function applyAiSuggestions(videoId) {
+    try {
+        const res = await fetch(`${API}/api/videos/${videoId}/apply-ai`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            toast('✅ Đã apply AI suggestions', 'success');
+            document.getElementById('aiSuggestModal')?.remove();
+            refreshVideos();
+        } else {
+            toast(`❌ ${data.detail || 'Apply thất bại'}`, 'error');
+        }
+    } catch (e) {
+        toast(`Lỗi: ${e.message}`, 'error');
+    }
+}
 
 // --- Assignment Matrix ---
 

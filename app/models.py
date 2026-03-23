@@ -319,8 +319,14 @@ class Video(SQLModel, table=True):
     duration: Optional[float] = None  # Seconds
     title: Optional[str] = None  # User-defined title
     tags: Optional[str] = None  # Comma-separated tags
+    description: Optional[str] = None  # User-defined description
     status: VideoStatus = VideoStatus.AVAILABLE
     file_cleaned_at: Optional[datetime] = None  # When physical file was deleted (auto-cleanup)
+    # AI-generated metadata suggestions
+    ai_title: Optional[str] = None
+    ai_tags: Optional[str] = None
+    ai_description: Optional[str] = None
+    ai_generated_at: Optional[datetime] = None
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -377,7 +383,12 @@ class VideoRead(SQLModel):
     duration: Optional[float]
     title: Optional[str]
     tags: Optional[str]
+    description: Optional[str]
     status: VideoStatus
+    ai_title: Optional[str]
+    ai_tags: Optional[str]
+    ai_description: Optional[str]
+    ai_generated_at: Optional[datetime]
     created_at: datetime
 
 
@@ -408,7 +419,12 @@ class VideoDetail(SQLModel):
     duration: Optional[float]
     title: Optional[str]
     tags: Optional[str]
+    description: Optional[str]
     status: VideoStatus
+    ai_title: Optional[str]
+    ai_tags: Optional[str]
+    ai_description: Optional[str]
+    ai_generated_at: Optional[datetime]
     created_at: datetime
     assignments: List[VideoAssignmentRead] = []
 

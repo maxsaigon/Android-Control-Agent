@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     video_storage_dir: str = str(DATA_DIR / "videos")  # Server-side video cache
     device_video_path: str = "/sdcard/DCIM/AndroidControl"  # Path on device
 
+    # AI Metadata (video analysis)
+    ai_metadata_model: str = "gpt-4o-mini"  # Vision model for frame analysis
+    ai_metadata_max_frames: int = 5  # Number of keyframes to extract
+
     model_config = {
         "env_file": str(RUNTIME_DIR / ".env"),
         "env_file_encoding": "utf-8",
