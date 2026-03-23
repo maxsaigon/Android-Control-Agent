@@ -327,6 +327,7 @@ class Video(SQLModel, table=True):
     ai_tags: Optional[str] = None
     ai_description: Optional[str] = None
     ai_generated_at: Optional[datetime] = None
+    thumbnail: Optional[str] = None  # Path to AI-selected thumbnail
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

@@ -2,13 +2,15 @@
 
 Pipeline:
     1. FFmpeg: extract N keyframes from video → base64 images
-    2. GPT-4o-mini Vision: analyze frames → generate title, tags, description
-    3. Save suggestions to Video record
+    2. Pick best frame as thumbnail → save to /data/videos/thumbnails/
+    3. GPT-4o-mini Vision: analyze frames → generate title, tags, description
+    4. Save suggestions + thumbnail path to Video record
 """
 
 import base64
 import json
 import logging
+import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -23,23 +25,40 @@ from app.models import Video
 
 logger = logging.getLogger(__name__)
 
-# System prompt for metadata generation
+# Supported languages for metadata generation
+SUPPORTED_LANGUAGES = {
+    "vi": "Tiếng Việt",
+    "en": "English",
+    "ja": "日本語 (Japanese)",
+    "ko": "한국어 (Korean)",
+    "zh": "中文 (Chinese)",
+    "th": "ภาษาไทย (Thai)",
+    "id": "Bahasa Indonesia",
+    "auto": "Tự động phát hiện từ nội dung video",
+}
+
+# System prompt for metadata generation — language-aware
 _METADATA_SYSTEM_PROMPT = """Bạn là chuyên gia SEO cho mạng xã hội. Phân tích các keyframes từ video và tạo metadata tối ưu.
 
 Yêu cầu:
 - title: Ngắn gọn, gây tò mò, có keyword chính (max 100 ký tự). KHÔNG dùng emoji trong title.
 - tags: 8-15 hashtags phù hợp, mix trending + niche. Dạng mảng string, mỗi tag có # phía trước.
 - description: 2-3 câu mô tả nội dung video + call-to-action. Có thể dùng emoji.
+- thumbnail_index: Chọn index (0-based) của keyframe phù hợp nhất làm thumbnail.
 
 Platform target: {platform}
-Ngôn ngữ: Tiếng Việt (trừ khi nội dung rõ ràng là tiếng Anh)
+Ngôn ngữ output: {language}
 
 Trả lời ĐÚNG JSON format sau, KHÔNG có text khác:
 {{
   "title": "...",
   "tags": ["#tag1", "#tag2", "#tag3"],
-  "description": "..."
+  "description": "...",
+  "thumbnail_index": 0
 }}"""
+
+# Thumbnail storage directory
+THUMBNAIL_DIR = Path(settings.video_storage_dir) / "thumbnails"
 
 
 class AIMetadataService:
@@ -65,6 +84,7 @@ class AIMetadataService:
         session: Session,
         video_id: int,
         platform: str = "tiktok",
+        language: str = "vi",
     ) -> Optional[dict]:
         """Generate AI metadata suggestions for a video.
 
@@ -72,9 +92,10 @@ class AIMetadataService:
             session: Database session
             video_id: Video ID
             platform: Target platform (tiktok/youtube/instagram/facebook)
+            language: Output language code (vi/en/ja/ko/zh/th/id/auto)
 
         Returns:
-            Dict with ai_title, ai_tags, ai_description or None on error.
+            Dict with ai_title, ai_tags, ai_description, thumbnail or None on error.
         """
         video = session.get(Video, video_id)
         if not video:
@@ -89,9 +110,12 @@ class AIMetadataService:
             logger.error("OpenAI API key not configured")
             return None
 
+        # Resolve language label
+        lang_label = SUPPORTED_LANGUAGES.get(language, SUPPORTED_LANGUAGES["vi"])
+
         try:
-            # Step 1: Extract keyframes
-            frames_b64 = self._extract_keyframes(
+            # Step 1: Extract keyframes (returns both b64 and raw bytes)
+            frames_b64, frame_bytes_list = self._extract_keyframes(
                 video.filepath,
                 n_frames=settings.ai_metadata_max_frames,
             )
@@ -104,28 +128,40 @@ class AIMetadataService:
             )
 
             # Step 2: Analyze with GPT-4o-mini vision
-            result = await self._analyze_and_generate(frames_b64, platform)
+            result = await self._analyze_and_generate(
+                frames_b64, platform, lang_label
+            )
             if not result:
                 logger.error(f"AI analysis failed for video {video_id}")
                 return None
 
-            # Step 3: Save to DB
+            # Step 3: Save thumbnail
+            thumb_idx = result.get("thumbnail_index", 0)
+            thumb_idx = max(0, min(thumb_idx, len(frame_bytes_list) - 1))
+            thumbnail_path = self._save_thumbnail(
+                video_id, frame_bytes_list[thumb_idx]
+            )
+
+            # Step 4: Save to DB
             video.ai_title = result.get("title")
             video.ai_tags = ",".join(result.get("tags", []))
             video.ai_description = result.get("description")
             video.ai_generated_at = datetime.now(timezone.utc)
+            if thumbnail_path:
+                video.thumbnail = thumbnail_path
             session.commit()
             session.refresh(video)
 
             logger.info(
                 f"AI metadata generated for video {video_id}: "
-                f"title='{video.ai_title}'"
+                f"title='{video.ai_title}', thumbnail={thumbnail_path}"
             )
             return {
                 "ai_title": video.ai_title,
                 "ai_tags": video.ai_tags,
                 "ai_description": video.ai_description,
                 "ai_generated_at": str(video.ai_generated_at),
+                "thumbnail": video.thumbnail,
             }
 
         except Exception as e:
@@ -177,10 +213,10 @@ class AIMetadataService:
         self,
         video_path: str,
         n_frames: int = 5,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[bytes]]:
         """Extract N evenly-spaced keyframes from a video using FFmpeg.
 
-        Returns list of base64-encoded JPEG images.
+        Returns tuple of (base64-encoded strings, raw bytes) for each frame.
         """
         video_path = str(video_path)
 
@@ -218,22 +254,23 @@ class AIMetadataService:
                 )
                 if result.returncode != 0:
                     logger.error(f"FFmpeg failed: {result.stderr[:500]}")
-                    return []
+                    return [], []
             except subprocess.TimeoutExpired:
                 logger.error("FFmpeg timeout (>60s)")
-                return []
+                return [], []
             except FileNotFoundError:
                 logger.error("FFmpeg not installed")
-                return []
+                return [], []
 
-            # Read frames and encode to base64
-            frames = []
+            # Read frames — both base64 and raw bytes
+            frames_b64 = []
+            frames_bytes = []
             for frame_file in sorted(Path(tmpdir).glob("frame_*.jpg")):
-                with open(frame_file, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("utf-8")
-                    frames.append(b64)
+                raw = frame_file.read_bytes()
+                frames_b64.append(base64.b64encode(raw).decode("utf-8"))
+                frames_bytes.append(raw)
 
-            return frames[:n_frames]
+            return frames_b64[:n_frames], frames_bytes[:n_frames]
 
     def _get_duration(self, video_path: str) -> Optional[float]:
         """Get video duration in seconds using FFprobe."""
@@ -256,6 +293,25 @@ class AIMetadataService:
         return None
 
     # ------------------------------------------------------------------
+    # Internal: Thumbnail
+    # ------------------------------------------------------------------
+
+    def _save_thumbnail(self, video_id: int, frame_bytes: bytes) -> Optional[str]:
+        """Save a keyframe as thumbnail JPEG.
+
+        Returns relative path like '/data/videos/thumbnails/3.jpg' or None.
+        """
+        try:
+            THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+            thumb_path = THUMBNAIL_DIR / f"{video_id}.jpg"
+            thumb_path.write_bytes(frame_bytes)
+            logger.info(f"Saved thumbnail: {thumb_path}")
+            return str(thumb_path)
+        except Exception as e:
+            logger.error(f"Failed to save thumbnail: {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Internal: GPT-4o-mini Vision analysis
     # ------------------------------------------------------------------
 
@@ -263,10 +319,11 @@ class AIMetadataService:
         self,
         frames_b64: list[str],
         platform: str,
+        language: str = "Tiếng Việt",
     ) -> Optional[dict]:
         """Send keyframes to GPT-4o-mini vision and generate metadata.
 
-        Returns dict with title, tags, description.
+        Returns dict with title, tags, description, thumbnail_index.
         """
         # Build content with images
         content = [
@@ -274,7 +331,8 @@ class AIMetadataService:
                 "type": "text",
                 "text": (
                     f"Đây là {len(frames_b64)} keyframes từ 1 video sẽ upload lên {platform}. "
-                    "Phân tích nội dung hình ảnh và tạo metadata SEO-optimized."
+                    "Phân tích nội dung hình ảnh và tạo metadata SEO-optimized. "
+                    "Cũng hãy chọn keyframe nào phù hợp nhất làm thumbnail."
                 ),
             }
         ]
@@ -294,7 +352,9 @@ class AIMetadataService:
                 messages=[
                     {
                         "role": "system",
-                        "content": _METADATA_SYSTEM_PROMPT.format(platform=platform),
+                        "content": _METADATA_SYSTEM_PROMPT.format(
+                            platform=platform, language=language
+                        ),
                     },
                     {
                         "role": "user",

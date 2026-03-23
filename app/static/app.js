@@ -1605,8 +1605,8 @@ function renderVideoGrid(videos) {
         const aiIndicator = hasAi ? '<span class="ai-badge" title="AI đã gợi ý">✨</span>' : '';
         return `
         <div class="video-card">
-            <div class="video-thumb">
-                🎬
+            <div class="video-thumb" ${v.thumbnail ? `style="background:url('${API}/api/videos/${v.id}/thumbnail');background-size:cover;background-position:center"` : ''}>
+                ${v.thumbnail ? '' : '🎬'}
                 <span class="video-size-badge">${sizeMB}MB</span>
                 ${aiIndicator}
             </div>
@@ -1801,6 +1801,19 @@ function openAiSuggestModal(videoId, videoTitle) {
                     <option value="facebook">📘 Facebook</option>
                 </select>
             </div>
+            <div class="form-group">
+                <label>🗣️ Ngôn ngữ output</label>
+                <select id="aiLangSel">
+                    <option value="vi">🇻🇳 Tiếng Việt</option>
+                    <option value="en">🇺🇸 English</option>
+                    <option value="ja">🇯🇵 日本語</option>
+                    <option value="ko">🇰🇷 한국어</option>
+                    <option value="zh">🇨🇳 中文</option>
+                    <option value="th">🇹🇭 ภาษาไทย</option>
+                    <option value="id">🇮🇩 Bahasa Indonesia</option>
+                    <option value="auto">🤖 Auto-detect</option>
+                </select>
+            </div>
             <button class="btn btn-primary btn-block" onclick="requestAiSuggest(${videoId})">
                 ${hasExisting ? '🔄 Tạo gợi ý mới' : '🤖 Tạo gợi ý AI'}
             </button>
@@ -1813,6 +1826,7 @@ function openAiSuggestModal(videoId, videoTitle) {
 
 async function requestAiSuggest(videoId) {
     const platform = document.getElementById('aiPlatformSel')?.value || 'tiktok';
+    const language = document.getElementById('aiLangSel')?.value || 'vi';
     const resultDiv = document.getElementById('aiSuggestResult');
     if (resultDiv) {
         resultDiv.innerHTML = '<div style="text-align:center;padding:24px"><div class="spinner"></div><div style="margin-top:12px;color:var(--text-muted);font-size:13px">🤖 AI đang phân tích keyframes...<br><small>Thường mất 5-15 giây</small></div></div>';
@@ -1822,7 +1836,7 @@ async function requestAiSuggest(videoId) {
         const res = await fetch(`${API}/api/videos/${videoId}/ai-suggest`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ platform }),
+            body: JSON.stringify({ platform, language }),
         });
         const data = await res.json();
 

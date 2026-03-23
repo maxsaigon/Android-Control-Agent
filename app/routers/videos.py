@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session
 
 from app.database import get_session
+from app.models import Video
 from app.services.video_service import video_service
 from app.services.ai_metadata_service import ai_metadata_service
 
@@ -143,13 +144,19 @@ async def ai_suggest_metadata(
 ):
     """Trigger AI metadata generation for a video.
 
-    Body (optional): { "platform": "tiktok" }
-    Default platform: tiktok
+    Body (optional): { "platform": "tiktok", "language": "vi" }
+    Default platform: tiktok, language: vi
+    Supported languages: vi, en, ja, ko, zh, th, id, auto
     """
-    platform = (body or {}).get("platform", "tiktok")
+    opts = body or {}
+    platform = opts.get("platform", "tiktok")
+    language = opts.get("language", "vi")
 
     result = await ai_metadata_service.generate_suggestions(
-        session, video_id, platform=str(platform).lower()
+        session,
+        video_id,
+        platform=str(platform).lower(),
+        language=str(language).lower(),
     )
     if result is None:
         raise HTTPException(
@@ -157,6 +164,29 @@ async def ai_suggest_metadata(
             "AI metadata generation failed. Check server logs for details.",
         )
     return result
+
+
+@router.get("/{video_id}/thumbnail")
+def get_video_thumbnail(
+    video_id: int,
+    session: Session = Depends(get_session),
+):
+    """Serve AI-generated thumbnail for a video."""
+    video = session.get(Video, video_id)
+    if not video or not video.thumbnail:
+        raise HTTPException(404, "Thumbnail not found")
+
+    from pathlib import Path
+    thumb_path = Path(video.thumbnail)
+    if not thumb_path.exists():
+        raise HTTPException(404, "Thumbnail file missing")
+
+    from fastapi.responses import FileResponse
+    return FileResponse(
+        str(thumb_path),
+        media_type="image/jpeg",
+        filename=f"thumb_{video_id}.jpg",
+    )
 
 
 @router.post("/{video_id}/apply-ai")

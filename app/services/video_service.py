@@ -51,6 +51,7 @@ def _video_to_dict(v: Video) -> dict:
         "ai_tags": v.ai_tags,
         "ai_description": v.ai_description,
         "ai_generated_at": v.ai_generated_at,
+        "thumbnail": v.thumbnail,
         "created_at": v.created_at,
     }
 
