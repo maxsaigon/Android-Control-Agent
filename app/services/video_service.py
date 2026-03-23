@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -364,6 +365,17 @@ class VideoService:
         adb_target = f"{device.ip_address}:{device.adb_port}"
 
         try:
+            # Step 0: Ensure ADB connection (WiFi ADB can drop)
+            connect_cmd = [
+                settings.adb_path, "connect", adb_target,
+            ]
+            logger.info(f"ADB connect: {adb_target}")
+            conn_result = subprocess.run(
+                connect_cmd, capture_output=True, text=True, timeout=10
+            )
+            conn_output = (conn_result.stdout + conn_result.stderr).strip()
+            logger.info(f"ADB connect result: {conn_output}")
+
             # Ensure target directory exists on device
             mkdir_cmd = [
                 settings.adb_path, "-s", adb_target,
@@ -372,7 +384,7 @@ class VideoService:
             logger.info(f"ADB mkdir: {' '.join(mkdir_cmd)}")
             subprocess.run(mkdir_cmd, capture_output=True, timeout=10)
 
-            # Push the file
+            # Push the file (with retry on failure)
             push_cmd = [
                 settings.adb_path, "-s", adb_target,
                 "push", video.filepath, device_path,
@@ -383,6 +395,29 @@ class VideoService:
             result = subprocess.run(
                 push_cmd, capture_output=True, text=True, timeout=300
             )
+
+            # If first attempt fails, retry with fresh connect
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip()
+                logger.warning(
+                    f"ADB push attempt 1 failed: {error_msg}. Retrying with fresh connect..."
+                )
+
+                # Force reconnect
+                subprocess.run(
+                    [settings.adb_path, "disconnect", adb_target],
+                    capture_output=True, timeout=5,
+                )
+                time.sleep(1)
+                subprocess.run(
+                    connect_cmd, capture_output=True, text=True, timeout=10
+                )
+                time.sleep(1)
+
+                # Retry push
+                result = subprocess.run(
+                    push_cmd, capture_output=True, text=True, timeout=300
+                )
 
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or result.stdout.strip()
