@@ -322,13 +322,32 @@ class Video(SQLModel, table=True):
     description: Optional[str] = None  # User-defined description
     status: VideoStatus = VideoStatus.AVAILABLE
     file_cleaned_at: Optional[datetime] = None  # When physical file was deleted (auto-cleanup)
-    # AI-generated metadata suggestions
+    # AI-generated metadata suggestions (latest / active)
     ai_title: Optional[str] = None
     ai_tags: Optional[str] = None
     ai_description: Optional[str] = None
     ai_generated_at: Optional[datetime] = None
     thumbnail: Optional[str] = None  # Path to AI-selected thumbnail
     created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+class VideoAIMetadata(SQLModel, table=True):
+    """Cached AI-generated metadata per video × language × platform.
+
+    Avoids re-generating (and re-spending tokens) for the same combo.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    video_id: int = Field(index=True)
+    language: str  # vi, en, ja, ko, zh, th, id, auto
+    platform: str  # tiktok, youtube, instagram, facebook
+    ai_title: str
+    ai_tags: str  # Comma-separated
+    ai_description: str
+    thumbnail: Optional[str] = None
+    generated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
 

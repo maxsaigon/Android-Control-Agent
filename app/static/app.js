@@ -1792,6 +1792,7 @@ function openAiSuggestModal(videoId, videoTitle) {
         </div>
         <div class="modal-body">
             ${existingHtml}
+            <div id="aiCacheBadges" style="margin-bottom:12px"></div>
             <div class="form-group">
                 <label>🌐 Platform target</label>
                 <select id="aiPlatformSel">
@@ -1814,29 +1815,67 @@ function openAiSuggestModal(videoId, videoTitle) {
                     <option value="auto">🤖 Auto-detect</option>
                 </select>
             </div>
-            <button class="btn btn-primary btn-block" onclick="requestAiSuggest(${videoId})">
-                ${hasExisting ? '🔄 Tạo gợi ý mới' : '🤖 Tạo gợi ý AI'}
-            </button>
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-primary" style="flex:1" onclick="requestAiSuggest(${videoId}, false)">
+                    ⚡ Lấy gợi ý
+                </button>
+                <button class="btn btn-ghost" onclick="requestAiSuggest(${videoId}, true)" title="Tạo mới (tốn token)">
+                    🔄 Tạo mới
+                </button>
+            </div>
             <div id="aiSuggestResult" style="margin-top:16px"></div>
         </div>
     </div>`;
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
     document.body.appendChild(modal);
+
+    // Load cached versions
+    _loadAiCache(videoId);
 }
 
-async function requestAiSuggest(videoId) {
+async function _loadAiCache(videoId) {
+    try {
+        const res = await fetch(`${API}/api/videos/${videoId}/ai-cache`);
+        if (!res.ok) return;
+        const cache = await res.json();
+        const badgesDiv = document.getElementById('aiCacheBadges');
+        if (!badgesDiv || !cache.length) return;
+
+        const langFlags = { vi: '🇻🇳', en: '🇺🇸', ja: '🇯🇵', ko: '🇰🇷', zh: '🇨🇳', th: '🇹🇭', id: '🇮🇩', auto: '🤖' };
+        const badges = cache.map(c => {
+            const flag = langFlags[c.language] || '🌐';
+            return `<span class="ai-cache-badge" onclick="_loadCachedResult(${videoId}, '${c.language}', '${c.platform}')" title="${c.platform} / ${c.language} — click to load">${flag} ${c.language}/${c.platform}</span>`;
+        }).join(' ');
+        badgesDiv.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">💾 Cached (click to load, 0 tokens):</div>${badges}`;
+    } catch (e) { /* ignore */ }
+}
+
+async function _loadCachedResult(videoId, language, platform) {
+    // Set dropdowns to match cached entry
+    const langSel = document.getElementById('aiLangSel');
+    const platSel = document.getElementById('aiPlatformSel');
+    if (langSel) langSel.value = language;
+    if (platSel) platSel.value = platform;
+    // Fetch with force=false → will return cache instantly
+    await requestAiSuggest(videoId, false);
+}
+
+async function requestAiSuggest(videoId, force = false) {
     const platform = document.getElementById('aiPlatformSel')?.value || 'tiktok';
     const language = document.getElementById('aiLangSel')?.value || 'vi';
     const resultDiv = document.getElementById('aiSuggestResult');
     if (resultDiv) {
-        resultDiv.innerHTML = '<div style="text-align:center;padding:24px"><div class="spinner"></div><div style="margin-top:12px;color:var(--text-muted);font-size:13px">🤖 AI đang phân tích keyframes...<br><small>Thường mất 5-15 giây</small></div></div>';
+        const msg = force
+            ? '🤖 AI đang tạo mới (tốn token)...<br><small>5-15 giây</small>'
+            : '⚡ Đang tải...';
+        resultDiv.innerHTML = `<div style="text-align:center;padding:24px"><div class="spinner"></div><div style="margin-top:12px;color:var(--text-muted);font-size:13px">${msg}</div></div>`;
     }
 
     try {
         const res = await fetch(`${API}/api/videos/${videoId}/ai-suggest`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ platform, language }),
+            body: JSON.stringify({ platform, language, force }),
         });
         const data = await res.json();
 
@@ -1846,12 +1885,16 @@ async function requestAiSuggest(videoId) {
             return;
         }
 
-        toast('✨ AI đã tạo gợi ý thành công!', 'success');
+        const cacheLabel = data.cached
+            ? '<span style="color:#4ade80;font-size:11px">⚡ Từ cache (0 tokens)</span>'
+            : '<span style="color:#f59e0b;font-size:11px">🤖 Mới tạo</span>';
+        toast(data.cached ? '⚡ Loaded from cache!' : '✨ AI đã tạo gợi ý mới!', 'success');
 
         if (resultDiv) {
             resultDiv.innerHTML = `
                 <div class="ai-suggest-result">
-                    <h4>✨ Kết quả AI</h4>
+                    <h4>✨ Kết quả AI ${cacheLabel}</h4>
+                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">🌐 ${data.language || language} / ${data.platform || platform}</div>
                     <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${data.ai_title || '—'}</span></div>
                     <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${data.ai_tags || '—'}</span></div>
                     <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${data.ai_description || '—'}</span></div>
@@ -1860,6 +1903,7 @@ async function requestAiSuggest(videoId) {
         }
 
         refreshVideos();
+        _loadAiCache(videoId); // Refresh cache badges
     } catch (e) {
         if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ Lỗi: ${e.message}</div>`;
         toast(`AI lỗi: ${e.message}`, 'error');

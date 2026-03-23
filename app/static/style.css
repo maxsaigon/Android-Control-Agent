@@ -1959,6 +1959,23 @@ textarea { resize: vertical; min-height: 60px; }
     font-size: 13px;
 }
 
+.ai-cache-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    margin: 2px;
+    font-size: 11px;
+    background: rgba(99, 102, 241, 0.15);
+    border: 1px solid rgba(99, 102, 241, 0.3);
+    border-radius: 12px;
+    color: var(--accent-light);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.ai-cache-badge:hover {
+    background: rgba(99, 102, 241, 0.3);
+    transform: translateY(-1px);
+}
+
 .spinner {
     width: 28px;
     height: 28px;

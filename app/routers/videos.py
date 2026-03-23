@@ -142,21 +142,24 @@ async def ai_suggest_metadata(
     body: dict = None,
     session: Session = Depends(get_session),
 ):
-    """Trigger AI metadata generation for a video.
+    """Generate or retrieve cached AI metadata suggestions.
 
-    Body (optional): { "platform": "tiktok", "language": "vi" }
-    Default platform: tiktok, language: vi
-    Supported languages: vi, en, ja, ko, zh, th, id, auto
+    Body: { "platform": "tiktok", "language": "vi", "force": false }
+    - force=false (default): returns cached result if exists (0 tokens)
+    - force=true: regenerate even if cached
+    Response includes "cached": true/false indicator.
     """
     opts = body or {}
     platform = opts.get("platform", "tiktok")
     language = opts.get("language", "vi")
+    force = opts.get("force", False)
 
     result = await ai_metadata_service.generate_suggestions(
         session,
         video_id,
         platform=str(platform).lower(),
         language=str(language).lower(),
+        force=bool(force),
     )
     if result is None:
         raise HTTPException(
@@ -164,6 +167,15 @@ async def ai_suggest_metadata(
             "AI metadata generation failed. Check server logs for details.",
         )
     return result
+
+
+@router.get("/{video_id}/ai-cache")
+def get_ai_cache(
+    video_id: int,
+    session: Session = Depends(get_session),
+):
+    """List all cached AI metadata for a video (all languages/platforms)."""
+    return ai_metadata_service.get_all_cached(session, video_id)
 
 
 @router.get("/{video_id}/thumbnail")
