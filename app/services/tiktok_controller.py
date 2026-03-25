@@ -11,11 +11,14 @@ Key Design:
 """
 
 import asyncio
+import json
 import logging
 import random
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -77,8 +80,12 @@ class TikTokController:
         "search":  re.compile(r"^Search$", re.IGNORECASE),
         "inbox":   re.compile(r"^Inbox$", re.IGNORECASE),
         "profile": re.compile(r"^Profile$", re.IGNORECASE),
-        "create":  re.compile(r"^Create$", re.IGNORECASE),
+        "create":  re.compile(r"^(Create|Tạo)$", re.IGNORECASE),
+        "upload_gallery": re.compile(r"^(Upload|Tải lên)$", re.IGNORECASE),
+        "next_btn": re.compile(r"^(Next|Tiếp)$", re.IGNORECASE),
+        "post_btn": re.compile(r"^(Post|Đăng)$", re.IGNORECASE),
     }
+    DURATION_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
 
     # Fallback coordinates as percentages of screen (w, h)
     # These are calibrated from the real TikTok UI on 1080x2280
@@ -90,24 +97,31 @@ class TikTokController:
         "avatar":        (0.92, 0.42),    # [923,899][1056,1032]  → center (990, 966)
         "sound":         (0.91, 0.83),    # [888,1803][1080,1989] → center (984, 1896)
         "comment_input": (0.40, 0.90),    # Bottom of comment panel
+        "create":        (0.50, 0.88),    # Nav bar (+) button
+        "upload_gallery":(0.82, 0.75),    # Camera screen gallery thumbnail
+        "video_checkbox":(0.28, 0.19),    # First video checkbox in gallery
+        "next_btn":      (0.74, 0.87),    # Next button
+        "post_btn":      (0.74, 0.87),    # Post button
     }
 
-    def __init__(self, adb_agent, backend=None):
+    def __init__(self, adb_agent, backend=None, device_hint: str = ""):
         self._adb = adb_agent
         self._backend = backend  # DeviceBackend, if available
+        self._device_hint = device_hint
         self._screen_cache: dict[str, tuple[int, int]] = {}
 
-    async def _get_backend(self):
+    async def _get_backend(self, device: str | None = None):
         """Lazy-init backend."""
         if not self._backend:
             from app.services.backend_manager import backend_manager
             # Won't fail — falls back to ADB
-            self._backend = await backend_manager.get_backend("")
+            target_device = device or self._device_hint
+            self._backend = await backend_manager.get_backend(target_device)
         return self._backend
 
     async def _tap(self, device: str, x: int, y: int):
         """Tap via backend (preferred) or ADB (fallback)."""
-        await self._get_backend()
+        await self._get_backend(device)
         if self._backend:
             await self._backend.tap(device, x, y)
         else:
@@ -117,7 +131,7 @@ class TikTokController:
     async def _get_screen_size(self, device: str) -> tuple[int, int]:
         """Get cached screen dimensions (Accessibility preferred, ADB fallback)."""
         if device not in self._screen_cache:
-            await self._get_backend()
+            await self._get_backend(device)
             if self._backend:
                 try:
                     w, h = await self._backend.get_screen_size(device)
@@ -188,6 +202,60 @@ class TikTokController:
             logger.warning(f"UI dump failed: {e}")
             return []
 
+    async def dump_ui_xml(self, device: str, save_path: str | None = None) -> str:
+        """Dump raw UI XML and optionally persist it locally."""
+        try:
+            await self._adb._run_adb(
+                device, "shell", "uiautomator", "dump", "/sdcard/_ui.xml"
+            )
+            _, xml_raw, _ = await self._adb._run_adb(
+                device, "shell", "cat", "/sdcard/_ui.xml"
+            )
+
+            xml_start = xml_raw.find("<?xml")
+            if xml_start < 0:
+                xml_start = xml_raw.find("<hierarchy")
+            if xml_start < 0:
+                return ""
+
+            xml_clean = xml_raw[xml_start:]
+            if save_path:
+                Path(save_path).write_text(xml_clean, encoding="utf-8")
+            return xml_clean
+        except Exception as e:
+            logger.warning(f"UI XML dump failed: {e}")
+            return ""
+
+    async def _dump_all_ui_nodes(self, device: str) -> list[dict]:
+        """Dump UI nodes from all packages for cross-app popup detection."""
+        xml_raw = await self.dump_ui_xml(device)
+        if not xml_raw:
+            return []
+
+        try:
+            root = ET.fromstring(xml_raw)
+        except ET.ParseError:
+            return []
+
+        nodes = []
+        for node in root.iter("node"):
+            bounds_str = node.get("bounds", "")
+            m = re.findall(r"\d+", bounds_str)
+            bounds = None
+            if len(m) == 4:
+                bounds = (int(m[0]), int(m[1]), int(m[2]), int(m[3]))
+            nodes.append(
+                {
+                    "text": (node.get("text", "") or "").strip(),
+                    "desc": (node.get("content-desc", "") or "").strip(),
+                    "pkg": node.get("package", ""),
+                    "cls": node.get("class", ""),
+                    "clickable": node.get("clickable", "") == "true",
+                    "bounds": bounds,
+                }
+            )
+        return nodes
+
     def find_element(
         self,
         elements: list[UIElement],
@@ -216,6 +284,258 @@ class TikTokController:
                     return el
 
         return None
+
+    def _contains_bounds(
+        self,
+        outer: tuple[int, int, int, int],
+        inner: tuple[int, int, int, int],
+    ) -> bool:
+        return (
+            outer[0] <= inner[0]
+            and outer[1] <= inner[1]
+            and outer[2] >= inner[2]
+            and outer[3] >= inner[3]
+        )
+
+    def _bounds_area(self, bounds: tuple[int, int, int, int]) -> int:
+        return max(0, bounds[2] - bounds[0]) * max(0, bounds[3] - bounds[1])
+
+    def _find_smallest_clickable_container(
+        self,
+        elements: list[UIElement],
+        target: UIElement,
+        *,
+        require_long_clickable: bool = False,
+    ) -> UIElement | None:
+        candidates: list[UIElement] = []
+        for el in elements:
+            if not el.clickable:
+                continue
+            if require_long_clickable and el.cls != "android.widget.FrameLayout":
+                continue
+            if self._contains_bounds(el.bounds, target.bounds):
+                candidates.append(el)
+
+        if not candidates:
+            return None
+
+        return min(candidates, key=lambda el: self._bounds_area(el.bounds))
+
+    def _matches_any_pattern(
+        self,
+        text: str,
+        patterns: tuple[re.Pattern[str], ...],
+    ) -> bool:
+        return any(pattern.search(text) for pattern in patterns)
+
+    def classify_upload_state(self, elements: list[UIElement]) -> str:
+        """Classify the current TikTok upload screen from a UI dump."""
+        texts = {el.text.strip() for el in elements if el.text.strip()}
+        descs = {el.content_desc.strip() for el in elements if el.content_desc.strip()}
+
+        if (
+            "Add description..." in texts
+            or {"Drafts", "Post"} <= texts
+            or any("view this post" in text.lower() for text in texts)
+        ):
+            return "post_form"
+
+        if {"Your Story", "Add sound", "Next"} <= texts:
+            return "video_editor"
+
+        if (
+            "Recents" in texts
+            and "Select multiple" in texts
+            and ("Next" in texts or "AutoCut" in texts)
+        ):
+            return "gallery_picker"
+
+        if (
+            "Add sound" in texts
+            and ({"POST", "CREATE"} <= texts or {"15s", "60s"} <= texts)
+        ):
+            return "camera_create"
+
+        if (
+            any(desc == "For You" for desc in descs)
+            and any(self.PATTERNS["create"].search(desc) for desc in descs)
+        ):
+            return "feed"
+
+        return "unknown"
+
+    async def detect_upload_state(self, device: str) -> str:
+        """Detect the current upload state from the active UI hierarchy."""
+        elements = await self.dump_ui(device)
+        return self.classify_upload_state(elements)
+
+    async def wait_for_upload_state(
+        self,
+        device: str,
+        expected_states: set[str],
+        *,
+        timeout: float = 8.0,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """Wait until the current upload screen matches one of the expected states."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_state = "unknown"
+
+        while asyncio.get_event_loop().time() < deadline:
+            last_state = await self.detect_upload_state(device)
+            if last_state in expected_states:
+                return last_state
+            await asyncio.sleep(poll_interval)
+
+        logger.warning(
+            f"  ⚠️ [upload_state] Timed out waiting for {sorted(expected_states)}; last={last_state}"
+        )
+        return None
+
+    async def detect_post_publish_state(self, device: str) -> str:
+        """Detect post-submit completion, follow-up popups, or blocking overlays."""
+        foreground = await self.get_foreground_app(device)
+        nodes = await self._dump_all_ui_nodes(device)
+        texts = {node["text"] for node in nodes if node["text"]}
+        lower_texts = {text.lower() for text in texts}
+
+        if (
+            foreground == "jp.co.sharp.android.launcher3"
+            and "Add to Home screen" in texts
+            and "TikTok Camera" in texts
+        ):
+            return "launcher_popup"
+
+        if any(text.startswith("Video posted!") for text in texts):
+            return "completed_share_sheet"
+
+        if (
+            any("facebook friends list and email" in text for text in lower_texts)
+            and "Don't allow" in texts
+        ):
+            return "completed_permission_popup"
+
+        if any(
+            token in lower_texts
+            for token in {
+                "uploading",
+                "processing",
+                "posting",
+                "your video is being uploaded",
+            }
+        ):
+            return "uploading"
+
+        upload_state = self.classify_upload_state(await self.dump_ui(device))
+        if upload_state == "post_form":
+            return "post_form"
+        if upload_state == "feed":
+            return "completed_feed"
+
+        return "unknown"
+
+    async def dismiss_post_publish_obstacles(self, device: str) -> bool:
+        """Dismiss launcher/share/permission overlays that appear after posting."""
+        nodes = await self._dump_all_ui_nodes(device)
+        texts = {node["text"] for node in nodes if node["text"]}
+
+        targets = [
+            "CANCEL",
+            "Cancel",
+            "Don't allow",
+        ]
+        for target_text in targets:
+            for node in nodes:
+                if not node["clickable"] or node["text"] != target_text or not node["bounds"]:
+                    continue
+                x1, y1, x2, y2 = node["bounds"]
+                await self._tap(device, (x1 + x2) // 2, (y1 + y2) // 2)
+                await asyncio.sleep(1.0)
+                return True
+
+        if any(text.startswith("Video posted!") for text in texts):
+            await self.dismiss_keyboard(device)
+            return True
+
+        return False
+
+    async def wait_for_post_completion(
+        self,
+        device: str,
+        *,
+        timeout: float = 45.0,
+        poll_interval: float = 1.0,
+    ) -> str | None:
+        """Wait for a reliable post-submit completion signal."""
+        success_states = {
+            "completed_share_sheet",
+            "completed_permission_popup",
+            "completed_feed",
+        }
+        recoverable_states = {"launcher_popup"}
+        deadline = asyncio.get_event_loop().time() + timeout
+        last_state = "unknown"
+
+        while asyncio.get_event_loop().time() < deadline:
+            state = await self.detect_post_publish_state(device)
+            last_state = state
+
+            if state in success_states:
+                return state
+
+            if state in recoverable_states:
+                await self.dismiss_post_publish_obstacles(device)
+
+            await asyncio.sleep(poll_interval)
+
+        logger.warning(f"  ⚠️ [post_publish] Timed out waiting for completion; last={last_state}")
+        return None
+
+    async def tap_labeled_button(
+        self,
+        device: str,
+        labels: tuple[str, ...],
+        *,
+        prefer_top: bool = False,
+    ) -> bool:
+        """Tap a button identified by visible label text, using its clickable container."""
+        elements = await self.dump_ui(device)
+        patterns = tuple(re.compile(rf"^{re.escape(label)}$", re.IGNORECASE) for label in labels)
+        candidates: list[UIElement] = []
+
+        for el in elements:
+            label_text = el.text.strip() if el.text else ""
+            desc_text = el.content_desc.strip() if el.content_desc else ""
+            matches = (
+                label_text and self._matches_any_pattern(label_text, patterns)
+            ) or (
+                desc_text and self._matches_any_pattern(desc_text, patterns)
+            )
+            if not matches:
+                continue
+
+            tappable = el if el.clickable else self._find_smallest_clickable_container(elements, el)
+            if tappable:
+                candidates.append(tappable)
+
+        if not candidates:
+            return False
+
+        ordered = sorted(
+            candidates,
+            key=lambda el: (
+                el.center[1] if prefer_top else -el.center[1],
+                el.center[0],
+                self._bounds_area(el.bounds),
+            ),
+        )
+        target = ordered[0]
+        x, y = target.center
+        x += random.randint(-4, 4)
+        y += random.randint(-3, 3)
+        logger.info(f"  🎯 [button] Tapping {labels} at ({x}, {y})")
+        await self._realistic_tap(device, x, y)
+        return True
 
     async def smart_tap(
         self,
@@ -291,6 +611,121 @@ class TikTokController:
     async def tap_share(self, device: str) -> bool:
         """Tap share button."""
         return await self.smart_tap(device, "share")
+
+    # --- Upload Flow Actions ---
+    
+    async def tap_create(self, device: str) -> bool:
+        """Tap the central '+' Create button on the home feed."""
+        return await self.smart_tap(device, "create")
+
+    async def tap_upload_gallery(self, device: str) -> bool:
+        """Tap the Upload (Gallery) thumbnail on the Camera screen."""
+        # Wait a bit longer as the camera UI can be heavy to load
+        await asyncio.sleep(1.0)
+        return await self.smart_tap(device, "upload_gallery", verify_foreground=False)
+
+    async def select_first_video(self, device: str) -> bool:
+        """Select the first real video tile in the gallery grid.
+
+        The first tile in Recents is often an image or a broken placeholder.
+        We instead look for the first tile with a visible duration overlay.
+        """
+        await asyncio.sleep(1.0)
+        elements = await self.dump_ui(device)
+
+        video_tiles: list[tuple[int, int, UIElement, str]] = []
+        for el in elements:
+            label = el.text.strip() if el.text else ""
+            if not self.DURATION_PATTERN.match(label):
+                continue
+
+            container = self._find_smallest_clickable_container(
+                elements, el, require_long_clickable=True
+            ) or self._find_smallest_clickable_container(elements, el)
+            if container:
+                video_tiles.append((container.bounds[1], container.bounds[0], container, label))
+
+        if video_tiles:
+            _, _, tile, duration = sorted(video_tiles, key=lambda item: (item[0], item[1]))[0]
+            x, y = tile.center
+            x += random.randint(-8, 8)
+            y += random.randint(-8, 8)
+            logger.info(f"  🎯 [gallery_video] Selecting {duration} tile at ({x}, {y})")
+            await self._realistic_tap(device, x, y)
+            await asyncio.sleep(1.0)
+            return True
+
+        w, h = await self._get_screen_size(device)
+        x = int(w * 0.50) + random.randint(-10, 10)
+        y = int(h * 0.28) + random.randint(-10, 10)
+        logger.warning(f"  ⚠️ [gallery_video] No duration tile found, falling back to ({x}, {y})")
+        await self._realistic_tap(device, x, y)
+        await asyncio.sleep(1.0)
+        return True
+
+    async def tap_next(self, device: str) -> bool:
+        """Tap the 'Next' button on Gallery, Edit, and Post screens."""
+        await asyncio.sleep(1.0)
+
+        if await self.tap_labeled_button(device, ("Next", "Tiếp")):
+            return True
+
+        # Fallback to legacy pattern matching if text/container lookup fails.
+        return await self.smart_tap(device, "next_btn", verify_foreground=False)
+
+    async def tap_post(self, device: str) -> bool:
+        """Tap the final huge 'Post' button to upload the video."""
+        await asyncio.sleep(1.0)
+        if await self.tap_labeled_button(device, ("Post", "Đăng"), prefer_top=True):
+            return True
+        return await self.smart_tap(device, "post_btn", verify_foreground=False)
+
+    async def fill_post_metadata(self, device: str, title: str, description: str) -> bool:
+        """Fill in the caption/description and title on the Post screen."""
+        await asyncio.sleep(1.5)
+        
+        elements = await self.dump_ui(device)
+        w, h = await self._get_screen_size(device)
+        
+        # Strategy: Look for an EditText spanning across the top area (y < h * 0.3)
+        caption_input = None
+        for el in elements:
+            if "EditText" in el.cls:
+                _, el_y = el.center
+                if el_y < h * 0.35:  # Usually near the top, along with video thumbnail
+                    caption_input = el
+                    break
+                    
+        if caption_input:
+            x, y = caption_input.center
+            logger.info(f"  📝 [fill_metadata] Found caption EditText at ({x}, {y})")
+            await self._tap(device, x, y)
+            await asyncio.sleep(0.5)
+        else:
+            # Fallback coordinate for the text description field (approx w*0.3, h*0.12)
+            x = int(w * 0.3) + random.randint(-10, 10)
+            y = int(h * 0.12) + random.randint(-5, 5)
+            logger.warning(f"  ⚠️ [fill_metadata] No EditText found, using fallback coords ({x}, {y})")
+            await self._tap(device, x, y)
+            await asyncio.sleep(0.5)
+            
+        full_text = title + "\n\n" + description if title else description
+        if full_text:
+            typed = await self.type_text(device, full_text)
+            await asyncio.sleep(0.5)
+            return typed and await self._verify_text_entered(device, full_text)
+            
+        return True
+
+    async def dismiss_keyboard(self, device: str) -> bool:
+        """Dismiss the active keyboard with a single BACK keypress."""
+        await self._get_backend(device)
+        if self._backend:
+            await self._backend.key_event(device, "BACK")
+        else:
+            await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
+        await asyncio.sleep(0.5)
+        return True
 
     async def tap_comment_input(self, device: str) -> bool:
         """Tap the comment input field at bottom of comment panel.
@@ -476,12 +911,16 @@ class TikTokController:
         TODO: [ACCESSIBILITY-MIGRATE] Once Accessibility is stable, remove
         ADB dumpsys fallback path entirely.
         """
+        pkg = await self.get_foreground_app(device)
+        return TIKTOK_PACKAGE in pkg
+
+    async def get_foreground_app(self, device: str) -> str:
+        """Get the current foreground package."""
         # Try Accessibility first
-        await self._get_backend()
+        await self._get_backend(device)
         if self._backend:
             try:
-                pkg = await self._backend.get_foreground_app(device)
-                return TIKTOK_PACKAGE in pkg
+                return await self._backend.get_foreground_app(device)
             except Exception:
                 pass
         # FALLBACK: ADB dumpsys
@@ -492,11 +931,96 @@ class TikTokController:
             )
             for line in stdout.splitlines():
                 if ("mResumedActivity" in line or "mFocusedActivity" in line):
-                    if TIKTOK_PACKAGE in line:
-                        return True
-            return False
+                    match = re.search(r'(\S+)/\S+', line)
+                    if match:
+                        return match.group(1)
+            return ""
         except Exception:
-            return False
+            return ""
+
+    async def capture_debug_snapshot(
+        self,
+        device: str,
+        artifact_dir: str,
+        label: str,
+        note: str = "",
+    ) -> dict:
+        """Capture a debug bundle: screenshot, UI XML, and foreground app."""
+        artifact_root = Path(artifact_dir)
+        artifact_root.mkdir(parents=True, exist_ok=True)
+
+        safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "_", label).strip("._") or "snapshot"
+        png_path = artifact_root / f"{safe_label}.png"
+        jpg_path = artifact_root / f"{safe_label}.jpg"
+        xml_path = artifact_root / f"{safe_label}.xml"
+        meta_path = artifact_root / f"{safe_label}.json"
+
+        foreground_app = ""
+        screenshot_path = ""
+        screenshot_error = ""
+        xml_error = ""
+
+        try:
+            await self._get_backend(device)
+            if self._backend:
+                try:
+                    await self._backend.capture_screenshot(device, str(png_path))
+                except Exception as backend_error:
+                    logger.warning(
+                        f"  ⚠️ [debug_snapshot] Backend screenshot unavailable for {label}: {backend_error}; falling back to ADB"
+                    )
+                    await self._adb._run_adb(
+                        device, "shell", "screencap", "-p", "/sdcard/_debug_screen.png"
+                    )
+                    await self._adb._run_adb(
+                        device, "pull", "/sdcard/_debug_screen.png", str(png_path)
+                    )
+                    await self._adb._run_adb(
+                        device, "shell", "rm", "-f", "/sdcard/_debug_screen.png"
+                    )
+            else:
+                await self._adb._run_adb(
+                    device, "shell", "screencap", "-p", "/sdcard/_debug_screen.png"
+                )
+                await self._adb._run_adb(
+                    device, "pull", "/sdcard/_debug_screen.png", str(png_path)
+                )
+                await self._adb._run_adb(
+                    device, "shell", "rm", "-f", "/sdcard/_debug_screen.png"
+                )
+
+            screenshot_path = str(jpg_path if jpg_path.exists() else png_path)
+        except Exception as e:
+            screenshot_error = str(e)
+            logger.warning(f"  ⚠️ [debug_snapshot] Screenshot failed for {label}: {e}")
+
+        try:
+            await self.dump_ui_xml(device, str(xml_path))
+        except Exception as e:
+            xml_error = str(e)
+            logger.warning(f"  ⚠️ [debug_snapshot] UI XML failed for {label}: {e}")
+
+        try:
+            foreground_app = await self.get_foreground_app(device)
+        except Exception as e:
+            logger.warning(f"  ⚠️ [debug_snapshot] Foreground app failed for {label}: {e}")
+
+        metadata = {
+            "label": label,
+            "note": note,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "device": device,
+            "foreground_app": foreground_app,
+            "screenshot_path": screenshot_path,
+            "ui_xml_path": str(xml_path) if xml_path.exists() else "",
+            "screenshot_error": screenshot_error,
+            "ui_xml_error": xml_error,
+        }
+        meta_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return metadata
 
     async def recover(self, device: str) -> bool:
         """Re-open TikTok if it's not in foreground.
@@ -507,7 +1031,7 @@ class TikTokController:
             return False
 
         logger.warning("🔄 TikTok not in foreground — recovering...")
-        await self._get_backend()
+        await self._get_backend(device)
 
         # Try pressing BACK first (maybe hit a dialog)
         if self._backend:
@@ -698,7 +1222,7 @@ class TikTokController:
         4. Last resort: strip to ASCII and use 'input text'
         """
         # Lazy-init backend (auto-detects AccessibilityBackend if available)
-        await self._get_backend()
+        await self._get_backend(device)
 
         if self._backend:
             await self._backend.type_text(device, text)
@@ -942,7 +1466,7 @@ class TikTokController:
         """
         dur = duration_ms + random.randint(-20, 20)
         dur = max(40, dur)
-        await self._get_backend()
+        await self._get_backend(device)
         if self._backend:
             # Accessibility: swipe to same point = press with duration
             await self._backend.swipe(device, x, y, x, y, dur)
@@ -1019,7 +1543,7 @@ class TikTokController:
         Verifies panel is actually closed before returning.
         """
         for attempt in range(3):
-            await self._get_backend()
+            await self._get_backend(device)
             if self._backend:
                 await self._backend.key_event(device, "BACK")
             else:
@@ -1073,7 +1597,7 @@ class TikTokController:
         y1 = int(h * 0.75) + random.randint(-20, 20)
         y2 = int(h * 0.25) + random.randint(-20, 20)
         dur = random.randint(250, 450)
-        await self._get_backend()
+        await self._get_backend(device)
         if self._backend:
             await self._backend.swipe(device, x, y1, x, y2, dur)
         else:
@@ -1315,4 +1839,3 @@ class TikTokController:
             except ValueError:
                 pass
         return None
-

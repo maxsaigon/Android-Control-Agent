@@ -1,11 +1,16 @@
 """Script Runner — executes hard-coded task scripts at zero AI cost."""
 
 import asyncio
+import json
 import logging
 import random
+import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
+from app.config import settings
 from app.services.behavior import human_behavior
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,7 @@ class ScriptRunner:
         "tiktok_like",
         "tiktok_comment",
         "tiktok_follow",
+        "tiktok_upload",
         "youtube_watch",
         "facebook_scroll",
         "instagram_scroll",
@@ -74,12 +80,20 @@ class ScriptRunner:
     def __init__(self):
         self._package_cache: dict[str, dict[str, str]] = {}
         self._tiktok: "TikTokController | None" = None
+        self._upload_debug: dict | None = None
 
     def _get_tiktok_controller(self):
         """Lazy-init TikTok controller."""
         if self._tiktok is None:
             from app.services.tiktok_controller import TikTokController
-            self._tiktok = TikTokController(self._adb)
+            self._tiktok = TikTokController(
+                self._adb,
+                backend=self._backend,
+                device_hint=self._device,
+            )
+        else:
+            self._tiktok._backend = self._backend
+            self._tiktok._device_hint = self._device
         return self._tiktok
 
     async def run(
@@ -110,6 +124,7 @@ class ScriptRunner:
         self._step_num = 0
         self._step_log = []
         self._backend = None  # will be initialized async
+        self._upload_debug = None
 
         scripts = {
             "tiktok_browse": self._tiktok_browse,
@@ -117,6 +132,7 @@ class ScriptRunner:
             "tiktok_like": self._tiktok_like,
             "tiktok_comment": self._tiktok_comment,
             "tiktok_follow": self._tiktok_follow,
+            "tiktok_upload": self._tiktok_upload,
             "youtube_watch": self._youtube_watch,
             "facebook_scroll": self._facebook_scroll,
             "instagram_scroll": self._instagram_scroll,
@@ -304,6 +320,171 @@ class ScriptRunner:
         duration = random.uniform(lo, hi)
         await self._step("wait", f"{duration:.1f}s ({label})")
         await asyncio.sleep(duration)
+
+    def _safe_name(self, value: str) -> str:
+        """Normalize text for filesystem-safe artifact names."""
+        cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "_", value).strip("._")
+        return cleaned or "item"
+
+    def _write_upload_debug_manifest(self):
+        """Persist the current upload debug manifest to disk."""
+        if not self._upload_debug:
+            return
+        manifest_path: Path = self._upload_debug["manifest_path"]
+        manifest = self._upload_debug["manifest"]
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _start_upload_debug_session(
+        self,
+        *,
+        assignment_id: int | None,
+        video_id: int | None,
+        capture_enabled: bool,
+        record_enabled: bool,
+        title: str,
+        description: str,
+    ):
+        """Initialize upload artifact storage."""
+        enabled = capture_enabled or record_enabled
+        if not enabled:
+            self._upload_debug = None
+            return
+
+        started_at = datetime.now(timezone.utc)
+        session_name = (
+            f"{started_at.strftime('%Y%m%dT%H%M%SZ')}_"
+            f"{self._safe_name(self._device)}"
+        )
+        artifact_dir = Path(settings.screenshots_dir) / "tiktok_upload_debug" / session_name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest = {
+            "script": "tiktok_upload",
+            "device": self._device,
+            "started_at": started_at.isoformat(),
+            "assignment_id": assignment_id,
+            "video_id": video_id,
+            "debug_capture": capture_enabled,
+            "debug_record": record_enabled,
+            "title_preview": title[:120],
+            "description_preview": description[:240],
+            "snapshots": [],
+            "screenrecord": {},
+        }
+        self._upload_debug = {
+            "enabled": True,
+            "capture": capture_enabled,
+            "record": record_enabled,
+            "dir": artifact_dir,
+            "manifest": manifest,
+            "manifest_path": artifact_dir / "manifest.json",
+            "screenrecord_proc": None,
+        }
+        self._write_upload_debug_manifest()
+
+    async def _capture_upload_debug(
+        self,
+        tiktok,
+        label: str,
+        note: str = "",
+    ) -> dict | None:
+        """Capture and register a debug snapshot for the upload flow."""
+        if not self._upload_debug or not self._upload_debug.get("capture") or not tiktok:
+            return None
+
+        step_prefix = f"{self._step_num:02d}"
+        snapshot = await tiktok.capture_debug_snapshot(
+            self._device,
+            str(self._upload_debug["dir"]),
+            f"{step_prefix}_{label}",
+            note,
+        )
+        snapshot["step_num"] = self._step_num
+        self._upload_debug["manifest"]["snapshots"].append(snapshot)
+        self._write_upload_debug_manifest()
+        return snapshot
+
+    async def _start_upload_screenrecord(self):
+        """Start optional ADB screen recording for the upload run."""
+        if (
+            not self._upload_debug
+            or not self._upload_debug.get("record")
+            or self._device.startswith("cloud:")
+        ):
+            return
+
+        remote_path = "/sdcard/_tiktok_upload_record.mp4"
+        local_path = self._upload_debug["dir"] / "screenrecord.mp4"
+        cmd = [
+            self._adb.adb_path,
+            "-s",
+            self._device,
+            "shell",
+            "screenrecord",
+            "--time-limit",
+            "180",
+            remote_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._upload_debug["screenrecord_proc"] = proc
+        self._upload_debug["manifest"]["screenrecord"] = {
+            "remote_path": remote_path,
+            "local_path": str(local_path),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._write_upload_debug_manifest()
+
+    async def _stop_upload_screenrecord(self):
+        """Stop optional screen recording and pull the file locally."""
+        if not self._upload_debug or not self._upload_debug.get("record"):
+            return
+
+        record_meta = self._upload_debug["manifest"].get("screenrecord", {})
+        remote_path = record_meta.get("remote_path")
+        local_path = record_meta.get("local_path")
+        proc = self._upload_debug.get("screenrecord_proc")
+
+        if not remote_path or not local_path:
+            return
+
+        try:
+            await self._adb._run_adb(
+                self._device,
+                "shell",
+                "sh",
+                "-c",
+                "pkill -INT screenrecord || killall -INT screenrecord || true",
+            )
+        except Exception:
+            pass
+
+        if proc:
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=8)
+            except Exception:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+
+        code, _, err = await self._adb._run_adb(
+            self._device, "pull", remote_path, local_path
+        )
+        if code == 0:
+            record_meta["pulled_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            record_meta["pull_error"] = err
+
+        await self._adb._run_adb(self._device, "shell", "rm", "-f", remote_path)
+        self._upload_debug["screenrecord_proc"] = None
+        self._write_upload_debug_manifest()
 
     async def _swipe_up(self):
         """Swipe up to next content."""
@@ -1022,6 +1203,257 @@ class ScriptRunner:
             verified_actions=follows_verified,
             failed_actions=follows_failed,
         )
+
+    async def _tiktok_upload(
+        self,
+        assignment_id: int | None = None,
+        video_id: int | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        debug_capture: bool = True,
+        debug_record: bool = False,
+        **_,
+    ) -> ScriptResult:
+        """Upload a video to TikTok using assigned metadata."""
+        if not assignment_id and not video_id:
+            return ScriptResult(
+                success=False,
+                reason="Missing assignment_id or video_id",
+                steps=self._step_num,
+                error="Missing required parameters",
+            )
+
+        # Database lookup
+        from sqlmodel import Session
+        from app.database import engine
+        from app.models import VideoAssignment, Video, PushStatus, UploadStatus
+        from datetime import datetime, timezone
+
+        use_title = title or ""
+        use_desc = description or ""
+
+        with Session(engine) as session:
+            video = None
+            assignment = None
+            
+            if assignment_id:
+                assignment = session.get(VideoAssignment, assignment_id)
+                if assignment:
+                    video = session.get(Video, assignment.video_id)
+            elif video_id:
+                video = session.get(Video, video_id)
+                
+            if not video:
+                return ScriptResult(
+                    success=False,
+                    reason="Video not found in DB",
+                    steps=self._step_num,
+                )
+                
+            # If not provided via params, fall back to DB metadata
+            if not use_title:
+                use_title = video.ai_title or video.title or ""
+            if not use_desc:
+                use_desc = video.ai_description or video.description or ""
+                
+            # Add hashtags
+            tags = video.ai_tags or video.tags
+            if tags:
+                tag_str = " ".join([t if t.startswith("#") else f"#{t}" for t in tags.replace(",", " ").split() if t.strip()])
+                if tag_str:
+                    use_desc = f"{use_desc}\n\n{tag_str}".strip()
+
+        tiktok = self._get_tiktok_controller()
+        self._start_upload_debug_session(
+            assignment_id=assignment_id,
+            video_id=video_id,
+            capture_enabled=debug_capture,
+            record_enabled=debug_record,
+            title=use_title,
+            description=use_desc,
+        )
+
+        result: ScriptResult | None = None
+        await self._start_upload_screenrecord()
+
+        try:
+            await self._capture_upload_debug(
+                tiktok, "start", "Before launching TikTok upload flow"
+            )
+
+            # [Script 1] Open App & Ensure Feed
+            await self._open_app("tiktok")
+            await self._wait(3, 5, "app loading")
+            await self._capture_upload_debug(tiktok, "app_open", "TikTok launched")
+
+            await tiktok.ensure_on_feed(self._device)
+            await self._step("ensure_feed", "on For You feed")
+            await self._capture_upload_debug(tiktok, "feed_ready", "Feed ready")
+
+            # [Script 2] Tap Create (+)
+            if not await tiktok.tap_create(self._device):
+                result = ScriptResult(False, "Failed to tap Create (+)", self._step_num)
+                return result
+            await self._step("tap", "Create button (+)")
+            await self._capture_upload_debug(tiktok, "after_create", "Tapped Create")
+
+            camera_state = await tiktok.wait_for_upload_state(
+                self._device, {"camera_create"}, timeout=8.0
+            )
+            if not camera_state:
+                result = ScriptResult(False, "Camera/create screen did not appear", self._step_num)
+                return result
+
+            # [Script 3] On this TikTok build, camera screen uses Next to enter gallery.
+            if not await tiktok.tap_next(self._device):
+                result = ScriptResult(False, "Failed to open gallery from camera screen", self._step_num)
+                return result
+            await self._step("tap", "Next (Camera -> Gallery)")
+            await self._capture_upload_debug(
+                tiktok, "gallery_entry", "Entered gallery picker"
+            )
+
+            gallery_state = await tiktok.wait_for_upload_state(
+                self._device, {"gallery_picker"}, timeout=8.0
+            )
+            if not gallery_state:
+                result = ScriptResult(False, "Gallery picker did not appear", self._step_num)
+                return result
+
+            # [Script 4] Select First Video
+            if not await tiktok.select_first_video(self._device):
+                result = ScriptResult(False, "Failed to select a gallery video", self._step_num)
+                return result
+            await self._step("tap", "Select first real gallery video")
+            await self._capture_upload_debug(
+                tiktok, "video_selected", "Selected first gallery video"
+            )
+
+            # [Script 5] Tap Next (Gallery/Preview -> Editor or Post)
+            if not await tiktok.tap_next(self._device):
+                result = ScriptResult(False, "Failed to tap Next after selecting video", self._step_num)
+                return result
+            await self._step("tap", "Next (Gallery -> Editor)")
+            await self._capture_upload_debug(
+                tiktok, "after_next_gallery", "Gallery selection to editor transition"
+            )
+            await self._wait(2, 4, "video processing")
+
+            current_state = await tiktok.wait_for_upload_state(
+                self._device, {"video_editor", "post_form"}, timeout=10.0
+            )
+            if not current_state:
+                result = ScriptResult(False, "Did not reach editor or post form after gallery Next", self._step_num)
+                return result
+
+            # [Script 6] Tap Next (Edit -> Post) when editor is present.
+            if current_state == "video_editor":
+                if not await tiktok.tap_next(self._device):
+                    result = ScriptResult(False, "Failed to tap Next on editor screen", self._step_num)
+                    return result
+                await self._step("tap", "Next (Edit -> Post)")
+                await self._wait(2, 3, "opening post form")
+                current_state = await tiktok.wait_for_upload_state(
+                    self._device, {"post_form"}, timeout=10.0
+                )
+                if not current_state:
+                    result = ScriptResult(False, "Post form did not appear after editor Next", self._step_num)
+                    return result
+
+            await self._capture_upload_debug(
+                tiktok, "post_form", "Reached post form"
+            )
+
+            # [Script 7] Fill Metadata
+            if not await tiktok.fill_post_metadata(self._device, use_title, use_desc):
+                result = ScriptResult(False, "Failed to fill caption/title metadata", self._step_num)
+                return result
+            await self._step("type", "Caption & Hashtags")
+            await self._capture_upload_debug(
+                tiktok, "metadata_filled", "Caption/title/hashtags attempted"
+            )
+
+            await tiktok.dismiss_keyboard(self._device)
+            await self._capture_upload_debug(
+                tiktok, "post_ready", "Keyboard dismissed before Post"
+            )
+
+            # [Script 8] Tap Post
+            if not await tiktok.tap_post(self._device):
+                result = ScriptResult(False, "Failed to tap Post", self._step_num)
+                return result
+            await self._step("tap", "Post button")
+            await self._capture_upload_debug(
+                tiktok, "after_post", "Tapped Post; waiting for upload state"
+            )
+
+            # [Verify 9] Wait for reliable post completion instead of fixed sleep.
+            post_completion_state = await tiktok.wait_for_post_completion(
+                self._device, timeout=45.0, poll_interval=1.0
+            )
+            if not post_completion_state:
+                result = ScriptResult(
+                    False,
+                    "No reliable post completion signal after tapping Post",
+                    self._step_num,
+                )
+                return result
+            await self._step("verify", f"Post completion signal: {post_completion_state}")
+            await self._capture_upload_debug(
+                tiktok,
+                "upload_wait_complete",
+                f"Post completion signal: {post_completion_state}",
+            )
+
+            try:
+                await tiktok.dismiss_post_publish_obstacles(self._device)
+                # Avoid hard failure if TikTok redirects unexpectedly after posting.
+                await tiktok.ensure_on_feed(self._device)
+            except Exception:
+                pass
+
+            # [Script 10] Update DB
+            if assignment:
+                with Session(engine) as session:
+                    a = session.get(VideoAssignment, assignment.id)
+                    if a:
+                        a.push_status = PushStatus.UPLOADED  # Legacy compat
+                        a.upload_status = UploadStatus.UPLOADED
+                        a.uploaded_at = datetime.now(timezone.utc)
+                        a.last_error = None
+                        session.commit()
+                        await self._step("db", f"assignment {a.id} upload_status -> UPLOADED")
+
+            result = ScriptResult(
+                success=True,
+                reason="Video successfully uploaded to TikTok",
+                steps=self._step_num,
+                step_log=self._step_log,
+            )
+            return result
+        finally:
+            if self._upload_debug and tiktok:
+                final_label = "final_success" if result and result.success else "final_state"
+                final_note = result.reason if result else "Upload flow exited without success result"
+                try:
+                    await self._capture_upload_debug(tiktok, final_label, final_note)
+                except Exception as e:
+                    logger.warning(f"  ⚠️ Failed to capture final upload snapshot: {e}")
+
+            await self._stop_upload_screenrecord()
+
+            if self._upload_debug:
+                self._upload_debug["manifest"]["finished_at"] = datetime.now(
+                    timezone.utc
+                ).isoformat()
+                if result:
+                    self._upload_debug["manifest"]["result"] = {
+                        "success": result.success,
+                        "reason": result.reason,
+                        "steps": result.steps,
+                        "error": result.error,
+                    }
+                self._write_upload_debug_manifest()
 
     async def _youtube_watch(
         self,

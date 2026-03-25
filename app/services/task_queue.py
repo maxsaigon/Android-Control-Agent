@@ -148,6 +148,7 @@ class TaskQueue:
             use_reasoning = task.use_reasoning
             execution_mode = task.execution_mode
             template = task.template
+            template_vars = task.template_vars  # Deserialized from JSON
             max_steps = task.max_steps
             max_retries = task.max_retries
             device_id = device.id
@@ -190,6 +191,7 @@ class TaskQueue:
                                 use_reasoning=use_reasoning,
                                 execution_mode=execution_mode,
                                 template=template,
+                                template_vars=template_vars,
                                 max_steps=max_steps,
                                 max_retries=max_retries,
                             ),
@@ -276,6 +278,7 @@ class TaskQueue:
         use_reasoning: bool,
         execution_mode: str,
         template: str | None,
+        template_vars: dict | None,
         max_steps: int,
         max_retries: int,
     ) -> TaskResult:
@@ -345,6 +348,7 @@ class TaskQueue:
                 use_reasoning=use_reasoning,
                 execution_mode=execution_mode,
                 template=template,
+                template_vars=template_vars,
                 max_steps=max_steps,
                 on_step=on_step,
             )

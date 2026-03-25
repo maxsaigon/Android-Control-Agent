@@ -4,12 +4,16 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from app.database import get_session
-from app.models import Video
+from app.models import (
+    Video, VideoAssignment, DeviceAccount, Device, Task, TaskStatus,
+    PushStatus, UploadStatus, RunUploadRequest, RunBatchUploadRequest,
+)
 from app.services.video_service import video_service
 from app.services.ai_metadata_service import ai_metadata_service
+from app.services.task_queue import task_queue
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +137,187 @@ async def push_to_device(
     return {"success": True, "message": message}
 
 
-# --- AI Metadata endpoints (static paths, before dynamic /{video_id}) ---
+# =============================================================================
+# Upload Pipeline Orchestration
+# =============================================================================
+
+
+# Template mapping per platform
+_PLATFORM_TEMPLATES = {
+    "tiktok": "tiktok_upload",
+    # Future: "instagram": "instagram_upload", etc.
+}
+
+
+@router.post("/assignments/{assignment_id}/run-upload")
+async def run_upload(
+    assignment_id: int,
+    body: RunUploadRequest = None,
+    session: Session = Depends(get_session),
+):
+    """One-click upload orchestration for an assignment.
+
+    Steps:
+    1. Validate assignment + device + device account
+    2. Idempotency: reject if assignment already has a running/pending task
+    3. Auto-push via ADB if file not yet pushed (configurable)
+    4. Create Task with platform-specific template + template_vars
+    5. Link task to assignment, set upload_status = queued
+    6. Submit task to background queue
+    """
+    from datetime import datetime, timezone
+
+    opts = body or RunUploadRequest()
+
+    # --- 1. Validate assignment + device + account ---
+    assignment = session.get(VideoAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(404, "Assignment not found")
+
+    video = session.get(Video, assignment.video_id)
+    if not video:
+        raise HTTPException(404, "Video not found")
+
+    device = session.get(Device, assignment.device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    # Check device has account for this platform
+    account = session.exec(
+        select(DeviceAccount).where(
+            DeviceAccount.device_id == assignment.device_id,
+            DeviceAccount.platform == assignment.platform,
+        )
+    ).first()
+    if not account:
+        raise HTTPException(
+            400,
+            f"Device '{device.name}' has no account for platform '{assignment.platform}'. "
+            f"Create one at POST /api/device-accounts first.",
+        )
+
+    # Check platform is supported
+    template_name = _PLATFORM_TEMPLATES.get(assignment.platform)
+    if not template_name:
+        raise HTTPException(
+            400,
+            f"Platform '{assignment.platform}' does not have an upload script yet. "
+            f"Supported: {', '.join(_PLATFORM_TEMPLATES.keys())}",
+        )
+
+    # --- 2. Idempotency guard ---
+    if assignment.task_id:
+        existing_task = session.get(Task, assignment.task_id)
+        if existing_task and existing_task.status in (
+            TaskStatus.PENDING, TaskStatus.RUNNING
+        ):
+            raise HTTPException(
+                409,
+                f"Assignment {assignment_id} already has a {existing_task.status.value} "
+                f"task (task_id={existing_task.id}). Cancel it first or wait for completion.",
+            )
+
+    # --- 3. Auto-push if needed ---
+    if assignment.push_status == PushStatus.PENDING and opts.auto_push:
+        success, msg = await video_service.push_to_device(session, assignment_id)
+        if not success:
+            assignment.upload_status = UploadStatus.UPLOAD_FAILED
+            assignment.last_error = f"Auto-push failed: {msg}"
+            assignment.last_run_at = datetime.now(timezone.utc)
+            session.add(assignment)
+            session.commit()
+            raise HTTPException(500, f"Auto-push failed: {msg}")
+        # Refresh assignment after push updated it
+        session.refresh(assignment)
+
+    if assignment.push_status not in (PushStatus.PUSHED, PushStatus.UPLOADED):
+        raise HTTPException(
+            400,
+            f"Video not pushed to device (push_status={assignment.push_status.value}). "
+            f"Push first or set auto_push=true.",
+        )
+
+    # --- 4. Create upload task ---
+    template_vars = {
+        "assignment_id": assignment.id,
+        "video_id": assignment.video_id,
+    }
+
+    task = Task(
+        device_id=assignment.device_id,
+        command=f"Upload video to {assignment.platform} (assignment #{assignment.id})",
+        template=template_name,
+        execution_mode="script",
+        max_steps=50,
+        max_retries=1,
+        assignment_id=assignment.id,
+    )
+    task.template_vars = template_vars
+    session.add(task)
+    session.commit()
+    session.refresh(task)
+
+    # --- 5. Link task to assignment ---
+    assignment.task_id = task.id
+    assignment.upload_status = UploadStatus.QUEUED
+    assignment.last_run_at = datetime.now(timezone.utc)
+    assignment.last_error = None
+    session.add(assignment)
+    session.commit()
+
+    # --- 6. Submit to queue ---
+    await task_queue.submit(task.id)
+
+    logger.info(
+        f"🚀 Upload job created: assignment={assignment_id} "
+        f"task={task.id} platform={assignment.platform} "
+        f"device={device.name}"
+    )
+
+    return {
+        "success": True,
+        "task_id": task.id,
+        "assignment_id": assignment_id,
+        "platform": assignment.platform,
+        "upload_status": assignment.upload_status.value,
+        "device": device.name,
+        "message": f"Upload task #{task.id} queued for {assignment.platform}",
+    }
+
+
+@router.post("/assignments/run-batch")
+async def run_batch_upload(
+    body: RunBatchUploadRequest,
+    session: Session = Depends(get_session),
+):
+    """Batch run-upload for multiple assignments.
+
+    Body: { "assignment_ids": [1, 2, 3], "auto_push": true }
+    Returns results per assignment (some may succeed, some may fail).
+    """
+    results = []
+    for aid in body.assignment_ids:
+        try:
+            result = await run_upload(
+                assignment_id=aid,
+                body=RunUploadRequest(auto_push=body.auto_push),
+                session=session,
+            )
+            results.append({"assignment_id": aid, "success": True, **result})
+        except HTTPException as e:
+            results.append({
+                "assignment_id": aid,
+                "success": False,
+                "error": e.detail,
+            })
+
+    succeeded = sum(1 for r in results if r["success"])
+    return {
+        "total": len(body.assignment_ids),
+        "succeeded": succeeded,
+        "failed": len(body.assignment_ids) - succeeded,
+        "results": results,
+    }
 
 
 @router.post("/{video_id}/ai-suggest")

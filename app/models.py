@@ -1,5 +1,7 @@
 """Data models for Device, Task, TaskLog, Video, and VideoAssignment."""
 
+import json
+
 from sqlmodel import SQLModel, Field
 from datetime import datetime, timezone
 from enum import Enum
@@ -44,6 +46,7 @@ class Task(SQLModel, table=True):
     device_id: int = Field(foreign_key="device.id")
     command: str  # Natural language command
     template: Optional[str] = None  # Template name if used
+    template_vars_json: Optional[str] = None  # JSON-serialized template variables
     use_reasoning: bool = True
     execution_mode: str = "auto"  # "auto" | "script" | "ai"
     max_steps: int = 20
@@ -53,11 +56,30 @@ class Task(SQLModel, table=True):
     error: Optional[str] = None
     retry_count: int = 0  # Current retry attempt
     max_retries: int = 2  # Max retry attempts for transient errors
+    assignment_id: Optional[int] = None  # Link back to VideoAssignment
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+    @property
+    def template_vars(self) -> Optional[dict]:
+        """Deserialize template_vars from JSON."""
+        if self.template_vars_json:
+            try:
+                return json.loads(self.template_vars_json)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return None
+
+    @template_vars.setter
+    def template_vars(self, value: Optional[dict]) -> None:
+        """Serialize template_vars to JSON."""
+        if value is not None:
+            self.template_vars_json = json.dumps(value, ensure_ascii=False)
+        else:
+            self.template_vars_json = None
 
 
 class TaskLog(SQLModel, table=True):
@@ -304,8 +326,19 @@ class VideoStatus(str, Enum):
 class PushStatus(str, Enum):
     PENDING = "pending"
     PUSHED = "pushed"
+    PUSH_FAILED = "push_failed"
+    # Legacy compat: old rows may still have these values
     UPLOADED = "uploaded"
     FAILED = "failed"
+
+
+class UploadStatus(str, Enum):
+    PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
+    UPLOADED = "uploaded"
+    UPLOAD_FAILED = "upload_failed"
+    VERIFY_FAILED = "verify_failed"
 
 
 class Video(SQLModel, table=True):
@@ -363,11 +396,14 @@ class VideoAssignment(SQLModel, table=True):
     device_id: int = Field(foreign_key="device.id")
     platform: str  # tiktok / youtube / instagram / facebook
     push_status: PushStatus = PushStatus.PENDING
+    upload_status: UploadStatus = UploadStatus.PENDING
     device_path: Optional[str] = None  # /sdcard/DCIM/xxx.mp4
     pushed_at: Optional[datetime] = None
     uploaded_at: Optional[datetime] = None
     task_id: Optional[int] = None  # Link to upload Task
-    error: Optional[str] = None
+    error: Optional[str] = None  # Legacy field
+    last_error: Optional[str] = None  # Latest error from upload attempt
+    last_run_at: Optional[datetime] = None  # When last upload was attempted
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -420,11 +456,14 @@ class VideoAssignmentRead(SQLModel):
     device_id: int
     platform: str
     push_status: PushStatus
+    upload_status: UploadStatus
     device_path: Optional[str]
     pushed_at: Optional[datetime]
     uploaded_at: Optional[datetime]
     task_id: Optional[int]
     error: Optional[str]
+    last_error: Optional[str]
+    last_run_at: Optional[datetime]
     created_at: datetime
 
 
@@ -481,3 +520,21 @@ class DeviceAccountRead(SQLModel):
     account_name: Optional[str]
     notes: Optional[str]
     created_at: datetime
+
+
+# =============================================================================
+# Upload Pipeline Orchestration Schemas
+# =============================================================================
+
+
+class RunUploadRequest(SQLModel):
+    """Schema for run-upload endpoint."""
+
+    auto_push: bool = True  # Auto-push via ADB if not yet pushed
+
+
+class RunBatchUploadRequest(SQLModel):
+    """Schema for batch run-upload endpoint."""
+
+    assignment_ids: List[int]
+    auto_push: bool = True

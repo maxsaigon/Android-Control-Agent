@@ -87,6 +87,7 @@ async def create_task(
         max_steps=task_data.max_steps,
         max_retries=task_data.max_retries,
     )
+    task.template_vars = task_data.template_vars  # Serialize to JSON
     session.add(task)
     session.commit()
     session.refresh(task)
@@ -132,6 +133,7 @@ async def create_batch_tasks(
             max_steps=batch.max_steps,
             max_retries=batch.max_retries,
         )
+        task.template_vars = batch.template_vars  # Serialize to JSON
         session.add(task)
         session.commit()
         session.refresh(task)

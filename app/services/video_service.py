@@ -64,11 +64,14 @@ def _assignment_to_dict(a: VideoAssignment) -> dict:
         "device_id": a.device_id,
         "platform": a.platform,
         "push_status": a.push_status,
+        "upload_status": a.upload_status,
         "device_path": a.device_path,
         "pushed_at": a.pushed_at,
         "uploaded_at": a.uploaded_at,
         "task_id": a.task_id,
         "error": a.error,
+        "last_error": a.last_error,
+        "last_run_at": a.last_run_at,
         "created_at": a.created_at,
     }
 
@@ -352,7 +355,7 @@ class VideoService:
 
         # Validate file exists on server
         if not os.path.exists(video.filepath):
-            assignment.push_status = PushStatus.FAILED
+            assignment.push_status = PushStatus.PUSH_FAILED
             assignment.error = "Source file not found on server"
             session.commit()
             return False, assignment.error
@@ -421,7 +424,7 @@ class VideoService:
 
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or result.stdout.strip()
-                assignment.push_status = PushStatus.FAILED
+                assignment.push_status = PushStatus.PUSH_FAILED
                 assignment.error = error_msg
                 session.commit()
                 logger.error(f"ADB push failed: {error_msg}")
@@ -447,12 +450,12 @@ class VideoService:
             return True, f"Pushed to {device.name}:{device_path}"
 
         except subprocess.TimeoutExpired:
-            assignment.push_status = PushStatus.FAILED
+            assignment.push_status = PushStatus.PUSH_FAILED
             assignment.error = "ADB push timeout (>300s)"
             session.commit()
             return False, assignment.error
         except Exception as e:
-            assignment.push_status = PushStatus.FAILED
+            assignment.push_status = PushStatus.PUSH_FAILED
             assignment.error = str(e)
             session.commit()
             logger.exception("Unexpected error during ADB push")
