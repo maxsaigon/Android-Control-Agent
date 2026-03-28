@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import shutil
 from datetime import datetime, timezone
 
 from app.config import settings
@@ -14,16 +15,41 @@ class DeviceManager:
 
     def __init__(self):
         self.adb_path = settings.adb_path
+        self._resolved_adb_path = self._resolve_adb_path(settings.adb_path)
+
+    def _resolve_adb_path(self, configured_path: str) -> str:
+        """Resolve an executable ADB path, with fallback to PATH lookup."""
+        if configured_path and shutil.which(configured_path):
+            return configured_path
+
+        fallback = shutil.which("adb")
+        if fallback:
+            logger.warning(
+                "Configured ADB_PATH '%s' not found; falling back to '%s'",
+                configured_path,
+                fallback,
+            )
+            return fallback
+
+        return configured_path
 
     async def _run_adb(self, *args: str) -> tuple[int, str, str]:
         """Run an ADB command and return (returncode, stdout, stderr)."""
-        cmd = [self.adb_path, *args]
+        cmd = [self._resolved_adb_path, *args]
         logger.debug(f"Running: {' '.join(cmd)}")
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            msg = (
+                f"ADB executable not found: configured='{self.adb_path}', "
+                f"resolved='{self._resolved_adb_path}'"
+            )
+            logger.error(msg)
+            return 127, "", msg
         timeout_s = 20.0
         try:
             stdout, stderr = await asyncio.wait_for(
