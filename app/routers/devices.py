@@ -1,6 +1,7 @@
 """Device management API endpoints."""
 
 from datetime import datetime, timezone
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
@@ -15,6 +16,7 @@ from app.services.device_manager import device_manager
 from app.services.connection_watchdog import watchdog
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=list[DeviceRead])
@@ -164,6 +166,12 @@ async def scan_devices(
         found = await device_manager.scan_subnet(subnet, port)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("LAN scan failed for subnet=%s port=%s", subnet, port)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Scan failed: {str(e) or type(e).__name__}",
+        )
 
     # Check which IPs are already registered
     existing = session.exec(select(Device)).all()

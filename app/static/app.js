@@ -434,7 +434,17 @@ async function scanLAN() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ subnet, port }),
         });
-        const data = await res.json();
+        const raw = await res.text();
+        let data = {};
+        try {
+            data = raw ? JSON.parse(raw) : {};
+        } catch (_) {
+            data = null;
+        }
+
+        if (!res.ok) {
+            throw new Error(data?.detail || raw || `HTTP ${res.status}`);
+        }
 
         if (!data.devices || data.devices.length === 0) {
             results.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">Không tìm thấy thiết bị ADB<br><small style="color:var(--text-muted)">Kiểm tra WiFi Debugging trên phone</small></div></div>';
@@ -473,8 +483,8 @@ async function scanLAN() {
 
         toast(`🔍 Tìm thấy ${data.devices.length} thiết bị`, 'success');
     } catch (e) {
-        results.innerHTML = '<div class="empty-state"><div class="empty-text" style="color:var(--red)">Lỗi quét mạng</div></div>';
-        toast(`Scan failed: ${e.message}`, 'error');
+        results.innerHTML = `<div class="empty-state"><div class="empty-text" style="color:var(--red)">Scan failed: ${escapeHtml(e.message || 'Unknown error')}</div></div>`;
+        toast(`Scan failed: ${e.message || 'Unknown error'}`, 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = '🔍 Quét thiết bị';
