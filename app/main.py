@@ -204,12 +204,25 @@ def _build_dashboard_overview():
         all_devices = session.exec(select(Device)).all()
         all_tasks = session.exec(select(Task)).all()
 
+        def _as_utc(dt):
+            if not dt:
+                return None
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+
         now = datetime.now(timezone.utc)
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         recent_window = now - timedelta(hours=24)
 
-        tasks_today = [t for t in all_tasks if t.created_at and t.created_at >= today_start]
-        recent_tasks = [t for t in all_tasks if t.created_at and t.created_at >= recent_window]
+        tasks_today = [
+            t for t in all_tasks
+            if _as_utc(t.created_at) and _as_utc(t.created_at) >= today_start
+        ]
+        recent_tasks = [
+            t for t in all_tasks
+            if _as_utc(t.created_at) and _as_utc(t.created_at) >= recent_window
+        ]
         running_tasks = [
             t for t in all_tasks if t.status in (TS.RUNNING, TS.PENDING)
         ]
