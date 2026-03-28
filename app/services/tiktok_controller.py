@@ -15,6 +15,7 @@ import json
 import logging
 import random
 import re
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -123,10 +124,46 @@ class TikTokController:
         """Tap via backend (preferred) or ADB (fallback)."""
         await self._get_backend(device)
         if self._backend:
-            await self._backend.tap(device, x, y)
-        else:
-            # FALLBACK: ADB — only when Accessibility backend unavailable
-            await self._adb._run_adb(device, "shell", "input", "tap", str(x), str(y))
+            try:
+                await self._backend.tap(device, x, y)
+                return
+            except Exception as e:
+                logger.warning(f"  ⚠️ [tap] Backend failed, fallback to ADB: {e}")
+                self._backend = None
+
+        # FALLBACK: ADB — when Accessibility backend unavailable/unhealthy
+        await self._adb._run_adb(device, "shell", "input", "tap", str(x), str(y))
+
+    async def _swipe(
+        self,
+        device: str,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        duration_ms: int = 300,
+    ):
+        """Swipe via backend (preferred) or ADB (fallback)."""
+        await self._get_backend(device)
+        if self._backend:
+            try:
+                await self._backend.swipe(device, x1, y1, x2, y2, duration_ms)
+                return
+            except Exception as e:
+                logger.warning(f"  ⚠️ [swipe] Backend failed, fallback to ADB: {e}")
+                self._backend = None
+
+        await self._adb._run_adb(
+            device,
+            "shell",
+            "input",
+            "swipe",
+            str(x1),
+            str(y1),
+            str(x2),
+            str(y2),
+            str(duration_ms),
+        )
 
     async def _get_screen_size(self, device: str) -> tuple[int, int]:
         """Get cached screen dimensions (Accessibility preferred, ADB fallback)."""
@@ -137,10 +174,22 @@ class TikTokController:
                     w, h = await self._backend.get_screen_size(device)
                     self._screen_cache[device] = (w, h)
                     return (w, h)
-                except Exception:
-                    pass
-            # FALLBACK: ADB
-            w, h = await self._adb.get_screen_size(device)
+                except Exception as e:
+                    logger.warning(
+                        f"  ⚠️ [screen_size] Backend failed, fallback raw ADB: {e}"
+                    )
+                    self._backend = None
+            # FALLBACK: raw ADB command (bypass ADBAgent backend auto-routing)
+            _, out, err = await self._adb._run_adb(device, "shell", "wm", "size")
+            text = out or err
+            m = re.search(r"(\d+)\s*x\s*(\d+)", text)
+            if not m:
+                logger.warning(
+                    f"  ⚠️ [screen_size] Could not parse wm size output: {text}"
+                )
+                w, h = 1080, 2280
+            else:
+                w, h = int(m.group(1)), int(m.group(2))
             self._screen_cache[device] = (w, h)
         return self._screen_cache[device]
 
@@ -154,12 +203,18 @@ class TikTokController:
         but in different data classes.
         """
         try:
-            _, stdout, _ = await self._adb._run_adb(
-                device, "shell",
-                "uiautomator", "dump", "/sdcard/_ui.xml"
+            await asyncio.wait_for(
+                self._adb._run_adb(
+                    device, "shell",
+                    "uiautomator", "dump", "/sdcard/_ui.xml"
+                ),
+                timeout=8.0,
             )
-            _, xml_raw, _ = await self._adb._run_adb(
-                device, "shell", "cat", "/sdcard/_ui.xml"
+            _, xml_raw, _ = await asyncio.wait_for(
+                self._adb._run_adb(
+                    device, "shell", "cat", "/sdcard/_ui.xml"
+                ),
+                timeout=8.0,
             )
 
             # Clean up — sometimes has prefix text before XML
@@ -205,11 +260,17 @@ class TikTokController:
     async def dump_ui_xml(self, device: str, save_path: str | None = None) -> str:
         """Dump raw UI XML and optionally persist it locally."""
         try:
-            await self._adb._run_adb(
-                device, "shell", "uiautomator", "dump", "/sdcard/_ui.xml"
+            await asyncio.wait_for(
+                self._adb._run_adb(
+                    device, "shell", "uiautomator", "dump", "/sdcard/_ui.xml"
+                ),
+                timeout=8.0,
             )
-            _, xml_raw, _ = await self._adb._run_adb(
-                device, "shell", "cat", "/sdcard/_ui.xml"
+            _, xml_raw, _ = await asyncio.wait_for(
+                self._adb._run_adb(
+                    device, "shell", "cat", "/sdcard/_ui.xml"
+                ),
+                timeout=8.0,
             )
 
             xml_start = xml_raw.find("<?xml")
@@ -328,19 +389,117 @@ class TikTokController:
     ) -> bool:
         return any(pattern.search(text) for pattern in patterns)
 
+    def _fold_text(self, value: str) -> str:
+        """Fold text for accent-insensitive matching."""
+        lowered = (value or "").lower()
+        normalized = unicodedata.normalize("NFKD", lowered)
+        return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+    def _expected_text_tokens(self, expected_text: str) -> list[str]:
+        """Build stable verification tokens from expected input text."""
+        if not expected_text:
+            return []
+
+        tokens: list[str] = []
+
+        # Prioritize hashtags — they are highly stable and visible in caption field.
+        for token in re.findall(r"#[^\s#]+", expected_text, flags=re.UNICODE):
+            cleaned = token.strip()
+            if cleaned:
+                tokens.append(cleaned)
+
+        # Add meaningful words for fallback verification.
+        for token in re.findall(r"[0-9A-Za-zÀ-ỹ_]{3,}", expected_text, flags=re.UNICODE):
+            cleaned = token.strip()
+            if not cleaned or cleaned.startswith("#"):
+                continue
+            tokens.append(cleaned)
+
+        # Keep order, remove duplicates, and cap for speed.
+        deduped: list[str] = []
+        seen = set()
+        for token in tokens:
+            folded = self._fold_text(token)
+            if not folded or folded in seen:
+                continue
+            seen.add(folded)
+            deduped.append(token)
+            if len(deduped) >= 8:
+                break
+        return deduped
+
+    def _looks_like_feed_signature(
+        self,
+        texts_lower: set[str],
+        descs_lower: set[str],
+    ) -> bool:
+        """Heuristic feed detector resilient to TikTok UI variations."""
+        has_for_you = "for you" in descs_lower
+        has_home = "home" in descs_lower
+        has_like = any("like" in desc for desc in descs_lower)
+        has_comment = any("comment" in desc for desc in descs_lower)
+        has_share = any("share" in desc for desc in descs_lower)
+        has_add_comment = any("add comment" in text for text in texts_lower)
+
+        # Feed UIs vary by locale/version; use engagement controls as stable signal.
+        return (
+            has_for_you
+            or (has_like and has_comment and has_share)
+            or (has_home and has_like and has_comment)
+            or (has_add_comment and has_like)
+        )
+
     def classify_upload_state(self, elements: list[UIElement]) -> str:
         """Classify the current TikTok upload screen from a UI dump."""
         texts = {el.text.strip() for el in elements if el.text.strip()}
         descs = {el.content_desc.strip() for el in elements if el.content_desc.strip()}
+        texts_lower = {text.lower() for text in texts}
+        descs_lower = {desc.lower() for desc in descs}
+        labels_lower = texts_lower | descs_lower
 
         if (
             "Add description..." in texts
             or {"Drafts", "Post"} <= texts
             or any("view this post" in text.lower() for text in texts)
+            or (
+                any(
+                    any(marker in label for label in labels_lower)
+                    for marker in {
+                        "add description",
+                        "add caption",
+                        "describe your post",
+                        "describe your video",
+                        "mô tả video",
+                        "viết chú thích",
+                    }
+                )
+                and any(post_label in labels_lower for post_label in {"post", "đăng"})
+            )
         ):
             return "post_form"
 
-        if {"Your Story", "Add sound", "Next"} <= texts:
+        has_your_story = any("your story" in label for label in labels_lower)
+        has_next = any(
+            token in label for label in labels_lower for token in ("next", "tiếp")
+        )
+        editor_markers = {
+            "add sound",
+            "templates",
+            "text",
+            "stickers",
+            "effects",
+            "filters",
+            "crop",
+            "edit",
+            "adjust clips",
+        }
+        if has_your_story and has_next and (
+            any(any(marker in label for label in labels_lower) for marker in editor_markers)
+            or not (
+                any("recents" in label for label in labels_lower)
+                or any("select multiple" in label for label in labels_lower)
+            )
+        ):
             return "video_editor"
 
         if (
@@ -356,10 +515,7 @@ class TikTokController:
         ):
             return "camera_create"
 
-        if (
-            any(desc == "For You" for desc in descs)
-            and any(self.PATTERNS["create"].search(desc) for desc in descs)
-        ):
+        if self._looks_like_feed_signature(texts_lower, descs_lower):
             return "feed"
 
         return "unknown"
@@ -398,6 +554,11 @@ class TikTokController:
         nodes = await self._dump_all_ui_nodes(device)
         texts = {node["text"] for node in nodes if node["text"]}
         lower_texts = {text.lower() for text in texts}
+        lower_descs = {
+            (node["desc"] or "").lower()
+            for node in nodes
+            if node.get("desc")
+        }
 
         if (
             foreground == "jp.co.sharp.android.launcher3"
@@ -431,6 +592,21 @@ class TikTokController:
             return "post_form"
         if upload_state == "feed":
             return "completed_feed"
+
+        # Some TikTok builds navigate to Inbox/Profile/Home right after posting.
+        # If we are clearly on main navigation and no longer in upload flow,
+        # treat this as completion.
+        has_main_nav = (
+            any(token in lower_texts for token in {"home", "inbox", "profile", "shop"})
+            or any(token in lower_descs for token in {"home", "inbox", "profile", "shop"})
+        )
+        if has_main_nav and upload_state not in {
+            "post_form",
+            "video_editor",
+            "gallery_picker",
+            "camera_create",
+        }:
+            return "completed_main_nav"
 
         return "unknown"
 
@@ -471,6 +647,7 @@ class TikTokController:
             "completed_share_sheet",
             "completed_permission_popup",
             "completed_feed",
+            "completed_main_nav",
         }
         recoverable_states = {"launcher_popup"}
         deadline = asyncio.get_event_loop().time() + timeout
@@ -497,6 +674,7 @@ class TikTokController:
         labels: tuple[str, ...],
         *,
         prefer_top: bool = False,
+        use_realistic_tap: bool = True,
     ) -> bool:
         """Tap a button identified by visible label text, using its clickable container."""
         elements = await self.dump_ui(device)
@@ -534,7 +712,10 @@ class TikTokController:
         x += random.randint(-4, 4)
         y += random.randint(-3, 3)
         logger.info(f"  🎯 [button] Tapping {labels} at ({x}, {y})")
-        await self._realistic_tap(device, x, y)
+        if use_realistic_tap:
+            await self._realistic_tap(device, x, y)
+        else:
+            await self._tap(device, x, y)
         return True
 
     async def smart_tap(
@@ -618,6 +799,57 @@ class TikTokController:
         """Tap the central '+' Create button on the home feed."""
         return await self.smart_tap(device, "create")
 
+    async def open_create_entry(
+        self,
+        device: str,
+        *,
+        timeout: float = 10.0,
+    ) -> str | None:
+        """Open TikTok create flow and wait until camera/gallery entry appears."""
+        expected_states = {"camera_create", "gallery_picker"}
+
+        current = await self.wait_for_upload_state(
+            device, expected_states, timeout=1.0, poll_interval=0.25
+        )
+        if current:
+            return current
+
+        # Strategy 1: semantic tap by UI locator/fallback map.
+        if await self.tap_create(device):
+            state = await self.wait_for_upload_state(
+                device, expected_states, timeout=min(timeout, 4.0)
+            )
+            if state:
+                return state
+
+        # Strategy 2/3: force bottom-center taps where Create tab commonly sits.
+        w, h = await self._get_screen_size(device)
+        fallback_points = [
+            (0.50, 0.93, "fallback_bottom_nav"),
+            (0.50, 0.88, "fallback_create_center"),
+        ]
+        for xr, yr, label in fallback_points:
+            if not await self.is_tiktok_foreground(device):
+                await self.recover(device)
+                await asyncio.sleep(1.0)
+
+            x = int(w * xr) + random.randint(-10, 10)
+            y = int(h * yr) + random.randint(-8, 8)
+            logger.info(f"  ⚠️ [create_entry] {label} tap at ({x}, {y})")
+            await self._realistic_tap(device, x, y)
+            await asyncio.sleep(0.8)
+
+            state = await self.wait_for_upload_state(
+                device, expected_states, timeout=min(timeout, 4.0)
+            )
+            if state:
+                return state
+
+        logger.warning(
+            "  ⚠️ [create_entry] Failed to enter camera/gallery after create taps"
+        )
+        return None
+
     async def tap_upload_gallery(self, device: str) -> bool:
         """Tap the Upload (Gallery) thumbnail on the Camera screen."""
         # Wait a bit longer as the camera UI can be heavy to load
@@ -663,11 +895,69 @@ class TikTokController:
         await asyncio.sleep(1.0)
         return True
 
+    async def select_video_by_name(self, device: str, filename: str) -> bool:
+        """Select a specific video tile in the gallery by matching filename.
+
+        Strategy:
+        1. Dump UI — search for an element whose content-desc or text contains the
+           filename (case-insensitive, supports partial match without extension).
+        2. If not found on current screen, scroll down once and retry.
+        3. Falls back gracefully by returning False so the caller can switch to
+           select_first_video() as a safety net.
+
+        Args:
+            device: ADB device serial / cloud:{id}
+            filename: Filename of the pushed video, e.g. "my_video.mp4"
+        """
+        await asyncio.sleep(1.0)
+
+        # Build search tokens: full name + stem without extension
+        stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+        tokens = {filename.lower(), stem.lower()}
+
+        for attempt in range(2):  # Try current view, then after one scroll
+            elements = await self.dump_ui(device)
+            for el in elements:
+                desc = (el.content_desc or "").lower()
+                text = (el.text or "").lower()
+                if any(tok in desc or tok in text for tok in tokens):
+                    container = (
+                        self._find_smallest_clickable_container(elements, el, require_long_clickable=True)
+                        or self._find_smallest_clickable_container(elements, el)
+                        or (el if el.clickable else None)
+                    )
+                    if container:
+                        x, y = container.center
+                        x += random.randint(-8, 8)
+                        y += random.randint(-8, 8)
+                        logger.info(
+                            f"  🎯 [gallery_by_name] Found '{filename}' via "
+                            f"{'desc' if any(tok in desc for tok in tokens) else 'text'} "
+                            f"at ({x}, {y})"
+                        )
+                        await self._realistic_tap(device, x, y)
+                        await asyncio.sleep(1.0)
+                        return True
+
+            if attempt == 0:
+                # Scroll down slightly to reveal more gallery tiles
+                w, h = await self._get_screen_size(device)
+                await self._swipe(device, w // 2, int(h * 0.7), w // 2, int(h * 0.3), duration_ms=400)
+                await asyncio.sleep(0.8)
+
+        logger.warning(f"  ⚠️ [gallery_by_name] Could not find '{filename}' in gallery")
+        return False
+
+
     async def tap_next(self, device: str) -> bool:
         """Tap the 'Next' button on Gallery, Edit, and Post screens."""
         await asyncio.sleep(1.0)
 
-        if await self.tap_labeled_button(device, ("Next", "Tiếp")):
+        if await self.tap_labeled_button(
+            device,
+            ("Next", "Tiếp"),
+            use_realistic_tap=False,
+        ):
             return True
 
         # Fallback to legacy pattern matching if text/container lookup fails.
@@ -676,46 +966,104 @@ class TikTokController:
     async def tap_post(self, device: str) -> bool:
         """Tap the final huge 'Post' button to upload the video."""
         await asyncio.sleep(1.0)
-        if await self.tap_labeled_button(device, ("Post", "Đăng"), prefer_top=True):
+        # Prefer the lower/bottom Post CTA first — this is the main submit button.
+        if await self.tap_labeled_button(
+            device,
+            ("Post", "Đăng"),
+            prefer_top=False,
+            use_realistic_tap=False,
+        ):
             return True
-        return await self.smart_tap(device, "post_btn", verify_foreground=False)
+        if await self.smart_tap(device, "post_btn", verify_foreground=False):
+            return True
+
+        # Hard fallback: tap bottom-center submit area directly.
+        w, h = await self._get_screen_size(device)
+        x = int(w * 0.74) + random.randint(-8, 8)
+        y = int(h * 0.87) + random.randint(-8, 8)
+        logger.warning(f"  ⚠️ [tap_post] Using hard fallback at ({x}, {y})")
+        await self._tap(device, x, y)
+        return True
 
     async def fill_post_metadata(self, device: str, title: str, description: str) -> bool:
         """Fill in the caption/description and title on the Post screen."""
         await asyncio.sleep(1.5)
-        
+
         elements = await self.dump_ui(device)
         w, h = await self._get_screen_size(device)
-        
-        # Strategy: Look for an EditText spanning across the top area (y < h * 0.3)
-        caption_input = None
+
+        # Strategy: Build candidate targets in priority order.
+        candidates: list[tuple[int, int, int, str]] = []
+
+        # 1) Prefer top EditText fields (most stable when post form is ready).
         for el in elements:
             if "EditText" in el.cls:
-                _, el_y = el.center
-                if el_y < h * 0.35:  # Usually near the top, along with video thumbnail
-                    caption_input = el
-                    break
-                    
-        if caption_input:
-            x, y = caption_input.center
-            logger.info(f"  📝 [fill_metadata] Found caption EditText at ({x}, {y})")
+                cx, cy = el.center
+                if cy < h * 0.45:
+                    candidates.append((0, cx, cy, "edittext_top"))
+
+        # 2) Fallback to hint labels like "Add description..." or "Add caption".
+        hint_patterns = (
+            re.compile(r"add description", re.IGNORECASE),
+            re.compile(r"add caption", re.IGNORECASE),
+            re.compile(r"describe your", re.IGNORECASE),
+            re.compile(r"caption", re.IGNORECASE),
+            re.compile(r"mô tả", re.IGNORECASE),
+            re.compile(r"chú thích", re.IGNORECASE),
+        )
+        for el in elements:
+            txt = (el.text or "").strip()
+            desc = (el.content_desc or "").strip()
+            haystack = f"{txt} {desc}".strip()
+            if not haystack:
+                continue
+            if not self._matches_any_pattern(haystack, hint_patterns):
+                continue
+            tappable = (
+                el if el.clickable else self._find_smallest_clickable_container(elements, el)
+            )
+            if not tappable:
+                continue
+            cx, cy = tappable.center
+            candidates.append((1, cx, cy, f"hint:{haystack[:40]}"))
+
+        # 3) Last-resort coordinate.
+        fallback_x = int(w * 0.30) + random.randint(-12, 12)
+        fallback_y = int(h * 0.12) + random.randint(-8, 8)
+        candidates.append((2, fallback_x, fallback_y, "fallback_coord"))
+
+        full_text = f"{title}\n\n{description}".strip() if title else (description or "").strip()
+        if not full_text:
+            return True
+
+        # De-duplicate nearby candidates.
+        deduped: list[tuple[int, int, int, str]] = []
+        seen = set()
+        for item in sorted(candidates, key=lambda x: (x[0], x[2], x[1])):
+            _, cx, cy, label = item
+            key = (cx // 24, cy // 24)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+            if len(deduped) >= 4:
+                break
+
+        for priority, x, y, label in deduped:
+            logger.info(
+                f"  📝 [fill_metadata] Try target p{priority} '{label}' at ({x}, {y})"
+            )
             await self._tap(device, x, y)
             await asyncio.sleep(0.5)
-        else:
-            # Fallback coordinate for the text description field (approx w*0.3, h*0.12)
-            x = int(w * 0.3) + random.randint(-10, 10)
-            y = int(h * 0.12) + random.randint(-5, 5)
-            logger.warning(f"  ⚠️ [fill_metadata] No EditText found, using fallback coords ({x}, {y})")
-            await self._tap(device, x, y)
-            await asyncio.sleep(0.5)
-            
-        full_text = title + "\n\n" + description if title else description
-        if full_text:
+
             typed = await self.type_text(device, full_text)
-            await asyncio.sleep(0.5)
-            return typed and await self._verify_text_entered(device, full_text)
-            
-        return True
+            await asyncio.sleep(0.6)
+            if typed and await self._verify_text_entered(device, full_text):
+                logger.info("  ✅ [fill_metadata] Caption metadata verified")
+                return True
+
+        logger.warning("  ⚠️ [fill_metadata] Could not verify caption metadata input")
+        return False
 
     async def dismiss_keyboard(self, device: str) -> bool:
         """Dismiss the active keyboard with a single BACK keypress."""
@@ -916,14 +1264,31 @@ class TikTokController:
 
     async def get_foreground_app(self, device: str) -> str:
         """Get the current foreground package."""
+        backend_pkg = ""
+
         # Try Accessibility first
         await self._get_backend(device)
         if self._backend:
             try:
-                return await self._backend.get_foreground_app(device)
+                backend_pkg = await self._backend.get_foreground_app(device)
             except Exception:
                 pass
-        # FALLBACK: ADB dumpsys
+
+        # Prefer ADB window focus (more reliable for current screen ownership).
+        try:
+            _, stdout, _ = await self._adb._run_adb(
+                device, "shell",
+                "dumpsys", "window", "windows"
+            )
+            for line in stdout.splitlines():
+                if "mCurrentFocus=" in line or "mFocusedApp=" in line:
+                    match = re.search(r'([a-zA-Z0-9._]+)/[a-zA-Z0-9._$]+', line)
+                    if match:
+                        return match.group(1)
+        except Exception:
+            pass
+
+        # Fallback ADB activity dump.
         try:
             _, stdout, _ = await self._adb._run_adb(
                 device, "shell",
@@ -934,9 +1299,9 @@ class TikTokController:
                     match = re.search(r'(\S+)/\S+', line)
                     if match:
                         return match.group(1)
-            return ""
+            return backend_pkg or ""
         except Exception:
-            return ""
+            return backend_pkg or ""
 
     async def capture_debug_snapshot(
         self,
@@ -1035,7 +1400,12 @@ class TikTokController:
 
         # Try pressing BACK first (maybe hit a dialog)
         if self._backend:
-            await self._backend.key_event(device, "BACK")
+            try:
+                await self._backend.key_event(device, "BACK")
+            except Exception as e:
+                logger.warning(f"  ⚠️ [recover] Backend BACK failed, fallback ADB: {e}")
+                self._backend = None
+                await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
         else:
             # FALLBACK: ADB
             await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
@@ -1047,7 +1417,15 @@ class TikTokController:
 
         # Re-launch TikTok
         if self._backend:
-            await self._backend.launch_app(device, TIKTOK_PACKAGE)
+            try:
+                await self._backend.launch_app(device, TIKTOK_PACKAGE)
+            except Exception as e:
+                logger.warning(f"  ⚠️ [recover] Backend launch failed, fallback ADB: {e}")
+                self._backend = None
+                await self._adb._run_adb(
+                    device, "shell", "monkey", "-p", TIKTOK_PACKAGE,
+                    "-c", "android.intent.category.LAUNCHER", "1"
+                )
         else:
             # FALLBACK: ADB monkey launch
             await self._adb._run_adb(
@@ -1076,17 +1454,30 @@ class TikTokController:
         dismissed = 0
 
         for attempt in range(max_attempts):
-            # Dump UI to check for dialog elements
-            _, xml_raw, _ = await self._adb._run_adb(
-                device, "shell", "cat", "/sdcard/_ui.xml"
-            )
+            if not await self.is_tiktok_foreground(device):
+                await self.recover(device)
+                await asyncio.sleep(1.0)
+                if not await self.is_tiktok_foreground(device):
+                    logger.warning("  ⚠️ [dismiss_popups] TikTok not foreground; skip")
+                    break
+
             # Re-dump fresh UI
-            await self._adb._run_adb(
-                device, "shell", "uiautomator", "dump", "/sdcard/_ui.xml"
-            )
-            _, xml_raw, _ = await self._adb._run_adb(
-                device, "shell", "cat", "/sdcard/_ui.xml"
-            )
+            try:
+                await asyncio.wait_for(
+                    self._adb._run_adb(
+                        device, "shell", "uiautomator", "dump", "/sdcard/_ui.xml"
+                    ),
+                    timeout=8.0,
+                )
+                _, xml_raw, _ = await asyncio.wait_for(
+                    self._adb._run_adb(
+                        device, "shell", "cat", "/sdcard/_ui.xml"
+                    ),
+                    timeout=8.0,
+                )
+            except Exception as e:
+                logger.warning(f"  ⚠️ [dismiss_popups] UI dump timeout/error: {e}")
+                continue
 
             xml_start = xml_raw.find("<?xml")
             if xml_start < 0:
@@ -1145,17 +1536,31 @@ class TikTokController:
 
             if not found_button:
                 # Check if we're on a webview/LIVE page (no feed elements visible)
-                has_feed = False
+                texts_lower: set[str] = set()
+                descs_lower: set[str] = set()
                 for node in root.iter("node"):
-                    desc = node.get("content-desc", "")
-                    if "For You" in desc or "Home" == desc:
-                        has_feed = True
-                        break
+                    text = (node.get("text", "") or "").strip().lower()
+                    desc = (node.get("content-desc", "") or "").strip().lower()
+                    if text:
+                        texts_lower.add(text)
+                    if desc:
+                        descs_lower.add(desc)
+
+                has_feed = self._looks_like_feed_signature(texts_lower, descs_lower)
 
                 if not has_feed:
                     # Not on feed — try BACK to escape webview/LIVE
                     if self._backend:
-                        await self._backend.key_event(device, "BACK")
+                        try:
+                            await self._backend.key_event(device, "BACK")
+                        except Exception as e:
+                            logger.warning(
+                                f"  ⚠️ [dismiss_popups] Backend BACK failed, fallback ADB: {e}"
+                            )
+                            self._backend = None
+                            await self._adb._run_adb(
+                                device, "shell", "input", "keyevent", "4"
+                            )
                     else:
                         # FALLBACK: ADB
                         await self._adb._run_adb(
@@ -1180,26 +1585,47 @@ class TikTokController:
         2. Dismiss any popups/dialogs
         3. Tap Home tab if not on feed
         """
-        if not await self.is_tiktok_foreground(device):
-            await self.recover(device)
+        deadline = asyncio.get_event_loop().time() + 25.0
+        for attempt in range(3):
+            if asyncio.get_event_loop().time() > deadline:
+                break
 
-        # Dismiss any startup popups first
-        await self.dismiss_popups(device)
+            if not await self.is_tiktok_foreground(device):
+                await self.recover(device)
+                await asyncio.sleep(1.0)
+                if not await self.is_tiktok_foreground(device):
+                    continue
 
-        # Check if we're on feed by looking for feed elements
-        elements = await self.dump_ui(device)
-        home_el = self.find_element(elements, "home")
+            # Dismiss startup overlays/popups first.
+            await self.dismiss_popups(device, max_attempts=2)
 
-        if home_el and home_el.bounds[1] > 0:
-            # Home tab exists, check if selected
-            if not any(el.content_desc == "For You" for el in elements):
-                # Tap Home to go to feed
+            state = await self.detect_upload_state(device)
+            if state == "feed":
+                return True
+
+            # Try Home tab by semantic locator.
+            elements = await self.dump_ui(device)
+            home_el = self.find_element(elements, "home")
+            if home_el and home_el.bounds[1] > 0:
                 x, y = home_el.center
-                await self._tap(device, x, y)
-                await asyncio.sleep(1)
-                logger.info("  📱 Navigated to Home/feed")
+                await self._realistic_tap(device, x, y, duration_ms=90)
+                await asyncio.sleep(1.2)
+                if await self.detect_upload_state(device) == "feed":
+                    logger.info("  📱 Navigated to Home/feed")
+                    return True
 
-        return True
+            # Last fallback: tap typical bottom-left Home nav area.
+            w, h = await self._get_screen_size(device)
+            fx = int(w * 0.12) + random.randint(-8, 8)
+            fy = int(h * 0.96) + random.randint(-6, 6)
+            logger.info(f"  ⚠️ [ensure_feed] Fallback Home tap at ({fx}, {fy})")
+            await self._realistic_tap(device, fx, fy, duration_ms=90)
+            await asyncio.sleep(1.2)
+            if await self.detect_upload_state(device) == "feed":
+                return True
+
+        logger.warning("  ⚠️ [ensure_feed] Could not confirm TikTok feed")
+        return False
 
     async def double_tap_like(self, device: str) -> bool:
         """Double-tap center of screen to like (TikTok gesture)."""
@@ -1221,25 +1647,56 @@ class TikTokController:
         3. Use 'input text' (works for ASCII only)
         4. Last resort: strip to ASCII and use 'input text'
         """
-        # Lazy-init backend (auto-detects AccessibilityBackend if available)
+        is_ascii = all(ord(c) < 128 for c in text)
+
+        # For Unicode text, force-attempt Accessibility type path first
+        # even when current run is pinned to ADB backend.
+        if not is_ascii:
+            try:
+                from app.services.backend_manager import backend_manager
+
+                if await backend_manager.accessibility.ping(device):
+                    await backend_manager.accessibility.type_text(device, text)
+                    await asyncio.sleep(0.4)
+                    if await self._verify_text_entered(device, text):
+                        logger.info("  ✅ [type_text] Accessibility Unicode input verified")
+                        return True
+                    logger.warning(
+                        "  ⚠️ [type_text] Accessibility Unicode input not visible, falling back"
+                    )
+            except Exception as e:
+                logger.warning(f"  ⚠️ [type_text] Accessibility Unicode path failed: {e}")
+
+        # Lazy-init run backend (often ADB for upload flow).
         await self._get_backend(device)
 
         if self._backend:
-            await self._backend.type_text(device, text)
-            return True
-
-        # Check if text is pure ASCII
-        is_ascii = all(ord(c) < 128 for c in text)
+            try:
+                await self._backend.type_text(device, text)
+                await asyncio.sleep(0.4)
+                if await self._verify_text_entered(device, text):
+                    logger.info("  ✅ [type_text] Backend input verified")
+                    return True
+                logger.warning(
+                    "  ⚠️ [type_text] Backend input not visible in EditText, trying fallbacks"
+                )
+            except Exception as e:
+                logger.warning(f"  ⚠️ [type_text] Backend failed, fallback ADB: {e}")
+                self._backend = None
 
         if is_ascii:
+            normalized = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
             special_chars = ' &|;<>"\'()'
             escaped = ''.join(
-                f'\\{c}' if c in special_chars else c
-                for c in text
+                ("%s" if c == " " else (f'\\{c}' if c in special_chars else c))
+                for c in normalized
             )
             await self._adb._run_adb(device, "shell", "input", "text", escaped)
-            logger.info(f"  ✅ [type_text] ASCII input OK: '{text}'")
-            return True
+            await asyncio.sleep(0.4)
+            if await self._verify_text_entered(device, text):
+                logger.info(f"  ✅ [type_text] ASCII input OK: '{normalized}'")
+                return True
+            logger.warning("  ⚠️ [type_text] ASCII input sent but not verified")
 
         # Unicode text - try multiple methods
 
@@ -1310,20 +1767,32 @@ class TikTokController:
             logger.warning(f"  ⚠️ [type_text] Clipper method failed: {e}")
 
         # Method 4: ASCII fallback - strip non-ASCII characters
-        ascii_text = ''.join(c if ord(c) < 128 else '' for c in text)
+        ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+        ascii_text = re.sub(r"\s+", " ", ascii_text.replace("\n", " ")).strip()
         if not ascii_text:
             # If no ASCII chars at all, use a generic emoji/emoticon comment
             ascii_text = ":)"
         special_chars = ' &|;<>"\'()'
         escaped = ''.join(
-            f'\\{c}' if c in special_chars else c
+            ("%s" if c == " " else (f'\\{c}' if c in special_chars else c))
             for c in ascii_text
         )
         await self._adb._run_adb(device, "shell", "input", "text", escaped)
-        logger.warning(f"  ⚠️ [type_text] Used ASCII fallback: '{ascii_text}' (original: '{text}')")
-        return True
+        await asyncio.sleep(0.4)
+        ok = await self._verify_text_entered(device, text) or await self._verify_text_entered(device, ascii_text)
+        if ok:
+            logger.warning(
+                f"  ⚠️ [type_text] Used ASCII fallback: '{ascii_text}' (original: '{text}')"
+            )
+        else:
+            logger.warning("  ❌ [type_text] All input methods exhausted without verification")
+        return ok
 
-    async def _verify_text_entered(self, device: str, expected_text: str) -> bool:
+    async def _verify_text_entered(
+        self,
+        device: str,
+        expected_text: str | None = None,
+    ) -> bool:
         """Verify that text was actually typed into the focused EditText.
 
         Returns True only if EditText contains actual content (not placeholder).
@@ -1331,6 +1800,8 @@ class TikTokController:
         # Placeholder/hint texts to ignore
         placeholders = {"add comment...", "add a comment...", "thêm bình luận...",
                         "viết bình luận...", "say something...", "add comment"}
+        expected_tokens = self._expected_text_tokens(expected_text or "")
+        expected_tokens_folded = {self._fold_text(token) for token in expected_tokens}
 
         elements = await self.dump_ui(device)
         for el in elements:
@@ -1342,9 +1813,21 @@ class TikTokController:
             # Ignore placeholder hints
             if text_content.lower() in placeholders:
                 continue
-            # Found actual text in EditText
-            logger.info(f"  🔍 [verify] Text in EditText: '{text_content[:40]}'")
-            return True
+
+            if not expected_tokens:
+                logger.info(f"  🔍 [verify] Text in EditText: '{text_content[:40]}'")
+                return True
+
+            content_folded = self._fold_text(text_content)
+            for token in expected_tokens_folded:
+                if token and token in content_folded:
+                    logger.info(
+                        "  🔍 [verify] Matched caption token in EditText: '%s'",
+                        token[:24],
+                    )
+                    return True
+        if expected_tokens:
+            logger.warning("  ⚠️ [verify] Expected text tokens not found in EditText")
         return False
 
     async def _find_pink_send_button(self, device: str) -> tuple[int, int] | None:
@@ -1468,14 +1951,19 @@ class TikTokController:
         dur = max(40, dur)
         await self._get_backend(device)
         if self._backend:
-            # Accessibility: swipe to same point = press with duration
-            await self._backend.swipe(device, x, y, x, y, dur)
-        else:
-            # FALLBACK: ADB input swipe
-            await self._adb._run_adb(
-                device, "shell", "input", "swipe",
-                str(x), str(y), str(x), str(y), str(dur)
-            )
+            try:
+                # Accessibility: swipe to same point = press with duration
+                await self._backend.swipe(device, x, y, x, y, dur)
+                return
+            except Exception as e:
+                logger.warning(f"  ⚠️ [realistic_tap] Backend failed, fallback ADB: {e}")
+                self._backend = None
+
+        # FALLBACK: ADB input swipe
+        await self._adb._run_adb(
+            device, "shell", "input", "swipe",
+            str(x), str(y), str(x), str(y), str(dur)
+        )
 
     async def send_comment(self, device: str) -> bool:
         """Tap Send button to post comment.

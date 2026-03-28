@@ -16,12 +16,15 @@ from sqlmodel import Session, select
 from app.config import settings
 from app.models import (
     Device,
+    Task,
+    TaskStatus,
     PushStatus,
     Video,
     VideoAssignment,
     VideoStatus,
     DeviceAccount,
 )
+from app.services.upload_artifacts import upload_artifacts_service
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +60,127 @@ def _video_to_dict(v: Video) -> dict:
     }
 
 
-def _assignment_to_dict(a: VideoAssignment) -> dict:
+def _serialize_account(account: DeviceAccount, device: Optional[Device]) -> dict:
+    return {
+        "device_id": account.device_id,
+        "device_name": device.name if device else None,
+        "device_status": device.status if device else None,
+        "platform": account.platform,
+        "account_name": account.account_name,
+        "account_notes": account.notes,
+    }
+
+
+def _normalized_push_status(value: Optional[str]) -> str:
+    if value == PushStatus.FAILED:
+        return PushStatus.PUSH_FAILED
+    return value or PushStatus.PENDING
+
+
+def _can_push_assignment(a: VideoAssignment) -> bool:
+    return _normalized_push_status(a.push_status) in {
+        PushStatus.PENDING,
+        PushStatus.PUSH_FAILED,
+    }
+
+
+def _can_run_upload(a: VideoAssignment, task: Optional[Task]) -> bool:
+    if task and task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+        return False
+    if _normalized_push_status(a.push_status) not in {
+        PushStatus.PUSHED,
+        PushStatus.UPLOADED,
+    }:
+        return False
+    return a.upload_status not in {
+        "queued",
+        "running",
+        "uploaded",
+    }
+
+
+def _classify_error_hint(error: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not error:
+        return None, None
+
+    lowered = error.lower()
+    if any(token in lowered for token in ("adb", "device offline", "connection", "timeout", "connect")):
+        return "connectivity", "Kiểm tra ADB/device connectivity trước khi rerun"
+    if any(token in lowered for token in ("gallery", "select video", "filename", "media picker")):
+        return "gallery_select", "TikTok có thể chọn sai video trong gallery, cần review artifact"
+    if any(token in lowered for token in ("verify", "publish", "post", "completed_main_nav")):
+        return "post_verify", "Flow post hoàn tất nhưng bước verify/completion cần kiểm tra lại"
+    return "generic", "Xem task logs và artifact trước khi rerun"
+
+
+def _rerun_policy(a: VideoAssignment) -> dict:
+    failed_statuses = {"upload_failed", "verify_failed"}
+    cooldown_seconds = 120
+    remaining = 0
+    if a.upload_status in failed_statuses and a.last_run_at:
+        last_run_at = a.last_run_at
+        if last_run_at.tzinfo is None:
+            last_run_at = last_run_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - last_run_at).total_seconds()
+        remaining = max(0, int(cooldown_seconds - elapsed))
+
+    can_rerun = a.upload_status in failed_statuses and remaining == 0
+    return {
+        "can_rerun": can_rerun,
+        "rerun_requires_confirm": a.upload_status in failed_statuses,
+        "rerun_cooldown_remaining_sec": remaining,
+    }
+
+
+def _build_platform_summary(
+    assignments: list[dict],
+    eligible_accounts_by_platform: dict[str, list[dict]],
+) -> dict[str, dict]:
+    platforms = set(eligible_accounts_by_platform.keys()) | {item["platform"] for item in assignments}
+    summary: dict[str, dict] = {}
+    for platform in sorted(platforms):
+        platform_assignments = [item for item in assignments if item["platform"] == platform]
+        eligible_accounts = eligible_accounts_by_platform.get(platform, [])
+        eligible_device_ids = {item["device_id"] for item in eligible_accounts}
+        assigned_device_ids = {item["device_id"] for item in platform_assignments}
+        missing_targets = [
+            item for item in eligible_accounts if item["device_id"] not in assigned_device_ids
+        ]
+        uploaded_count = sum(1 for item in platform_assignments if item["upload_status"] == "uploaded")
+        running_count = sum(1 for item in platform_assignments if item["upload_status"] in {"queued", "running"})
+        failed_count = sum(1 for item in platform_assignments if item["upload_status"] in {"upload_failed", "verify_failed"})
+        summary[platform] = {
+            "eligible_targets": len(eligible_accounts),
+            "assigned_targets": len(platform_assignments),
+            "uploaded_targets": uploaded_count,
+            "running_targets": running_count,
+            "failed_targets": failed_count,
+            "missing_targets": len(missing_targets),
+            "missing_target_devices": missing_targets,
+            "coverage_complete": bool(eligible_accounts) and len(platform_assignments) == len(eligible_accounts),
+        }
+    return summary
+
+
+def _assignment_to_dict(
+    a: VideoAssignment,
+    *,
+    video: Optional[Video] = None,
+    device: Optional[Device] = None,
+    account: Optional[DeviceAccount] = None,
+    task: Optional[Task] = None,
+    artifact: Optional[dict] = None,
+) -> dict:
+    push_status = _normalized_push_status(a.push_status)
+    latest_error = a.last_error or a.error
+    error_hint_code, error_hint_label = _classify_error_hint(latest_error)
+    rerun_policy = _rerun_policy(a)
     return {
         "id": a.id,
         "video_id": a.video_id,
         "device_id": a.device_id,
         "platform": a.platform,
-        "push_status": a.push_status,
+        "push_status": push_status,
         "upload_status": a.upload_status,
         "device_path": a.device_path,
         "pushed_at": a.pushed_at,
@@ -71,8 +188,40 @@ def _assignment_to_dict(a: VideoAssignment) -> dict:
         "task_id": a.task_id,
         "error": a.error,
         "last_error": a.last_error,
+        "latest_error": latest_error,
         "last_run_at": a.last_run_at,
         "created_at": a.created_at,
+        "video_title": video.title if video else None,
+        "video_filename": video.filename if video else None,
+        "video_description": video.description if video else None,
+        "video_tags": video.tags if video else None,
+        "device_name": device.name if device else None,
+        "device_status": device.status if device else None,
+        "device_model": device.device_model if device else None,
+        "account_name": account.account_name if account else None,
+        "account_notes": account.notes if account else None,
+        "task_status": task.status if task else None,
+        "task_result": task.result if task else None,
+        "task_error": task.error if task else None,
+        "can_push": _can_push_assignment(a),
+        "can_run_upload": _can_run_upload(a, task),
+        "needs_push": _can_push_assignment(a),
+        "ready_to_upload": _normalized_push_status(a.push_status) in {
+            PushStatus.PUSHED,
+            PushStatus.UPLOADED,
+        },
+        "has_errors": bool(latest_error),
+        "error_hint_code": error_hint_code,
+        "error_hint_label": error_hint_label,
+        **rerun_policy,
+        "artifact_session": artifact.get("session_name") if artifact else None,
+        "artifact_dir": artifact.get("artifact_dir") if artifact else None,
+        "artifact_manifest_url": artifact.get("manifest_url") if artifact else None,
+        "artifact_screenrecord_url": artifact.get("screenrecord_url") if artifact else None,
+        "artifact_finished_at": artifact.get("finished_at") if artifact else None,
+        "artifact_result": artifact.get("result") if artifact else None,
+        "artifact_latest_snapshot": artifact.get("latest_snapshot") if artifact else None,
+        "artifact_snapshots_count": artifact.get("snapshots_count", 0) if artifact else 0,
     }
 
 
@@ -174,15 +323,63 @@ class VideoService:
             }
             videos = [v for v in videos if v.id not in assigned_ids]
 
+        assignments = session.exec(select(VideoAssignment)).all()
+        all_accounts = session.exec(select(DeviceAccount)).all()
+        assignment_by_video: dict[int, list[VideoAssignment]] = {}
+        for assignment in assignments:
+            assignment_by_video.setdefault(assignment.video_id, []).append(assignment)
+
+        device_ids = {a.device_id for a in assignments}
+        device_ids.update(account.device_id for account in all_accounts)
+        task_ids = {a.task_id for a in assignments if a.task_id}
+        account_keys = {(a.device_id, a.platform) for a in assignments}
+
+        device_map = {
+            d.id: d for d in session.exec(
+                select(Device).where(Device.id.in_(device_ids))  # type: ignore[arg-type]
+            ).all()
+        } if device_ids else {}
+        task_map = {
+            t.id: t for t in session.exec(
+                select(Task).where(Task.id.in_(task_ids))  # type: ignore[arg-type]
+            ).all()
+        } if task_ids else {}
+        account_map = {
+            (a.device_id, a.platform): a
+            for a in all_accounts
+            if (a.device_id, a.platform) in account_keys
+        }
+        eligible_accounts_by_platform: dict[str, list[dict]] = {}
+        for account in all_accounts:
+            eligible_accounts_by_platform.setdefault(account.platform, []).append(
+                _serialize_account(account, device_map.get(account.device_id))
+            )
+        artifact_index = upload_artifacts_service.build_assignment_index()
+
         result = []
         for v in videos:
             d = _video_to_dict(v)
+            video_assignments = assignment_by_video.get(v.id, [])
             d["assignments"] = [
-                _assignment_to_dict(a)
-                for a in session.exec(
-                    select(VideoAssignment).where(VideoAssignment.video_id == v.id)
-                ).all()
+                _assignment_to_dict(
+                    a,
+                    video=v,
+                    device=device_map.get(a.device_id),
+                    account=account_map.get((a.device_id, a.platform)),
+                    task=task_map.get(a.task_id),
+                    artifact=artifact_index.get(a.id or -1),
+                )
+                for a in video_assignments
             ]
+            d["assignment_count"] = len(video_assignments)
+            d["platform_summary"] = _build_platform_summary(
+                d["assignments"],
+                eligible_accounts_by_platform,
+            )
+            d["tiktok_assignments"] = [
+                assignment for assignment in d["assignments"] if assignment["platform"] == "tiktok"
+            ]
+            d["tiktok_assignment"] = d["tiktok_assignments"][0] if d["tiktok_assignments"] else None
             result.append(d)
         return result
 
@@ -191,13 +388,53 @@ class VideoService:
         video = session.get(Video, video_id)
         if not video:
             return None
+        assignments = session.exec(
+            select(VideoAssignment).where(VideoAssignment.video_id == video.id)
+        ).all()
+        device_ids = {a.device_id for a in assignments}
+        task_ids = {a.task_id for a in assignments if a.task_id}
+        device_map = {
+            d.id: d for d in session.exec(
+                select(Device).where(Device.id.in_(device_ids))  # type: ignore[arg-type]
+            ).all()
+        } if device_ids else {}
+        task_map = {
+            t.id: t for t in session.exec(
+                select(Task).where(Task.id.in_(task_ids))  # type: ignore[arg-type]
+            ).all()
+        } if task_ids else {}
+        all_accounts = session.exec(select(DeviceAccount)).all()
+        account_map = {
+            (a.device_id, a.platform): a
+            for a in all_accounts
+        }
+        eligible_accounts_by_platform: dict[str, list[dict]] = {}
+        for account in all_accounts:
+            eligible_accounts_by_platform.setdefault(account.platform, []).append(
+                _serialize_account(account, device_map.get(account.device_id))
+            )
+        artifact_index = upload_artifacts_service.build_assignment_index()
         d = _video_to_dict(video)
         d["assignments"] = [
-            _assignment_to_dict(a)
-            for a in session.exec(
-                select(VideoAssignment).where(VideoAssignment.video_id == video.id)
-            ).all()
+            _assignment_to_dict(
+                a,
+                video=video,
+                device=device_map.get(a.device_id),
+                account=account_map.get((a.device_id, a.platform)),
+                task=task_map.get(a.task_id),
+                artifact=artifact_index.get(a.id or -1),
+            )
+            for a in assignments
         ]
+        d["assignment_count"] = len(d["assignments"])
+        d["platform_summary"] = _build_platform_summary(
+            d["assignments"],
+            eligible_accounts_by_platform,
+        )
+        d["tiktok_assignments"] = [
+            assignment for assignment in d["assignments"] if assignment["platform"] == "tiktok"
+        ]
+        d["tiktok_assignment"] = d["tiktok_assignments"][0] if d["tiktok_assignments"] else None
         return d
 
     def get_assignments(
@@ -205,6 +442,10 @@ class VideoService:
         session: Session,
         video_id: Optional[int] = None,
         device_id: Optional[int] = None,
+        platform: Optional[str] = None,
+        push_status: Optional[str] = None,
+        upload_status: Optional[str] = None,
+        actionable_only: bool = False,
     ) -> list[dict]:
         """Get full assignment matrix, optionally filtered."""
         stmt = select(VideoAssignment)
@@ -212,7 +453,63 @@ class VideoService:
             stmt = stmt.where(VideoAssignment.video_id == video_id)
         if device_id:
             stmt = stmt.where(VideoAssignment.device_id == device_id)
-        return [_assignment_to_dict(a) for a in session.exec(stmt).all()]
+        if platform:
+            stmt = stmt.where(VideoAssignment.platform == platform)
+        if push_status:
+            if push_status == PushStatus.PUSH_FAILED:
+                stmt = stmt.where(
+                    VideoAssignment.push_status.in_([PushStatus.PUSH_FAILED, PushStatus.FAILED])  # type: ignore[arg-type]
+                )
+            else:
+                stmt = stmt.where(VideoAssignment.push_status == push_status)
+        if upload_status:
+            stmt = stmt.where(VideoAssignment.upload_status == upload_status)
+
+        assignments = session.exec(stmt).all()
+        assignments.sort(key=lambda a: (a.created_at, a.id or 0), reverse=True)
+
+        video_ids = {a.video_id for a in assignments}
+        device_ids = {a.device_id for a in assignments}
+        task_ids = {a.task_id for a in assignments if a.task_id}
+
+        video_map = {
+            v.id: v for v in session.exec(
+                select(Video).where(Video.id.in_(video_ids))  # type: ignore[arg-type]
+            ).all()
+        } if video_ids else {}
+        device_map = {
+            d.id: d for d in session.exec(
+                select(Device).where(Device.id.in_(device_ids))  # type: ignore[arg-type]
+            ).all()
+        } if device_ids else {}
+        task_map = {
+            t.id: t for t in session.exec(
+                select(Task).where(Task.id.in_(task_ids))  # type: ignore[arg-type]
+            ).all()
+        } if task_ids else {}
+        account_map = {
+            (account.device_id, account.platform): account
+            for account in session.exec(select(DeviceAccount)).all()
+        }
+        artifact_index = upload_artifacts_service.build_assignment_index()
+
+        result = [
+            _assignment_to_dict(
+                assignment,
+                video=video_map.get(assignment.video_id),
+                device=device_map.get(assignment.device_id),
+                account=account_map.get((assignment.device_id, assignment.platform)),
+                task=task_map.get(assignment.task_id),
+                artifact=artifact_index.get(assignment.id or -1),
+            )
+            for assignment in assignments
+        ]
+        if actionable_only:
+            result = [
+                item for item in result
+                if item["can_push"] or item["can_run_upload"]
+            ]
+        return result
 
     # ------------------------------------------------------------------
     # Assign
@@ -239,20 +536,18 @@ class VideoService:
         if not device:
             return None, "Device not found"
 
-        # UNIQUE(video_id, platform) check — 1 video per platform
+        # UNIQUE(video_id, device_id, platform) check — 1 target per device/platform
         existing = session.exec(
             select(VideoAssignment).where(
                 VideoAssignment.video_id == video_id,
+                VideoAssignment.device_id == device_id,
                 VideoAssignment.platform == platform,
             )
         ).first()
         if existing:
-            # Find who owns it for a helpful message
-            owner_device = session.get(Device, existing.device_id)
-            owner_name = owner_device.name if owner_device else f"device #{existing.device_id}"
             return None, (
-                f"Video đã được assign cho platform '{platform}' "
-                f"bởi {owner_name} (assignment #{existing.id})"
+                f"Video đã được assign cho device '{device.name}' "
+                f"trên platform '{platform}' (assignment #{existing.id})"
             )
 
         assignment = VideoAssignment(
@@ -276,7 +571,7 @@ class VideoService:
         platform: str,
         video_ids: Optional[list[int]] = None,
     ) -> list[dict]:
-        """Round-robin assign videos to devices that don't have them yet.
+        """Assign videos to every eligible device/account target that is still missing.
 
         Each device must have a DeviceAccount for the platform.
         """
@@ -287,7 +582,7 @@ class VideoService:
         if not device_accounts:
             return []
 
-        device_ids = [da.device_id for da in device_accounts]
+        device_ids = sorted({da.device_id for da in device_accounts})
 
         # Get candidate videos
         if video_ids:
@@ -297,34 +592,42 @@ class VideoService:
                 select(Video).where(Video.status == VideoStatus.AVAILABLE)
             ).all()
 
-        # Already assigned for this platform
-        assigned_video_ids = {
-            a.video_id
-            for a in session.exec(
-                select(VideoAssignment).where(VideoAssignment.platform == platform)
-            ).all()
+        existing_assignments = session.exec(
+            select(VideoAssignment).where(VideoAssignment.platform == platform)
+        ).all()
+        existing_pairs = {
+            (assignment.video_id, assignment.device_id)
+            for assignment in existing_assignments
         }
 
-        unassigned = [v for v in videos if v.id not in assigned_video_ids]
-        if not unassigned:
+        candidates = [v for v in videos if v and v.status == VideoStatus.AVAILABLE]
+        if not candidates:
             return []
 
         created = []
-        for i, video in enumerate(unassigned):
-            device_id = device_ids[i % len(device_ids)]
-            assignment = VideoAssignment(
-                video_id=video.id,
-                device_id=device_id,
-                platform=platform,
-                push_status=PushStatus.PENDING,
-            )
-            session.add(assignment)
-            created.append(assignment)
+        for video in candidates:
+            for device_id in device_ids:
+                if (video.id, device_id) in existing_pairs:
+                    continue
+                assignment = VideoAssignment(
+                    video_id=video.id,
+                    device_id=device_id,
+                    platform=platform,
+                    push_status=PushStatus.PENDING,
+                )
+                session.add(assignment)
+                created.append(assignment)
+                existing_pairs.add((video.id, device_id))
 
         session.commit()
         for a in created:
             session.refresh(a)
-        logger.info(f"Auto-assigned {len(created)} videos for platform={platform}")
+        logger.info(
+            "Auto-assigned %s missing targets for platform=%s across %s videos",
+            len(created),
+            platform,
+            len(candidates),
+        )
         return [_assignment_to_dict(a) for a in created]
 
     # ------------------------------------------------------------------
@@ -492,10 +795,17 @@ class VideoService:
         if platform:
             stmt = stmt.where(DeviceAccount.platform == platform)
         accounts = session.exec(stmt).all()
+        device_ids = {a.device_id for a in accounts}
+        device_map = {
+            d.id: d for d in session.exec(
+                select(Device).where(Device.id.in_(device_ids))  # type: ignore[arg-type]
+            ).all()
+        } if device_ids else {}
         return [
             {
                 "id": a.id,
                 "device_id": a.device_id,
+                "device_name": device_map.get(a.device_id).name if device_map.get(a.device_id) else None,
                 "platform": a.platform,
                 "account_name": a.account_name,
                 "notes": a.notes,

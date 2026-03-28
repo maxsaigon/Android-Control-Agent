@@ -1,3 +1,19 @@
+---
+title: TikTok Edit Profile
+description: Template chỉnh profile TikTok cho các trường được hỗ trợ.
+platform: tiktok
+mode: script
+status: planned
+is_primary: false
+implemented: false
+risk_level: high
+sort_order: 120
+fallback_behavior: Không dùng AI; flow phụ thuộc khả năng locate UI của profile editor.
+default_vars: {"display_name": "", "bio": "", "avatar_path": ""}
+ui_fields: []
+capabilities: ["Định nghĩa flow chỉnh display name, bio và avatar"]
+limitations: ["Runner chuyên biệt chưa có", "Không đổi username", "Không dành cho dashboard primary flow"]
+---
 # TikTok Edit Profile
 
 Bạn đang chỉnh sửa profile TikTok. Thao tác cẩn thận, kiểm tra kỹ trước khi lưu.

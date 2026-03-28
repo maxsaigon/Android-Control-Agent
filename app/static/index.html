@@ -66,139 +66,98 @@
         </header>
 
         <!-- ============ DASHBOARD SECTION ============ -->
-        <section class="page-section active" id="sectionDashboard">
-            <!-- Stats Row -->
-            <div class="stats-row">
+        <section class="page-section active dashboard-section" id="sectionDashboard">
+            <div class="dashboard-hero">
+                <div class="dashboard-hero-copy">
+                    <span class="eyebrow">TikTok-first operations</span>
+                    <h2>Dashboard ưu tiên chất lượng comment và kiểm soát runtime thật</h2>
+                    <p class="dashboard-hero-text">
+                        Tab này mặc định vào `TikTok Comment Videos`, hiển thị rõ pipeline hybrid,
+                        fallback, risk và tiến trình verify thay vì trộn chung với các action khác.
+                    </p>
+                </div>
+                <div class="dashboard-hero-pills" id="dashboardHeroPills">
+                    <span class="hero-pill">Primary template</span>
+                    <span class="hero-pill muted">Metadata-driven</span>
+                </div>
+            </div>
+
+            <div class="stats-row dashboard-snapshot-row">
                 <div class="stat-card stat-devices">
-                    <div class="stat-icon">📱</div>
+                    <div class="stat-icon">01</div>
                     <div class="stat-content">
                         <div class="stat-number" id="statDevices">0</div>
-                        <div class="stat-label">Devices</div>
+                        <div class="stat-label">Connected Fleet</div>
                         <div class="stat-sub" id="statDevicesSub">—</div>
                     </div>
                 </div>
                 <div class="stat-card stat-tasks">
-                    <div class="stat-icon">⚡</div>
+                    <div class="stat-icon">02</div>
                     <div class="stat-content">
-                        <div class="stat-number" id="statTasksToday">0</div>
-                        <div class="stat-label">Tasks Today</div>
+                        <div class="stat-number" id="statCommentSessions">0</div>
+                        <div class="stat-label">Active Comment Sessions</div>
                         <div class="stat-sub" id="statTasksSub">—</div>
                     </div>
                 </div>
                 <div class="stat-card stat-cost">
-                    <div class="stat-icon">💰</div>
+                    <div class="stat-icon">03</div>
                     <div class="stat-content">
                         <div class="stat-number" id="statCost">$0</div>
-                        <div class="stat-label">Total Cost</div>
-                        <div class="stat-sub">All time AI</div>
+                        <div class="stat-label">AI Spend</div>
+                        <div class="stat-sub" id="statCostSub">All time</div>
                     </div>
                 </div>
                 <div class="stat-card stat-rate">
-                    <div class="stat-icon">✅</div>
+                    <div class="stat-icon">04</div>
                     <div class="stat-content">
                         <div class="stat-number" id="statRate">100%</div>
-                        <div class="stat-label">Success Rate</div>
-                        <div class="stat-sub">All time</div>
+                        <div class="stat-label">24h Quality Signal</div>
+                        <div class="stat-sub" id="statRateSub">—</div>
                     </div>
                 </div>
             </div>
 
-            <!-- Two-Column Content -->
-            <div class="content-grid">
-                <!-- Left: Quick Actions + Submit -->
-                <div class="content-col">
-                    <div class="panel actions-panel">
-                        <div class="panel-header">
-                            <h2>🚀 Quick Actions</h2>
-                            <select id="deviceSelect" class="device-inline-select" required>
-                                <option value="">Chọn device...</option>
-                            </select>
+            <div class="dashboard-grid dashboard-grid-top">
+                <div class="panel composer-panel">
+                    <div class="panel-header dashboard-panel-header">
+                        <div>
+                            <span class="panel-kicker">Primary run composer</span>
+                            <h2>Launch Template</h2>
                         </div>
-                        <div class="panel-body">
-                            <form id="taskForm" onsubmit="submitTask(event)">
-                                <!-- Action Cards -->
-                                <div class="action-cards" id="actionCards">
-                                    <div class="action-card card-tiktok" data-action="tiktok_browse" data-mode="script" onclick="selectAction(this)">
-                                        <span class="action-icon">🎵</span>
-                                        <span class="action-name">TikTok</span>
-                                        <span class="action-desc">Lướt video</span>
-                                        <span class="action-cost script">$0</span>
+                        <div class="template-quick-meta" id="composerMeta">
+                            <span class="template-chip primary">Primary</span>
+                            <span class="template-chip">Hybrid</span>
+                        </div>
+                    </div>
+                    <div class="panel-body">
+                        <form id="taskForm" onsubmit="submitTask(event)">
+                            <input type="hidden" id="selectedTemplate" value="">
+
+                            <div class="primary-template-card" id="primaryTemplateCard">
+                                <div class="primary-template-head">
+                                    <div>
+                                        <div class="primary-template-label">Default template</div>
+                                        <h3 id="primaryTemplateTitle">TikTok Comment Videos</h3>
                                     </div>
-                                    <div class="action-card card-youtube" data-action="youtube_watch" data-mode="script" onclick="selectAction(this)">
-                                        <span class="action-icon">▶️</span>
-                                        <span class="action-name">YouTube</span>
-                                        <span class="action-desc">Xem shorts</span>
-                                        <span class="action-cost script">$0</span>
-                                    </div>
-                                    <div class="action-card card-facebook" data-action="facebook_scroll" data-mode="script" onclick="selectAction(this)">
-                                        <span class="action-icon">📘</span>
-                                        <span class="action-name">Facebook</span>
-                                        <span class="action-desc">Lướt feed</span>
-                                        <span class="action-cost script">$0</span>
-                                    </div>
-                                    <div class="action-card card-instagram" data-action="instagram_scroll" data-mode="script" onclick="selectAction(this)">
-                                        <span class="action-icon">📷</span>
-                                        <span class="action-name">Instagram</span>
-                                        <span class="action-desc">Lướt feed</span>
-                                        <span class="action-cost script">$0</span>
-                                    </div>
-                                    <div class="action-card card-ai action-card-ai" data-action="custom" data-mode="ai" onclick="selectAction(this)">
-                                        <span class="action-icon">🧠</span>
-                                        <span class="action-name">Custom AI</span>
-                                        <span class="action-desc">AI Agent tùy chỉnh</span>
-                                        <span class="action-cost ai">$0.01+</span>
-                                    </div>
+                                    <div class="template-chip-stack" id="primaryTemplateBadges"></div>
                                 </div>
+                                <p class="primary-template-desc" id="primaryTemplateDescription"></p>
+                                <div class="primary-template-stats" id="primaryTemplateStats"></div>
+                            </div>
 
-                                <!-- Script Config -->
-                                <div class="config-panel" id="scriptConfig" style="display:none">
-                                    <div class="config-title">⚙️ Cấu hình Script</div>
-                                    <div class="form-row">
-                                        <div class="form-group half">
-                                            <label>Số video/bài</label>
-                                            <input type="number" id="scriptCount" value="5" min="1" max="30">
+                            <div class="composer-layout">
+                                <div class="composer-main">
+                                    <div class="config-panel">
+                                        <div class="config-title">Template controls</div>
+                                        <div id="dynamicTemplateFields" class="dynamic-fields"></div>
+                                    </div>
+
+                                    <div class="config-panel" id="composerCommandGroup" style="display:none">
+                                        <div class="config-title">AI command</div>
+                                        <div class="form-group">
+                                            <label>Command</label>
+                                            <textarea id="commandInput" rows="3" placeholder="Mô tả yêu cầu cho AI task"></textarea>
                                         </div>
-                                        <div class="form-group half">
-                                            <label>Thời gian xem (s)</label>
-                                            <input type="text" id="scriptViewTime" value="5-15" placeholder="5-15">
-                                        </div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Tỷ lệ like</label>
-                                        <select id="scriptLikeChance">
-                                            <option value="0">Không like</option>
-                                            <option value="0.1">10%</option>
-                                            <option value="0.2">20%</option>
-                                            <option value="0.3" selected>30%</option>
-                                            <option value="0.5">50%</option>
-                                            <option value="0.8">80%</option>
-                                        </select>
-                                    </div>
-                                </div>
-
-                                <!-- AI Config -->
-                                <div class="config-panel" id="aiConfig" style="display:none">
-                                    <div class="config-title">🧠 AI Task</div>
-
-                                    <!-- Template selector (primary) -->
-                                    <div class="form-group">
-                                        <label>Template</label>
-                                        <select id="templateSelect" onchange="onTemplateChange()">
-                                            <option value="">— Chọn template —</option>
-                                        </select>
-                                    </div>
-
-                                    <!-- Template info (shown when script/hybrid template selected) -->
-                                    <div id="templateInfo" style="display:none"></div>
-
-                                    <!-- Command input (hidden for script templates) -->
-                                    <div id="commandGroup" class="form-group">
-                                        <label>Lệnh cho AI <span class="required-badge">bắt buộc</span></label>
-                                        <textarea id="commandInput" rows="3" placeholder="Ví dụ: Tìm video nấu phở rồi comment 'Ngon quá!'"></textarea>
-                                    </div>
-
-                                    <details class="advanced-toggle">
-                                        <summary>⚙️ Advanced</summary>
                                         <div class="form-row">
                                             <div class="form-group half">
                                                 <label>Max Steps</label>
@@ -209,53 +168,98 @@
                                                 <input type="number" id="maxRetries" value="2" min="0" max="5">
                                             </div>
                                         </div>
-                                    </details>
-                                </div>
-
-                                <!-- Cost Estimate -->
-                                <div class="cost-estimate" id="costEstimate">
-                                    <div class="cost-row">
-                                        <span>Mode</span>
-                                        <span id="estMode">—</span>
                                     </div>
-                                    <div class="cost-row">
-                                        <span>Cost</span>
-                                        <span id="estCost" class="cost-value">—</span>
+
+                                    <div class="config-panel">
+                                        <div class="config-title">Execution</div>
+                                        <div class="form-row">
+                                            <div class="form-group half">
+                                                <label>Device</label>
+                                                <select id="deviceSelect" required>
+                                                    <option value="">Chọn device...</option>
+                                                </select>
+                                            </div>
+                                            <div class="form-group half">
+                                                <label>Queue mode</label>
+                                                <label class="checkbox-label composer-checkbox">
+                                                    <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">
+                                                    <span>Batch trên tất cả devices online</span>
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <div class="cost-estimate" id="costEstimate">
+                                            <div class="cost-row">
+                                                <span>Mode</span>
+                                                <span id="estMode">—</span>
+                                            </div>
+                                            <div class="cost-row">
+                                                <span>Cost</span>
+                                                <span id="estCost" class="cost-value">—</span>
+                                            </div>
+                                        </div>
                                     </div>
+
+                                    <button type="submit" class="btn btn-primary btn-block" id="submitBtn" disabled>
+                                        Chọn template để bắt đầu
+                                    </button>
                                 </div>
 
-                                <!-- Batch Toggle -->
-                                <div class="form-group">
-                                    <label class="checkbox-label">
-                                        <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">
-                                        <span>Batch — chạy trên tất cả devices</span>
-                                    </label>
-                                </div>
+                                <aside class="template-detail-panel" id="templateDetailPanel">
+                                    <div class="template-detail-heading">
+                                        <span class="panel-kicker">Template detail</span>
+                                        <h3 id="templateDetailTitle">TikTok Comment Videos</h3>
+                                    </div>
+                                    <div class="template-detail-body" id="templateDetail"></div>
+                                </aside>
+                            </div>
+                        </form>
+                    </div>
+                </div>
 
-                                <!-- Hidden fields -->
-                                <input type="hidden" id="selectedAction" value="">
-                                <input type="hidden" id="executionMode" value="">
+                <div class="panel live-panel">
+                    <div class="panel-header dashboard-panel-header">
+                        <div>
+                            <span class="panel-kicker">Live run rail</span>
+                            <h2>Running Tasks</h2>
+                        </div>
+                        <span class="count-badge" id="runningCount">0</span>
+                    </div>
+                    <div class="panel-body scrollable" id="runningTasks">
+                        <div class="empty-state">
+                            <div class="empty-icon">SYNC</div>
+                            <div class="empty-text">No tasks running</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
-                                <button type="submit" class="btn btn-primary btn-block" id="submitBtn" disabled>
-                                    Chọn hành động để bắt đầu
-                                </button>
-                            </form>
+            <div class="dashboard-grid dashboard-grid-bottom">
+                <div class="panel">
+                    <div class="panel-header dashboard-panel-header">
+                        <div>
+                            <span class="panel-kicker">Template library</span>
+                            <h2>Operational Templates</h2>
+                        </div>
+                        <span class="count-badge" id="templateCount">0</span>
+                    </div>
+                    <div class="panel-body">
+                        <div class="template-library" id="templateLibrary">
+                            <div class="loading">Loading templates...</div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Right: Live Tasks -->
-                <div class="content-col">
-                    <div class="panel live-panel">
-                        <div class="panel-header">
-                            <h2>⚡ Live Tasks</h2>
-                            <span class="count-badge" id="runningCount">0</span>
+                <div class="panel">
+                    <div class="panel-header dashboard-panel-header">
+                        <div>
+                            <span class="panel-kicker">Recent outcomes</span>
+                            <h2>Last Completed Runs</h2>
                         </div>
-                        <div class="panel-body scrollable" id="runningTasks">
-                            <div class="empty-state">
-                                <div class="empty-icon">🎯</div>
-                                <div class="empty-text">No tasks running</div>
-                            </div>
+                    </div>
+                    <div class="panel-body">
+                        <div class="recent-outcomes" id="recentOutcomes">
+                            <div class="loading">Loading...</div>
                         </div>
                     </div>
                 </div>
@@ -594,11 +598,17 @@
                 </div>
             </div>
 
+            <div class="video-ops-summary" id="videoOpsSummary" style="margin-top:16px"></div>
+
             <!-- Row 2: Video Library -->
             <div class="panel video-library-panel" style="margin-top: 16px">
                 <div class="panel-header">
-                    <h2>🎬 Video Library</h2>
+                    <div>
+                        <h2>🎬 Video Library</h2>
+                        <p class="panel-subtitle">Kho video nguồn, AI metadata và điểm vào distribution cho TikTok.</p>
+                    </div>
                     <div style="display:flex;gap:8px;align-items:center">
+                        <button class="btn btn-sm btn-primary" onclick="autoAssignTikTok()">⚙️ Auto-Assign TikTok</button>
                         <select id="videoPlatformFilter" class="filter-select" onchange="refreshVideos()">
                             <option value="">Tất cả platform</option>
                             <option value="tiktok">🎵 TikTok</option>
@@ -616,14 +626,56 @@
                 </div>
             </div>
 
-            <!-- Row 3: Assignment Matrix -->
+            <!-- Row 3: Distribution Board -->
             <div class="panel" style="margin-top: 16px">
                 <div class="panel-header">
-                    <h2>📊 Assignment Matrix</h2>
-                    <button class="btn btn-sm btn-ghost" onclick="refreshAssignments()">↻ Refresh</button>
+                    <div>
+                        <h2>🧭 Distribution Board</h2>
+                        <p class="panel-subtitle">TikTok-first workflow: assign → push → run upload → review.</p>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <button class="btn btn-sm btn-ghost" onclick="clearAssignmentFilters()">Reset Filters</button>
+                        <button class="btn btn-sm btn-ghost" onclick="refreshAssignments()">↻ Refresh</button>
+                    </div>
                 </div>
-                <div class="panel-body scrollable" id="assignmentMatrix">
-                    <div class="loading">Loading...</div>
+                <div class="panel-body">
+                    <div class="assignment-toolbar">
+                        <select id="assignmentPlatformFilter" class="filter-select" onchange="refreshAssignments()">
+                            <option value="tiktok" selected>🎵 TikTok</option>
+                            <option value="">Tất cả platform</option>
+                            <option value="youtube">▶️ YouTube</option>
+                            <option value="instagram">📷 Instagram</option>
+                            <option value="facebook">📘 Facebook</option>
+                        </select>
+                        <select id="assignmentDeviceFilter" class="filter-select" onchange="refreshAssignments()">
+                            <option value="">Tất cả device</option>
+                        </select>
+                        <select id="assignmentPushFilter" class="filter-select" onchange="refreshAssignments()">
+                            <option value="">Push status</option>
+                            <option value="pending">⏳ Pending</option>
+                            <option value="pushed">📱 Pushed</option>
+                            <option value="push_failed">❌ Push failed</option>
+                        </select>
+                        <select id="assignmentUploadFilter" class="filter-select" onchange="refreshAssignments()">
+                            <option value="">Upload status</option>
+                            <option value="pending">⏳ Pending</option>
+                            <option value="queued">🟡 Queued</option>
+                            <option value="running">🟦 Running</option>
+                            <option value="uploaded">✅ Uploaded</option>
+                            <option value="upload_failed">❌ Upload failed</option>
+                            <option value="verify_failed">⚠️ Verify failed</option>
+                        </select>
+                        <label class="checkbox-label assignment-toggle">
+                            <input type="checkbox" id="assignmentActionableOnly" onchange="refreshAssignments()">
+                            <span>Chỉ hiện item cần action</span>
+                        </label>
+                        <input id="assignmentSearch" class="assignment-search" placeholder="Tìm theo video, device, account..." oninput="renderAssignmentViews()">
+                    </div>
+                    <div id="videoDistributionFocus"></div>
+                    <div class="assignment-bulkbar" id="assignmentBulkBar"></div>
+                    <div class="scrollable" id="assignmentMatrix">
+                        <div class="loading">Loading...</div>
+                    </div>
                 </div>
             </div>
 
@@ -641,11 +693,23 @@
                 </div>
             </div>
         </div>
+
+        <div class="modal-overlay" id="assignmentDetailModal" onclick="closeAssignmentDetail(event)">
+            <div class="modal-content assignment-detail-modal" onclick="event.stopPropagation()">
+                <div class="modal-header">
+                    <h3 id="assignmentDetailTitle">Assignment Detail</h3>
+                    <button class="modal-close" onclick="closeAssignmentDetail()">&times;</button>
+                </div>
+                <div class="modal-body" id="assignmentDetailBody">
+                    <div class="loading">Loading...</div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Toast notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
-    <script src="/static/app.js?v=20260321b"></script>
+    <script src="/static/app.js?v=20260328a"></script>
 </body>
 </html>

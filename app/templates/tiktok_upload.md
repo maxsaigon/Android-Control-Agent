@@ -1,3 +1,19 @@
+---
+title: TikTok Upload Video
+description: Template upload TikTok; hiện mới có template, runner upload riêng đang mở rộng.
+platform: tiktok
+mode: script
+status: beta
+is_primary: false
+implemented: true
+risk_level: high
+sort_order: 110
+fallback_behavior: Flow upload phụ thuộc assignment/runtime upload path.
+default_vars: {"caption": "", "hashtags": ""}
+ui_fields: []
+capabilities: ["Mô tả upload flow cơ bản"]
+limitations: ["Không phải luồng chính của Dashboard", "Không tối ưu cho submit thủ công ở composer mới"]
+---
 # TikTok Upload Video
 
 Bạn đang upload một video lên TikTok. Thao tác cẩn thận, kiểm tra kỹ trước khi đăng.

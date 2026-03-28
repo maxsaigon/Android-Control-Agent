@@ -1,33 +1,31 @@
-# TikTok Warm-up Account
+---
+title: TikTok Warm-up
+description: Script xem feed TikTok thụ động với thời gian dài hơn, không tương tác chủ động.
+platform: tiktok
+mode: script
+status: active
+is_primary: false
+implemented: true
+risk_level: low
+sort_order: 30
+fallback_behavior: Không dùng AI; runner chỉ xem feed, đôi khi pause lâu hoặc vào profile ngắn.
+default_vars: {"count": 8, "view_time_min": 10, "view_time_max": 30, "session_count": 3}
+ui_fields: [{"key":"count","type":"number","label":"Videos","min":1,"max":30,"step":1},{"key":"session_count","type":"number","label":"Planned sessions","min":1,"max":10,"step":1,"help":"Giá trị tham chiếu cho kế hoạch vận hành; runner hiện không tự tách nhiều session."},{"key":"view_time_min","type":"number","label":"View min (s)","min":5,"max":45,"step":1},{"key":"view_time_max","type":"number","label":"View max (s)","min":10,"max":90,"step":1}]
+capabilities: ["Xem feed thụ động", "Pause dài tự nhiên", "Đôi khi mở profile ngắn rồi quay lại"]
+limitations: ["Không comment", "Không follow", "Không tự chia session dù có trường session_count"]
+---
+# TikTok Warm-up
 
-Bạn đang warm-up một tài khoản TikTok mới/lâu không dùng. Mục tiêu là tạo behavioral footprint TỰ NHIÊN để TikTok không flag tài khoản.
+Runner này dành cho warm-up nhẹ, ưu tiên footprint xem tự nhiên hơn là tương tác.
 
 ## Nhiệm vụ
-1. Mở app TikTok
-2. Đợi feed load hoàn toàn (3-5 giây)
-3. Lướt feed CHỈ XEM — không like, không comment
-4. Xem mỗi video 10-30 giây (dài hơn bình thường)
-5. Thỉnh thoảng dừng lại xem hết video (20% chance)
-6. Swipe lên chậm rãi
-7. Lặp lại {{repeat_count}} lần trong {{session_count}} sessions
+1. Mở TikTok và vào feed.
+2. Xem mỗi video trong khoảng {{view_time_min}}-{{view_time_max}} giây.
+3. Thỉnh thoảng dừng lâu hơn hoặc mở profile ngắn rồi quay lại.
+4. Swipe sang video tiếp theo.
+5. Lặp lại {{count}} lần.
 
-## Quy tắc Warm-up
-- **Session 1-2**: CHỈ XEM, không tương tác gì cả
-- **Session 3+**: có thể bắt đầu like nhẹ (10% chance)
-- Mỗi session cách nhau 30-60 phút
-- Tổng thời gian mỗi session: 3-5 phút
-- Xem ĐA DẠNG nội dung — không chỉ 1 chủ đề
-
-## Anti-Detection (Quan trọng nhất)
-- Scroll chậm, tự nhiên — KHÔNG scroll nhanh liên tục
-- Đợi 5-10 giây giữa mỗi swipe
-- Đôi khi dừng lại rất lâu (30-60 giây) — như đang đọc comments
-- Đôi khi xem profile tác giả rồi quay lại (15% chance)
-- KHÔNG follow, KHÔNG comment trong warm-up
-- Biến thiên tốc độ: xem nhanh 2-3 video → dừng lâu 1 video → lại nhanh
-
-## An toàn
-- KHÔNG đăng nhập lại nếu đã login
-- KHÔNG thay đổi settings
-- KHÔNG nhập thông tin cá nhân
-- Nếu gặp popup verify/captcha → dừng lại và báo cáo
+## Giới hạn
+- Không comment.
+- Không follow.
+- Không đổi cài đặt tài khoản.

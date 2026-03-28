@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
-from app.database import create_db_and_tables, get_session
+from app.database import create_db_and_tables, migrate_db, get_session
 from app.models import Device, DeviceStatus, User
 from app.routers import devices, tasks, ws, schedules, device_ws
 from app.routers.auth import router as auth_router
@@ -29,8 +29,9 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
-    # Startup: create database tables
+    # Startup: create database tables, then apply additive column migrations
     create_db_and_tables()
+    migrate_db()
 
     # Ensure default admin user exists
     from sqlmodel import select
@@ -138,6 +139,7 @@ app.include_router(accounts_router)           # Device-account mappings
 import pathlib
 _static_dir = pathlib.Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+app.mount("/debug-media", StaticFiles(directory=settings.screenshots_dir), name="debug-media")
 
 
 @app.get("/login")
@@ -169,6 +171,147 @@ def list_templates():
     return template_manager.list_templates()
 
 
+def _build_dashboard_overview():
+    """Assemble dashboard snapshot and template-centric overview data."""
+    from datetime import datetime, timedelta, timezone
+
+    from sqlmodel import select
+
+    from app.models import Task, TaskStatus as TS
+    from app.services.task_queue import task_queue
+    from app.services.template_manager import template_manager
+
+    session = next(get_session())
+    try:
+        all_devices = session.exec(select(Device)).all()
+        all_tasks = session.exec(select(Task)).all()
+
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        recent_window = now - timedelta(hours=24)
+
+        tasks_today = [t for t in all_tasks if t.created_at and t.created_at >= today_start]
+        recent_tasks = [t for t in all_tasks if t.created_at and t.created_at >= recent_window]
+        running_tasks = [
+            t for t in all_tasks if t.status in (TS.RUNNING, TS.PENDING)
+        ]
+        finished_tasks = [
+            t for t in all_tasks if t.status in (TS.COMPLETED, TS.FAILED)
+        ]
+        recent_finished = [
+            t for t in recent_tasks if t.status in (TS.COMPLETED, TS.FAILED)
+        ]
+
+        device_online = sum(1 for d in all_devices if d.status == DeviceStatus.ONLINE)
+        device_busy = sum(1 for d in all_devices if d.status == DeviceStatus.BUSY)
+        device_offline = sum(1 for d in all_devices if d.status == DeviceStatus.OFFLINE)
+
+        tasks_completed = sum(1 for t in tasks_today if t.status == TS.COMPLETED)
+        tasks_failed = sum(1 for t in tasks_today if t.status == TS.FAILED)
+        tasks_running = sum(
+            1 for t in tasks_today if t.status in (TS.RUNNING, TS.PENDING)
+        )
+
+        finished_total = len(finished_tasks)
+        finished_success = sum(1 for t in finished_tasks if t.status == TS.COMPLETED)
+        success_rate = (
+            round(finished_success / finished_total * 100)
+            if finished_total > 0
+            else 100
+        )
+
+        recent_finished_total = len(recent_finished)
+        recent_success_rate = (
+            round(
+                sum(1 for t in recent_finished if t.status == TS.COMPLETED)
+                / recent_finished_total
+                * 100
+            )
+            if recent_finished_total > 0
+            else 100
+        )
+
+        TOKENS_PER_STEP = 680
+        OUTPUT_PER_STEP = 20
+        INPUT_COST_PER_M = 2.50
+        OUTPUT_COST_PER_M = 10.00
+        ai_tasks = [t for t in all_tasks if t.execution_mode != "script"]
+        total_cost = sum(
+            (t.steps_taken * TOKENS_PER_STEP / 1_000_000) * INPUT_COST_PER_M
+            + (t.steps_taken * OUTPUT_PER_STEP / 1_000_000) * OUTPUT_COST_PER_M
+            for t in ai_tasks
+        )
+
+        template_catalog = template_manager.list_templates()
+        running_by_template: dict[str, int] = {}
+        running_by_mode: dict[str, int] = {}
+        for task in running_tasks:
+            if task.template:
+                running_by_template[task.template] = running_by_template.get(task.template, 0) + 1
+            running_by_mode[task.execution_mode] = running_by_mode.get(task.execution_mode, 0) + 1
+
+        top_templates = []
+        for template in template_catalog:
+            related = [t for t in all_tasks if t.template == template["name"]]
+            recent_related = [t for t in recent_tasks if t.template == template["name"]]
+            top_templates.append({
+                **template,
+                "running_count": sum(
+                    1 for t in related if t.status in (TS.RUNNING, TS.PENDING)
+                ),
+                "recent_runs": len(recent_related),
+                "recent_failures": sum(
+                    1 for t in recent_related if t.status == TS.FAILED
+                ),
+                "last_used_at": max(
+                    (t.created_at.isoformat() for t in related if t.created_at),
+                    default=None,
+                ),
+            })
+
+        queue_status = task_queue.status
+        primary_template = next(
+            (t for t in top_templates if t["is_primary"]),
+            top_templates[0] if top_templates else None,
+        )
+
+        return {
+            "snapshot": {
+                "devices": {
+                    "total": len(all_devices),
+                    "online": device_online,
+                    "busy": device_busy,
+                    "offline": device_offline,
+                },
+                "tasks_today": {
+                    "total": len(tasks_today),
+                    "completed": tasks_completed,
+                    "failed": tasks_failed,
+                    "running": tasks_running,
+                },
+                "ai": {
+                    "total_cost": round(total_cost, 4),
+                    "success_rate": success_rate,
+                    "recent_success_rate": recent_success_rate,
+                },
+                "queue": queue_status,
+                "recent_failures_24h": sum(
+                    1 for t in recent_tasks if t.status == TS.FAILED
+                ),
+                "active_comment_sessions": running_by_template.get("tiktok_comment", 0),
+            },
+            "running": {
+                "total": len(running_tasks),
+                "by_template": running_by_template,
+                "by_mode": running_by_mode,
+            },
+            "primary_template": primary_template,
+            "top_templates": top_templates,
+        }
+    finally:
+        session.close()
+
+
 @app.get("/api/health")
 def health():
     """Detailed health check with watchdog and device hub status."""
@@ -182,6 +325,12 @@ def health():
         "watchdog": watchdog.status,
         "device_hub": device_hub.status,
     }
+
+
+@app.get("/api/dashboard/overview")
+def dashboard_overview():
+    """Rich dashboard snapshot for the TikTok-first dashboard tab."""
+    return _build_dashboard_overview()
 
 
 @app.get("/api/stats")
@@ -447,4 +596,3 @@ def setup_page():
 </body>
 </html>"""
     return HTMLResponse(html)
-

@@ -8,7 +8,7 @@ from typing import Dict
 from sqlmodel import Session
 
 from app.database import engine
-from app.models import Task, TaskLog, TaskStatus, Device, DeviceStatus
+from app.models import Task, TaskLog, TaskStatus, Device, DeviceStatus, VideoAssignment, UploadStatus
 from app.services.task_engine import task_engine, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -32,6 +32,37 @@ def _is_transient(error: str | None) -> bool:
     if not error:
         return False
     return any(e.lower() in error.lower() for e in TRANSIENT_ERRORS)
+
+
+def _sync_assignment_upload_status(
+    assignment_id: int | None,
+    new_status: UploadStatus,
+    error_msg: str | None = None,
+) -> None:
+    """Sync VideoAssignment.upload_status to reflect the current task state.
+
+    Called at key lifecycle transitions so upload_status never gets stuck:
+      QUEUED  -> RUNNING  (when task starts executing)
+      RUNNING -> UPLOADED (on success)
+      RUNNING -> UPLOAD_FAILED (on any failure/timeout/cancel)
+    """
+    if not assignment_id:
+        return
+    try:
+        with Session(engine) as session:
+            assignment = session.get(VideoAssignment, assignment_id)
+            if assignment:
+                assignment.upload_status = new_status
+                if error_msg is not None:
+                    assignment.last_error = error_msg
+                session.add(assignment)
+                session.commit()
+    except Exception as exc:  # pragma: no cover
+        logger.warning(
+            "_sync_assignment_upload_status: failed to update assignment %s: %s",
+            assignment_id,
+            exc,
+        )
 
 
 class TaskQueue:
@@ -115,6 +146,11 @@ class TaskQueue:
                     task.error = "Cancelled: server restarted"
                     task.completed_at = datetime.now(timezone.utc)
                     session.add(task)
+                    _sync_assignment_upload_status(
+                        task.assignment_id,
+                        UploadStatus.UPLOAD_FAILED,
+                        error_msg=task.error,
+                    )
                     count += 1
                     logger.info(f"Cleaned orphaned task {task.id}")
             session.commit()
@@ -152,6 +188,7 @@ class TaskQueue:
             max_steps = task.max_steps
             max_retries = task.max_retries
             device_id = device.id
+            assignment_id = task.assignment_id  # May be None for non-upload tasks
 
             # Cloud devices: use cloud:{id} prefix instead of IP
             is_cloud = device.adb_port == 0 or device.ip_address.startswith("cloud")
@@ -179,6 +216,9 @@ class TaskQueue:
                             session.commit()
 
                     await self._notify(task_id, {"event": "started"})
+
+                    # Sync assignment status to RUNNING so UI shows progress
+                    _sync_assignment_upload_status(assignment_id, UploadStatus.RUNNING)
 
                     # 10-minute timeout to prevent stuck tasks
                     try:
@@ -237,6 +277,15 @@ class TaskQueue:
                         session.add(device)
                     session.commit()
 
+                # Sync assignment upload_status based on task outcome
+                # (script runner sets UPLOADED on success; we handle failure here)
+                if not result.success:
+                    _sync_assignment_upload_status(
+                        assignment_id,
+                        UploadStatus.UPLOAD_FAILED,
+                        error_msg=result.error or result.reason,
+                    )
+
             await self._notify(
                 task_id,
                 {
@@ -249,6 +298,12 @@ class TaskQueue:
 
         except asyncio.CancelledError:
             logger.info(f"Task {task_id} was cancelled")
+            # Mark assignment as failed if cancelled during upload
+            _sync_assignment_upload_status(
+                assignment_id,
+                UploadStatus.UPLOAD_FAILED,
+                error_msg="Task cancelled",
+            )
         except Exception as e:
             logger.exception(f"Task {task_id} failed with error")
             with Session(engine) as session:
@@ -265,6 +320,11 @@ class TaskQueue:
                         session.add(device)
                     session.commit()
 
+            _sync_assignment_upload_status(
+                assignment_id,
+                UploadStatus.UPLOAD_FAILED,
+                error_msg=str(e),
+            )
             await self._notify(task_id, {"event": "failed", "error": str(e)})
         finally:
             self._running_tasks.pop(task_id, None)

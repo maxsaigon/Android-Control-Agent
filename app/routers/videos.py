@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlmodel import Session, select
+from sqlalchemy import update
 
 from app.database import get_session
 from app.models import (
@@ -14,6 +15,7 @@ from app.models import (
 from app.services.video_service import video_service
 from app.services.ai_metadata_service import ai_metadata_service
 from app.services.task_queue import task_queue
+from app.services.upload_artifacts import upload_artifacts_service
 
 logger = logging.getLogger(__name__)
 
@@ -99,10 +101,22 @@ async def upload_video(
 def get_assignments(
     video_id: Optional[int] = None,
     device_id: Optional[int] = None,
+    platform: Optional[str] = None,
+    push_status: Optional[str] = None,
+    upload_status: Optional[str] = None,
+    actionable_only: bool = False,
     session: Session = Depends(get_session),
 ):
     """Get full assignment matrix. Filter by video_id or device_id."""
-    return video_service.get_assignments(session, video_id=video_id, device_id=device_id)
+    return video_service.get_assignments(
+        session,
+        video_id=video_id,
+        device_id=device_id,
+        platform=platform,
+        push_status=push_status,
+        upload_status=upload_status,
+        actionable_only=actionable_only,
+    )
 
 
 @router.post("/auto-assign", status_code=201)
@@ -137,6 +151,68 @@ async def push_to_device(
     return {"success": True, "message": message}
 
 
+@router.get("/assignments/{assignment_id}/artifacts")
+def get_assignment_artifacts(
+    assignment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Return latest upload artifact summary for an assignment."""
+    assignment = session.get(VideoAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(404, "Assignment not found")
+
+    artifact = upload_artifacts_service.find_assignment_artifact(assignment_id)
+    if not artifact:
+        raise HTTPException(404, "No upload artifacts found for this assignment")
+    return artifact
+
+
+@router.post("/assignments/push-batch")
+async def push_batch_to_device(
+    body: dict,
+    session: Session = Depends(get_session),
+):
+    """ADB push multiple assignments in sequence.
+
+    Body: { "assignment_ids": [1, 2, 3] }
+    """
+    assignment_ids = body.get("assignment_ids") or []
+    if not isinstance(assignment_ids, list) or not assignment_ids:
+        raise HTTPException(400, "assignment_ids must be a non-empty list")
+
+    results = []
+    for aid in assignment_ids:
+        try:
+            success, message = await video_service.push_to_device(session, int(aid))
+            if not success:
+                results.append({
+                    "assignment_id": int(aid),
+                    "success": False,
+                    "error": message,
+                })
+                continue
+            results.append({
+                "assignment_id": int(aid),
+                "success": True,
+                "message": message,
+            })
+        except Exception as e:
+            logger.exception("Batch push failed for assignment %s", aid)
+            results.append({
+                "assignment_id": int(aid),
+                "success": False,
+                "error": str(e),
+            })
+
+    succeeded = sum(1 for r in results if r["success"])
+    return {
+        "total": len(assignment_ids),
+        "succeeded": succeeded,
+        "failed": len(assignment_ids) - succeeded,
+        "results": results,
+    }
+
+
 # =============================================================================
 # Upload Pipeline Orchestration
 # =============================================================================
@@ -159,10 +235,12 @@ async def run_upload(
 
     Steps:
     1. Validate assignment + device + device account
-    2. Idempotency: reject if assignment already has a running/pending task
+    2. Atomic idempotency: set upload_status=QUEUED atomically — reject if
+       already QUEUED or RUNNING (prevents concurrent duplicate tasks)
     3. Auto-push via ADB if file not yet pushed (configurable)
     4. Create Task with platform-specific template + template_vars
-    5. Link task to assignment, set upload_status = queued
+       (includes device_path to bind the exact file on device)
+    5. Link task to assignment
     6. Submit task to background queue
     """
     from datetime import datetime, timezone
@@ -205,7 +283,8 @@ async def run_upload(
             f"Supported: {', '.join(_PLATFORM_TEMPLATES.keys())}",
         )
 
-    # --- 2. Idempotency guard ---
+    # --- 2. Atomic idempotency via upload_status ---
+    # Fast-path: re-use existing running task if linked via task_id
     if assignment.task_id:
         existing_task = session.get(Task, assignment.task_id)
         if existing_task and existing_task.status in (
@@ -215,6 +294,23 @@ async def run_upload(
                 409,
                 f"Assignment {assignment_id} already has a {existing_task.status.value} "
                 f"task (task_id={existing_task.id}). Cancel it first or wait for completion.",
+            )
+
+    if (
+        assignment.upload_status in (UploadStatus.UPLOAD_FAILED, UploadStatus.VERIFY_FAILED)
+        and assignment.last_run_at
+        and not opts.force
+    ):
+        last_run_at = assignment.last_run_at
+        if last_run_at.tzinfo is None:
+            last_run_at = last_run_at.replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - last_run_at).total_seconds()
+        cooldown_seconds = 120
+        if elapsed < cooldown_seconds:
+            remaining = int(cooldown_seconds - elapsed)
+            raise HTTPException(
+                409,
+                f"Assignment {assignment_id} failed recently. Wait {remaining}s or retry with force=true.",
             )
 
     # --- 3. Auto-push if needed ---
@@ -237,11 +333,38 @@ async def run_upload(
             f"Push first or set auto_push=true.",
         )
 
-    # --- 4. Create upload task ---
-    template_vars = {
+    # --- 4. Build template_vars — include device_path to bind exact file ---
+    template_vars: dict = {
         "assignment_id": assignment.id,
         "video_id": assignment.video_id,
     }
+    if assignment.device_path:
+        # Pass the filename portion so the script can match by name in gallery
+        from pathlib import PurePosixPath
+        template_vars["device_path"] = assignment.device_path
+        template_vars["device_filename"] = PurePosixPath(assignment.device_path).name
+
+    # --- 5. Claim QUEUED slot atomically + create/link task ---
+    # This prevents duplicate task creation when two requests race concurrently.
+    now = datetime.now(timezone.utc)
+    claim_stmt = (
+        update(VideoAssignment)
+        .where(VideoAssignment.id == assignment_id)
+        .where(VideoAssignment.upload_status.notin_([UploadStatus.QUEUED, UploadStatus.RUNNING]))  # type: ignore
+        .values(
+            upload_status=UploadStatus.QUEUED,
+            last_run_at=now,
+            last_error=None,
+        )
+    )
+    claim_result = session.exec(claim_stmt)
+    if claim_result.rowcount != 1:
+        session.rollback()
+        raise HTTPException(
+            409,
+            f"Assignment {assignment_id} is already queued/running by another request.",
+        )
+    session.refresh(assignment)
 
     task = Task(
         device_id=assignment.device_id,
@@ -253,17 +376,13 @@ async def run_upload(
         assignment_id=assignment.id,
     )
     task.template_vars = template_vars
-    session.add(task)
-    session.commit()
-    session.refresh(task)
 
-    # --- 5. Link task to assignment ---
+    session.add(task)
+    session.flush()  # Get task.id before commit
     assignment.task_id = task.id
-    assignment.upload_status = UploadStatus.QUEUED
-    assignment.last_run_at = datetime.now(timezone.utc)
-    assignment.last_error = None
     session.add(assignment)
     session.commit()
+    session.refresh(task)
 
     # --- 6. Submit to queue ---
     await task_queue.submit(task.id)
@@ -285,6 +404,7 @@ async def run_upload(
     }
 
 
+
 @router.post("/assignments/run-batch")
 async def run_batch_upload(
     body: RunBatchUploadRequest,
@@ -300,7 +420,7 @@ async def run_batch_upload(
         try:
             result = await run_upload(
                 assignment_id=aid,
-                body=RunUploadRequest(auto_push=body.auto_push),
+                body=RunUploadRequest(auto_push=body.auto_push, force=body.force),
                 session=session,
             )
             results.append({"assignment_id": aid, "success": True, **result})

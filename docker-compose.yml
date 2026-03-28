@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "8001:8000"
+      - "8001:8080"
     env_file:
       - .env
     volumes:
@@ -10,6 +10,8 @@ services:
       - ./data:/app/data
       # Persist screenshots
       - ./screenshots:/app/screenshots
+      # Persist ADB keys across rebuilds (prevents repeated unauthorized state)
+      - ${HOME}/.android:/root/.android
       # Mount templates (editable without rebuild)
       - ./app/templates:/app/app/templates
       # Mount config (editable without rebuild)
@@ -17,4 +19,3 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
-

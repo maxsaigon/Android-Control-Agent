@@ -47,17 +47,23 @@ async def run_tests():
         r = await client.get("/api/templates")
         templates = r.json()
         report("Templates endpoint works", r.status_code == 200)
-        report("Has 4 templates", len(templates) == 4, f"got {len(templates)}")
+        report("Has expanded template catalog", len(templates) >= 8, f"got {len(templates)}")
 
         template_names = [t["name"] for t in templates]
         report("Has tiktok_browse", "tiktok_browse" in template_names)
         report("Has youtube_watch", "youtube_watch" in template_names)
         report("Has facebook_scroll", "facebook_scroll" in template_names)
         report("Has general", "general" in template_names)
+        report("Has tiktok_comment", "tiktok_comment" in template_names)
+        report("Has instagram_scroll", "instagram_scroll" in template_names)
 
         # Check template structure
         for t in templates:
-            has_keys = all(k in t for k in ["name", "title", "description", "file"])
+            has_keys = all(k in t for k in [
+                "name", "title", "description", "file", "platform", "mode",
+                "status", "is_primary", "implemented", "default_vars",
+                "ui_fields", "capabilities", "limitations",
+            ])
             report(f"Template '{t['name']}' has all fields", has_keys)
 
         # =================================================================

@@ -2,6 +2,7 @@
 
 > **Quy tắc**: Mọi kế hoạch và task đều được lưu tại `docs/plans/`. File được đặt tên theo nội dung, có status rõ ràng.
 > Agent phải đọc file `_index.md` này trước khi bắt đầu bất kì task nào.
+> **Deploy rule**: Trước khi deploy server để test, phải commit + push branch hiện tại lên `origin` để backup; chỉ deploy khi remote branch đã chứa đúng `HEAD` local.
 
 ## Plan Index
 
@@ -13,6 +14,7 @@
 | 4 | [proxy-antidetect-management.md](proxy-antidetect-management.md) | 📋 PLANNED | Proxy per-device, antidetect fingerprint spoofing, bypass platform detection, proxy pool management |
 | 5 | [auth-protection.md](auth-protection.md) | ✅ COMPLETE | Session-based auth middleware — bảo vệ toàn bộ dashboard và API khỏi truy cập public |
 | 6 | [ai-video-metadata.md](ai-video-metadata.md) | 🔄 IN PROGRESS | AI auto-suggest Title/Tags/Description cho video — GPT-4o-mini Vision + keyframe analysis |
+| 7 | [dashboard-tiktok-first-redesign.md](dashboard-tiktok-first-redesign.md) | 🔄 IN PROGRESS | Dashboard TikTok-first, template metadata, live run composer, parity với runtime thật |
 
 ## Completed Features (No Separate Plan Files)
 

@@ -1,175 +1,159 @@
-# Upload Pipeline Standardization — 🔄 IN PROGRESS
+# Upload Pipeline Standardization (TikTok-first)
 
-> **Created**: 2026-03-25 | **Updated**: 2026-03-25
-> **Status**: 🔄 IN PROGRESS — Review + execution roadmap defined
+> Created: 2026-03-25  
+> Updated: 2026-03-28 06:35 (ICT)  
+> Owner: Platform Core + TikTok Agent  
+> Scope now: TikTok upload workflow end-to-end (PC -> device -> TikTok)  
 
-## Mục tiêu
+## Goal
 
-Chuẩn hóa một pipeline duy nhất từ webapp đến device cho upload video đa nền tảng:
+Chuẩn hóa một pipeline upload chạy trơn tru từ webapp, với `VideoAssignment` là source of truth:
 
-- 1 video có thể được phân phối theo platform/account/device đúng rule
-- mỗi assignment chạy như một job có trạng thái rõ ràng, quan sát được
-- script runtime nhận đúng context (assignment, metadata, device_path)
-- không còn phụ thuộc thao tác manual giữa các bước `assign -> push -> tạo task`
+`Videos tab -> Assignment -> Run Upload -> Push/Task/Script -> Upload verify -> Persist status/artifacts`
 
-## Review hiện trạng
+Không cần thao tác thủ công qua Task form ở Dashboard cho luồng upload TikTok.
 
-### Điểm mạnh đang có
+---
 
-- Có thư viện video + dedup theo hash trong `Video` (`file_hash`)
-- Có `VideoAssignment` + `DeviceAccount` + flow `assign -> push`
-- Có task queue, device lock và retry cơ bản
-- TikTok upload script đã có state machine thực tế và post-completion signal
+## Current Status
 
-### Gaps kỹ thuật quan trọng
+### Phase A — Data contract & integrity
+Status: ✅ Done
 
-1. `template_vars` không đi xuyên qua task lifecycle
-- `TaskCreate` nhận `template_vars`, nhưng model `Task` không lưu trường này.
-- `task_queue -> task_engine` không truyền `template_vars` vào script runtime.
-- Hệ quả: script chỉ chạy default params; upload theo `assignment_id` từ webapp không ổn định.
+- [x] Persist + propagate `template_vars` in Task lifecycle.
+- [x] Add `upload_status` lifecycle (`pending -> queued -> running -> uploaded/upload_failed`).
+- [x] Add DB constraints:
+- [x] `VideoAssignment(video_id, platform)` unique.
+- [x] `DeviceAccount(device_id, platform)` unique.
+- [x] Startup additive migration for legacy DB fields.
 
-2. Chưa có orchestration endpoint cho assignment upload
-- Hiện mới có `POST /api/videos/assignments/{id}/push`.
-- Chưa có endpoint chuẩn kiểu `run upload for assignment`.
-- `VideoAssignment.task_id` tồn tại nhưng chưa được gán trong luồng submit.
+### Phase B — Assignment-centric orchestration API
+Status: ✅ Done
 
-3. Ràng buộc dữ liệu quan trọng chưa được enforce ở DB
-- Rule `UNIQUE(video_id, platform)` đang ở app logic, chưa thấy DB constraint thực.
-- `DeviceAccount` cũng chưa có unique constraint `(device_id, platform)`.
-- Rủi ro race condition khi concurrent requests.
+- [x] `POST /api/videos/assignments/{id}/run-upload`.
+- [x] `POST /api/videos/assignments/run-batch`.
+- [x] Atomic idempotency guard for concurrent run-upload calls.
+- [x] Device file binding via `device_path` + `device_filename` in `template_vars`.
 
-4. `push_status` đang gộp nhiều ý nghĩa
-- `pending/pushed/uploaded/failed` đang vừa là push state vừa là upload result.
-- Thiếu phân tách giữa `push transport` và `platform publish`.
+### Phase C — TikTok runtime hardening
+Status: ✅ Done (for current device/app build)
 
-5. Webapp chưa có flow upload-centric theo assignment
-- Video tab hiện mạnh ở `upload/assign/push`, nhưng chưa có CTA trực tiếp `Run upload`.
-- Người vận hành phải đi qua Task form chung, dễ sai template/params.
+- [x] Upload state classifier robust for editor variants (`Your Story + Next` without `Add sound`).
+- [x] Create/gallery entry hardened with fallback paths.
+- [x] Metadata input hardened:
+- [x] deterministic caption target selection,
+- [x] token-based verification,
+- [x] Unicode-first path via Accessibility (ADB fallback).
+- [x] Post submit hardened:
+- [x] bottom CTA preference,
+- [x] one retry when post form remains,
+- [x] completion detector accepts `completed_main_nav` (Inbox/Home/Profile redirect).
 
-6. Cloud/LAN chưa được chuẩn hóa ở khâu push
-- Push hiện dựa subprocess ADB theo `ip:port`.
-- Cần policy rõ cho cloud devices (nơi không có ADB trực tiếp).
+### Phase D — Runtime verification on production-like env
+Status: ✅ Done
 
-## Kiến trúc chuẩn hóa đề xuất
+Validated on `m.buonme.com` mapped to Docker app on `max.lan`.
 
-Chuẩn hóa execution theo đơn vị `Assignment Upload Job` thay vì tạo `Task` rời:
+- [x] Task `#23` completed (`Video successfully uploaded to TikTok`).
+- [x] Assignment `id=3` now `upload_status=uploaded`, `push_status=uploaded`.
+- [x] Metadata snapshot confirms Vietnamese Unicode caption/tags entered on post form.
+- [x] Artifacts captured under:
+`/home/max/android-control/screenshots/tiktok_upload_debug/20260325T113103Z_192.168.1.45_5555`
 
-`Video -> VideoAssignment -> UploadJob(platform-specific) -> TaskExecution -> Verification -> Finalize`
+---
 
-Nguyên tắc:
+## Remaining Risks (TikTok)
 
-- Assignment là source of truth cho mục tiêu upload
-- Task là execution record của một lần chạy assignment
-- runtime script luôn nhận context tối thiểu:
-  - `assignment_id`
-  - `video_id`
-  - `platform`
-  - `device_id`
-  - `device_path`
-  - `metadata bundle` (title/tags/desc theo platform/account)
+- [ ] First attempt often hits ADB connection timeout (~35s) then succeeds on retry.
+- [ ] Gallery filename match still falls back to first tile in current TikTok gallery UI.
+- [ ] Post-completion confirmation currently inferred by navigation state (main nav redirect), not by TikTok post URL/id.
 
-## Execution Plan
+---
 
-### Phase A — Contract & Data Integrity (ưu tiên cao)
+## Next Phases — Videos Tab Orchestration (No Dashboard Task Form)
 
-1. Thêm DB constraints thực tế:
-- `VideoAssignment`: unique `(video_id, platform)`
-- `DeviceAccount`: unique `(device_id, platform)`
+### Phase E — Videos Tab as upload control plane
+Status: ✅ Done
 
-2. Chuẩn hóa task payload:
-- thêm `template_vars` vào `Task` model (JSON/text)
-- queue/engine phải truyền params xuống `ScriptRunner.run`
+- [x] Add assignment-row actions in Videos tab:
+- [x] `Run Upload` (single),
+- [x] `Run Selected`,
+- [x] `Run All Ready (TikTok-visible filter scope)`.
+- [x] Show per-assignment runtime fields directly in Videos tab:
+- [x] `upload_status`, `task_id`, `last_error`, `last_run_at`, `uploaded_at`.
+- [x] Deep link to task logs from assignment row.
+- [x] Deep link to upload artifacts from assignment row.
 
-3. Tách status:
-- `push_status`: `pending/pushed/push_failed`
-- `upload_status`: `pending/running/uploaded/upload_failed/verify_failed`
+### Phase F — Distribution workflow in Videos tab
+Status: 🔄 In Progress
 
-Deliverable:
-- Mọi run có thể reconstruct đầy đủ input context từ DB
+- [x] Add `Distribution Board` in Videos tab with focus mode per selected video.
+- [x] List device/account target context inside assignment matrix and detail modal.
+- [x] Allow one-click orchestration:
+- [x] `Assign -> Push (if needed) -> Run Upload` in one flow per target.
+- [x] Add bulk assign by rules for TikTok targets (`Auto-Assign TikTok` for unassigned visible videos).
+- [ ] Add dedicated video-detail coverage matrix when one video maps to many future platforms.
 
-### Phase B — Assignment-Centric Orchestration API
+### Phase G — Safe rerun policy
+Status: ✅ Done (TikTok-first)
 
-1. Thêm endpoint orchestration:
-- `POST /api/videos/assignments/{id}/run-upload`
-- optional: `POST /api/videos/assignments/run-batch`
+- [x] `Rerun failed only` with cooldown + dedupe guard.
+- [x] Error-class aware rerun hints (`connectivity`, `gallery_select`, `post_verify`).
+- [x] Manual confirm gate before rerun when same assignment failed repeatedly.
 
-2. Endpoint làm các bước chuẩn:
-- validate assignment + device account + file
-- auto push nếu chưa pushed (configurable)
-- tạo task script đúng template theo platform
-- set `assignment.task_id`
+### Phase H — UX/UI Optimization for Videos Tab
+Status: 🔄 In Progress
 
-3. Bổ sung idempotency:
-- tránh tạo 2 upload task cùng assignment khi job đang running
+- [x] Information architecture:
+- [x] split UI into `Video Library` (asset-level) + `Distribution Board` (assignment-level).
+- [x] add summary cards for `videos / assignments / uploaded / needs review`.
+- [x] keep one focused context panel for selected video (`Distribution Board` focus state).
+- [x] Assignment table UX:
+- [x] semantic status chips + inline error line for `last_error`.
+- [x] inline quick actions: `Run`, `Push`, `Open Logs`, `Detail`.
+- [x] sticky columns for large tables.
+- [x] direct artifact button in table row.
+- [x] Bulk action UX:
+- [x] row selection + bulk bar (`Push selected`, `Run selected`, `Run all ready`, `Clear`).
+- [x] show scope summary before execute (`visible assignments`, selected count).
+- [x] Visibility/feedback:
+- [x] empty states per filter condition.
+- [x] toast + auto-refresh after task websocket events.
+- [x] skeleton loading for table and side panels.
+- [x] row-level live progress indicator inside assignment table.
+- [x] Assignment detail drawer/modal:
+- [x] quick review of pipeline state, metadata, timeline, task jump.
+- [x] embed recent task steps + artifact links inline.
+- [x] Responsive behavior baseline:
+- [x] desktop matrix + mobile stacked controls supported by CSS.
+- [ ] optimize mobile action sheet for assignment actions.
 
-Deliverable:
-- Webapp chỉ cần bấm 1 nút để chạy end-to-end cho assignment
+### Deployment — Ubuntu server
+Status: ✅ Done
 
-### Phase C — Platform Script Contract
+- [x] Synced updated backend/frontend code to `max@max.lan:~/android-control`.
+- [x] Rebuilt and restarted `android-control-app-1` via Docker Compose.
+- [x] Verified authenticated runtime on [m.buonme.com](https://m.buonme.com):
+- [x] `/dashboard` returns updated Videos UI.
+- [x] `/api/videos/assignments?platform=tiktok` returns new fields (`artifact_manifest_url`, `error_hint_label`, rerun fields).
+- [x] `/debug-media/.../manifest.json` serves artifact files behind authenticated session.
 
-1. Chuẩn hóa interface cho upload scripts:
-- `tiktok_upload`, `instagram_upload`, `facebook_upload`, `youtube_upload`
-- cùng input contract (assignment/device_path/metadata)
-- cùng output contract (completion signal + error code + evidence path)
+---
 
-2. Chuẩn hóa completion detector:
-- mỗi platform có `wait_for_publish_completion()` riêng
-- output normalized status codes để dashboard hiển thị nhất quán
+## Definition of Done (Current milestone)
 
-Deliverable:
-- Multi-platform upload có hành vi và logs đồng nhất
+- [x] Từ webapp, bấm `Run Upload` cho assignment và chạy end-to-end TikTok.
+- [x] Metadata (title/desc/tags) được nhập đúng trong post form.
+- [x] Assignment phản ánh đúng `uploaded` khi flow hoàn tất.
+- [x] Có artifact/debug trail để audit từng run.
 
-### Phase D — Webapp Flow & Ops
+## Definition of Done (Next milestone: Videos tab orchestration)
 
-1. Video Library:
-- thêm nút `Run Upload` ở assignment row
-- thêm `Run All Pending` theo platform/device filter
-
-2. Assignment matrix:
-- hiển thị tách biệt `Push` và `Upload`
-- hiển thị `last_task_id`, `last_error`, `last_run_at`
-
-3. History:
-- deep link từ assignment -> task logs -> debug artifacts
-
-Deliverable:
-- Vận hành upload không cần chuyển qua Task form chung
-
-### Phase E — Scale & Governance
-
-1. Account-aware scheduling:
-- queue theo `(device, platform account)` thay vì chỉ device
-
-2. Safety rails:
-- daily limit per account/platform
-- blackout windows
-- cooldown giữa các publish jobs
-
-3. Reliability:
-- retry policy theo error class (`popup_blocking`, `network`, `platform_reject`)
-
-Deliverable:
-- Pipeline đủ ổn định để scale nhiều device và nhiều account
-
-## Ưu tiên triển khai ngay (2 tuần)
-
-Week 1:
-- Phase A hoàn tất
-- Phase B API `run-upload` cho TikTok
-
-Week 2:
-- Webapp `Run Upload` + status tách bạch
-- đóng loop assignment->task->artifact hoàn chỉnh cho TikTok
-
-Sau đó mới nhân bản contract sang Instagram/Facebook/YouTube.
-
-## Definition of Done
-
-- Có thể từ webapp bấm `Run Upload` cho assignment và chạy end-to-end không bước tay.
-- Mọi assignment run đều có:
-  - task_id
-  - normalized upload status
-  - artifact path
-  - error code có cấu trúc
-- Multi-platform scripts dùng chung contract input/output.
-- Dashboard phản ánh đúng `push` vs `upload` và trạng thái run hiện tại.
+- [x] Operator không cần dùng Dashboard task form cho upload TikTok cơ bản.
+- [x] Toàn bộ phân phối TikTok cốt lõi có thể điều phối từ Videos tab.
+- [x] Có batch controls + trạng thái + rerun policy hoàn chỉnh ngay trong Videos UI.
+- [ ] Videos tab đạt UX baseline:
+- [x] thao tác run/push/log tối đa 2 click từ assignment row.
+- [x] thời gian nhận biết lỗi (`last_error` + hint) giảm mạnh ngay trên matrix/detail.
+- [x] artifact jump tối đa 2 click từ assignment row.
+- [x] không cần chuyển tab để theo dõi tiến trình từng assignment cơ bản.

@@ -40,6 +40,14 @@ APP_PACKAGES = {
     "shopee": ["shopee"],
 }
 
+# Known package fallbacks for apps that may be hard to discover via generic hints.
+KNOWN_PACKAGES = {
+    "tiktok": [
+        "com.ss.android.ugc.trill",
+        "com.zhiliaoapp.musically",
+    ],
+}
+
 
 class ScriptRunner:
     """Executes deterministic task scripts — zero AI cost.
@@ -120,6 +128,7 @@ class ScriptRunner:
         params = params or {}
         self._adb = adb_agent
         self._device = device
+        self._params = params
         self._on_step = on_step
         self._step_num = 0
         self._step_log = []
@@ -152,6 +161,9 @@ class ScriptRunner:
             logger.info(f"🔧 Script '{script_name}' starting on {device}")
             # Initialize backend for this run
             from app.services.backend_manager import backend_manager
+            if script_name == "tiktok_upload":
+                # Upload flow is more stable with raw ADB on current device setup.
+                backend_manager.set_backend(device, "adb")
             self._backend = await backend_manager.get_backend(device)
             result = await handler(**params)
             # Always go HOME after script
@@ -299,6 +311,32 @@ class ScriptRunner:
                         self._package_cache[self._device] = {}
                     self._package_cache[self._device][name_lower] = pkg
                     return pkg
+
+        # Fallback: probe well-known package IDs directly.
+        for candidate in KNOWN_PACKAGES.get(name_lower, []):
+            try:
+                out = await self._adb_cmd("shell", "pm", "path", candidate)
+                if "package:" in out:
+                    if self._device not in self._package_cache:
+                        self._package_cache[self._device] = {}
+                    self._package_cache[self._device][name_lower] = candidate
+                    logger.info(f"📦 Resolved {name_lower} via known package: {candidate}")
+                    return candidate
+            except Exception:
+                continue
+
+        # Last-resort fallback for TikTok to avoid hard-fail on package discovery.
+        if name_lower == "tiktok":
+            fallback_pkg = "com.ss.android.ugc.trill"
+            if self._device not in self._package_cache:
+                self._package_cache[self._device] = {}
+            self._package_cache[self._device][name_lower] = fallback_pkg
+            logger.warning(
+                "⚠️ Package discovery failed for tiktok on %s; using fallback %s",
+                self._device,
+                fallback_pkg,
+            )
+            return fallback_pkg
 
         return ""
 
@@ -1286,45 +1324,112 @@ class ScriptRunner:
             await self._wait(3, 5, "app loading")
             await self._capture_upload_debug(tiktok, "app_open", "TikTok launched")
 
-            await tiktok.ensure_on_feed(self._device)
+            if not await tiktok.ensure_on_feed(self._device):
+                result = ScriptResult(
+                    False,
+                    "Could not confirm TikTok feed before upload",
+                    self._step_num,
+                )
+                return result
             await self._step("ensure_feed", "on For You feed")
             await self._capture_upload_debug(tiktok, "feed_ready", "Feed ready")
 
-            # [Script 2] Tap Create (+)
-            if not await tiktok.tap_create(self._device):
-                result = ScriptResult(False, "Failed to tap Create (+)", self._step_num)
+            # [Script 2] Enter camera/gallery from Create.
+            create_state = await tiktok.open_create_entry(self._device, timeout=10.0)
+            if not create_state:
+                result = ScriptResult(
+                    False,
+                    "Create did not open camera/gallery",
+                    self._step_num,
+                )
                 return result
-            await self._step("tap", "Create button (+)")
-            await self._capture_upload_debug(tiktok, "after_create", "Tapped Create")
-
-            camera_state = await tiktok.wait_for_upload_state(
-                self._device, {"camera_create"}, timeout=8.0
-            )
-            if not camera_state:
-                result = ScriptResult(False, "Camera/create screen did not appear", self._step_num)
-                return result
-
-            # [Script 3] On this TikTok build, camera screen uses Next to enter gallery.
-            if not await tiktok.tap_next(self._device):
-                result = ScriptResult(False, "Failed to open gallery from camera screen", self._step_num)
-                return result
-            await self._step("tap", "Next (Camera -> Gallery)")
+            await self._step("tap", f"Create entry ({create_state})")
             await self._capture_upload_debug(
-                tiktok, "gallery_entry", "Entered gallery picker"
+                tiktok,
+                "after_create",
+                f"Create opened state: {create_state}",
             )
 
-            gallery_state = await tiktok.wait_for_upload_state(
-                self._device, {"gallery_picker"}, timeout=8.0
-            )
+            gallery_state = create_state if create_state == "gallery_picker" else None
+
+            # [Script 3] Some builds open camera first and require Next to enter gallery.
+            if create_state == "camera_create":
+                # Strategy A: tap Upload thumbnail directly from camera screen.
+                if await tiktok.tap_upload_gallery(self._device):
+                    await self._step("tap", "Upload (Camera -> Gallery)")
+                    await self._capture_upload_debug(
+                        tiktok, "gallery_entry", "Tapped Upload thumbnail"
+                    )
+                    gallery_state = await tiktok.wait_for_upload_state(
+                        self._device, {"gallery_picker"}, timeout=8.0
+                    )
+
+                # Strategy B fallback: some builds use Next to enter gallery.
+                if not gallery_state:
+                    if not await tiktok.tap_next(self._device):
+                        result = ScriptResult(
+                            False,
+                            "Failed to open gallery from camera screen",
+                            self._step_num,
+                        )
+                        return result
+                    await self._step("tap", "Next (Camera -> Gallery)")
+                    await self._capture_upload_debug(
+                        tiktok, "gallery_entry", "Entered gallery picker via Next"
+                    )
+                    gallery_state = await tiktok.wait_for_upload_state(
+                        self._device, {"gallery_picker"}, timeout=8.0
+                    )
+
+                if not gallery_state:
+                    current_state = await tiktok.detect_upload_state(self._device)
+                    result = ScriptResult(
+                        False,
+                        f"Gallery picker did not appear (current_state={current_state})",
+                        self._step_num,
+                    )
+                    return result
+            else:
+                await self._capture_upload_debug(
+                    tiktok,
+                    "gallery_entry",
+                    "Create opened gallery directly",
+                )
+
             if not gallery_state:
                 result = ScriptResult(False, "Gallery picker did not appear", self._step_num)
                 return result
 
-            # [Script 4] Select First Video
-            if not await tiktok.select_first_video(self._device):
+            # [Script 4] Select the correct video
+            await self._capture_upload_debug(
+                tiktok,
+                "gallery_ready",
+                f"Gallery state ready: {gallery_state}",
+            )
+
+            # When launched via run-upload, device_filename tells us exactly which
+            # file to select. Without it, fallback to the first video in gallery.
+            device_filename = (self._params or {}).get("device_filename")
+            if not device_filename and assignment:
+                # Try to extract from assignment.device_path via DB
+                if assignment.device_path:
+                    from pathlib import PurePosixPath
+                    device_filename = PurePosixPath(assignment.device_path).name
+
+            if device_filename:
+                selected = await tiktok.select_video_by_name(self._device, device_filename)
+                if not selected:
+                    # Fallback: log warning and try first video
+                    await self._step("warn", f"Could not find '{device_filename}' by name, falling back to first video")
+                    selected = await tiktok.select_first_video(self._device)
+            else:
+                selected = await tiktok.select_first_video(self._device)
+
+            if not selected:
                 result = ScriptResult(False, "Failed to select a gallery video", self._step_num)
                 return result
-            await self._step("tap", "Select first real gallery video")
+
+            await self._step("tap", "Select video from gallery")
             await self._capture_upload_debug(
                 tiktok, "video_selected", "Selected first gallery video"
             )
@@ -1386,6 +1491,24 @@ class ScriptRunner:
             await self._capture_upload_debug(
                 tiktok, "after_post", "Tapped Post; waiting for upload state"
             )
+
+            # Guard: if we remain on post form immediately after tapping Post,
+            # try one extra submit tap (some TikTok builds ignore first tap).
+            await asyncio.sleep(2.0)
+            post_submit_state = await tiktok.detect_post_publish_state(self._device)
+            if post_submit_state in {"post_form", "unknown"}:
+                await self._step(
+                    "tap",
+                    f"Post retry (state after submit: {post_submit_state})",
+                )
+                if not await tiktok.tap_post(self._device):
+                    result = ScriptResult(False, "Post retry failed", self._step_num)
+                    return result
+                await self._capture_upload_debug(
+                    tiktok,
+                    "after_post_retry",
+                    "Retried Post because post form remained visible",
+                )
 
             # [Verify 9] Wait for reliable post completion instead of fixed sleep.
             post_completion_state = await tiktok.wait_for_post_completion(

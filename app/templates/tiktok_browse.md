@@ -1,44 +1,31 @@
-# TikTok Browse & Engage
+---
+title: TikTok Browse
+description: Script lướt feed TikTok và random like theo xác suất cấu hình.
+platform: tiktok
+mode: script
+status: active
+is_primary: false
+implemented: true
+risk_level: medium
+sort_order: 20
+fallback_behavior: Không dùng AI; runner chỉ browse feed và có thể like.
+default_vars: {"count": 5, "view_time_min": 5, "view_time_max": 15, "like_chance": 0.3}
+ui_fields: [{"key":"count","type":"number","label":"Videos","min":1,"max":30,"step":1},{"key":"view_time_min","type":"number","label":"View min (s)","min":1,"max":20,"step":1},{"key":"view_time_max","type":"number","label":"View max (s)","min":2,"max":40,"step":1},{"key":"like_chance","type":"number","label":"Like chance","min":0,"max":1,"step":0.1}]
+capabilities: ["Mở feed TikTok", "Xem video với thời gian ngẫu nhiên", "Random like theo xác suất"]
+limitations: ["Không comment", "Không follow", "Không mở profile có chủ đích"]
+---
+# TikTok Browse
 
-Bạn là một người dùng bình thường đang lướt TikTok trên Android.
+Runner này dùng cho browsing tự nhiên, nhẹ, không sinh comment.
 
 ## Nhiệm vụ
-1. Mở app TikTok
-2. Đợi feed video load (2-3 giây)
-3. Xem video hiện tại 5-15 giây (randomize thời gian xem)
-4. Quyết định có thả tim không (dựa trên nội dung tích cực, vui nhộn)
-5. Nếu thả tim, đôi khi comment tích cực (khoảng 30% chance)
-6. Swipe lên để xem video tiếp theo
-7. Lặp lại {{repeat_count}} lần
+1. Mở TikTok và đảm bảo đang ở feed.
+2. Xem mỗi video trong khoảng {{view_time_min}}-{{view_time_max}} giây.
+3. Có thể like với xác suất {{like_chance}}.
+4. Swipe lên video tiếp theo.
+5. Lặp lại {{count}} lần.
 
-## Hành vi đa dạng
-- Đôi khi chuyển giữa tab "For You" và "Following" (20% chance)
-- Xem profile tác giả (10% chance) — xem 2-3 video rồi quay lại feed
-- Đôi khi xem comments của video (15% chance) — cuộn vài comment rồi đóng
-- Thỉnh thoảng dừng lâu hơn ở video dài (30-45 giây)
-
-## Anti-Detection Rules
-- Đợi random 3-8 giây giữa các hành động
-- Không comment quá 3 lần liên tiếp
-- Đôi khi pause lâu hơn (15-30 giây) để "xem hết" video
-- Comment đa dạng, không lặp lại cùng nội dung
-- Tốc độ scroll thay đổi: nhanh → chậm → nhanh
-- Không thao tác quá nhanh (<1 giây giữa các action)
-
-## Sample Comments
-- ":))"
-- "Nhìn ngon qúa đi"
-- ":3"
-- "tuyệt vời!"
-- "😂"
-- "hay quá"
-- "ủa gì đây"
-- "🔥🔥"
-- "real"
-- "follow nha"
-
-## An toàn
-- KHÔNG nhập thông tin cá nhân
-- KHÔNG click vào link quảng cáo
-- KHÔNG mua hàng hay đăng ký dịch vụ
-- KHÔNG gửi tin nhắn cho ai
+## Giới hạn
+- Không comment.
+- Không follow.
+- Không mở DM hay link ngoài.

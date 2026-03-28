@@ -9,6 +9,12 @@ Control multiple Android devices via natural language commands with hybrid autom
 
 ## Quick Start
 
+## Deploy Rule
+
+- Trước mọi deploy lên server để smoke test hoặc demo, phải **commit + push branch hiện tại lên `origin` trước** để có backup khớp với code được deploy.
+- Chỉ deploy khi `origin/<current-branch>` trùng `HEAD` local.
+- Script hỗ trợ rule này: `./deploy/max-lan-smoke.sh`
+
 ### Option 1: Docker (Recommended)
 
 ```bash

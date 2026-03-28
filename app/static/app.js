@@ -5,6 +5,9 @@
 const API = '';  // Same origin
 let devices = [];
 let templates = [];
+let templateMap = {};
+let dashboardOverview = null;
+let selectedTemplateName = '';
 let refreshTimer = null;
 let currentPage = 'dashboard';
 let isConfirming = false;
@@ -67,6 +70,7 @@ async function init() {
         refreshRunning(),
         refreshHistory(),
         refreshStats(),
+        refreshRecentOutcomes(),
     ]);
     updateCostEstimate();
     // Auto-refresh every 3 seconds
@@ -74,15 +78,20 @@ async function init() {
         refreshDevices();
         refreshRunning();
         refreshQueueStatus();
+        if (currentPage === 'videos') {
+            refreshAssignments();
+        }
     }, 3000);
     // History + Stats every 10s
     setInterval(refreshHistory, 10000);
     setInterval(refreshStats, 10000);
+    setInterval(refreshRecentOutcomes, 10000);
 }
 
 // ===== SIDEBAR NAVIGATION =====
 
 function navigateTo(section, btn) {
+    currentPage = section;
     // Update nav buttons
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     if (btn) btn.classList.add('active');
@@ -98,10 +107,15 @@ function navigateTo(section, btn) {
     }
 
     // Update page title
-    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler', history: 'History', videos: 'Video Library' };
+    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler', history: 'History', videos: 'Videos & Distribution' };
     document.getElementById('pageTitle').textContent = titles[section] || 'Dashboard';
 
     // Load data for section
+    if (section === 'dashboard') {
+        refreshStats();
+        refreshRecentOutcomes();
+        refreshRunning();
+    }
     if (section === 'scheduler') loadSchedules();
     if (section === 'history') refreshHistory();
     if (section === 'videos') {
@@ -120,19 +134,36 @@ function toggleSidebar() {
 
 async function refreshStats() {
     try {
-        const res = await fetch(`${API}/api/stats`);
-        const data = await res.json();
+        const res = await fetch(`${API}/api/dashboard/overview`);
+        dashboardOverview = await res.json();
+        const snapshot = dashboardOverview.snapshot || {};
+        const devicesSnap = snapshot.devices || {};
+        const queueSnap = snapshot.queue || {};
+        const aiSnap = snapshot.ai || {};
+        const primary = dashboardOverview.primary_template;
 
-        document.getElementById('statDevices').textContent = data.devices.total;
+        document.getElementById('statDevices').textContent = devicesSnap.total ?? 0;
         document.getElementById('statDevicesSub').textContent =
-            `${data.devices.online} online · ${data.devices.offline} offline`;
+            `${devicesSnap.online || 0} online · ${devicesSnap.busy || 0} busy · ${devicesSnap.offline || 0} offline`;
 
-        document.getElementById('statTasksToday').textContent = data.tasks_today.total;
+        document.getElementById('statCommentSessions').textContent = snapshot.active_comment_sessions ?? 0;
         document.getElementById('statTasksSub').textContent =
-            `${data.tasks_today.completed} done · ${data.tasks_today.running} running`;
+            `${queueSnap.running_tasks || 0} running · ${snapshot.recent_failures_24h || 0} fails / 24h`;
 
-        document.getElementById('statCost').textContent = `$${data.total_cost.toFixed(3)}`;
-        document.getElementById('statRate').textContent = `${data.success_rate}%`;
+        document.getElementById('statCost').textContent = `$${(aiSnap.total_cost || 0).toFixed(3)}`;
+        document.getElementById('statCostSub').textContent =
+            `${snapshot.tasks_today?.total || 0} tasks today`;
+
+        document.getElementById('statRate').textContent = `${aiSnap.recent_success_rate ?? 100}%`;
+        document.getElementById('statRateSub').textContent =
+            `${aiSnap.success_rate ?? 100}% all-time · ${primary?.title || 'No primary template'}`;
+
+        if (document.getElementById('queueCount')) {
+            document.getElementById('queueCount').textContent = queueSnap.running_tasks || 0;
+        }
+
+        renderPrimaryTemplateSummary();
+        renderTemplateLibrary();
     } catch (e) { /* retry */ }
 }
 
@@ -474,214 +505,357 @@ async function addScannedDevice(ip, port, model) {
 
 
 // ===== TEMPLATES =====
-
-// Template mode classification
-const SCRIPT_TEMPLATES = {
-    tiktok_browse:  { mode: 'script',  label: '🔧 Script', desc: 'Lướt TikTok feed', cost: '$0' },
-    tiktok_warmup:  { mode: 'script',  label: '🔧 Script', desc: 'Warm-up TikTok (xem passive)', cost: '$0' },
-    tiktok_like:    { mode: 'script',  label: '🔧 Script', desc: 'Like video TikTok', cost: '$0' },
-    tiktok_comment: { mode: 'hybrid',  label: '⚡ Hybrid', desc: 'AI sinh comment phù hợp video', cost: '~$0.005' },
-    tiktok_follow:  { mode: 'script',  label: '🔧 Script', desc: 'Follow accounts TikTok', cost: '$0' },
-    youtube_watch:  { mode: 'script',  label: '🔧 Script', desc: 'Xem YouTube videos', cost: '$0' },
-    facebook_scroll:{ mode: 'script',  label: '🔧 Script', desc: 'Lướt Facebook feed', cost: '$0' },
-    instagram_scroll:{ mode: 'script', label: '🔧 Script', desc: 'Lướt Instagram feed', cost: '$0' },
-};
-
 async function loadTemplates() {
     try {
         const res = await fetch(`${API}/api/templates`);
         templates = await res.json();
-        const sel = document.getElementById('templateSelect');
-        sel.innerHTML = '<option value="">— Chọn template —</option>' +
-            templates.map(t => {
-                const meta = SCRIPT_TEMPLATES[t.name];
-                const badge = meta ? meta.label : '🧠 AI';
-                return `<option value="${t.name}">${t.title} [${badge}]</option>`;
-            }).join('');
+        templateMap = Object.fromEntries(templates.map(t => [t.name, t]));
+
+        const countEl = document.getElementById('templateCount');
+        if (countEl) countEl.textContent = templates.length;
+
+        renderTemplateLibrary();
+
+        const preferred = templates.find(t => t.is_primary) || templates[0];
+        if (preferred && (!selectedTemplateName || !templateMap[selectedTemplateName])) {
+            selectDashboardTemplate(preferred.name);
+        } else if (selectedTemplateName) {
+            selectDashboardTemplate(selectedTemplateName);
+        }
     } catch (e) { /* templates optional */ }
 }
 
-function onTemplateChange() {
-    const name = document.getElementById('templateSelect').value;
-    const tpl = templates.find(t => t.name === name);
-    const meta = SCRIPT_TEMPLATES[name];
+function templateModeChip(mode) {
+    const map = {
+        hybrid: '<span class="template-chip hybrid">Hybrid</span>',
+        script: '<span class="template-chip script">Script</span>',
+        ai: '<span class="template-chip ai">AI</span>',
+    };
+    return map[mode] || `<span class="template-chip muted">${escapeHtml(mode || 'unknown')}</span>`;
+}
 
-    const commandGroup = document.getElementById('commandGroup');
+function templateStatusChip(template) {
+    if (template.is_primary) {
+        return '<span class="template-chip primary">Primary</span>';
+    }
+    return `<span class="template-chip ${escapeHtml(template.status || '')}">${escapeHtml(template.status || 'active')}</span>`;
+}
+
+function renderTemplateLibrary() {
+    const container = document.getElementById('templateLibrary');
+    if (!container) return;
+
+    const primary = templates.filter(t => t.is_primary);
+    const secondary = templates.filter(
+        t => t.platform === 'tiktok' && !t.is_primary && t.implemented
+    );
+    const other = templates.filter(
+        t => t.platform !== 'tiktok' && t.implemented
+    );
+    const planned = templates.filter(t => !t.implemented || t.status === 'planned');
+
+    const groups = [
+        ['Primary', primary],
+        ['Secondary TikTok', secondary],
+        ['Other Platforms', other],
+        ['Planned', planned],
+    ].filter(([, items]) => items.length);
+
+    container.innerHTML = groups.map(([title, items]) => `
+        <div class="template-library-group">
+            <div class="panel-kicker">${title}</div>
+            <div class="template-library-grid">
+                ${items.map(template => {
+                    const active = template.name === selectedTemplateName ? 'active' : '';
+                    const running = dashboardOverview?.running?.by_template?.[template.name] || 0;
+                    return `
+                        <button type="button" class="template-library-card ${active}" onclick="selectDashboardTemplate('${template.name}')">
+                            <div class="template-library-top">
+                                <div class="template-library-badges">
+                                    ${templateStatusChip(template)}
+                                    ${templateModeChip(template.mode)}
+                                </div>
+                                <span class="template-mini-stat">${escapeHtml(template.platform)}</span>
+                            </div>
+                            <h4>${escapeHtml(template.title)}</h4>
+                            <p>${escapeHtml(template.description || 'No description')}</p>
+                            <div class="template-library-foot">
+                                <span class="template-mini-stat">Risk: ${escapeHtml(template.risk_level || 'medium')}</span>
+                                <span class="template-mini-stat">Running: ${running}</span>
+                            </div>
+                        </button>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderPrimaryTemplateSummary() {
+    const template = templateMap[selectedTemplateName] || dashboardOverview?.primary_template || templates.find(t => t.is_primary) || templates[0];
+    if (!template) return;
+
+    const titleEl = document.getElementById('primaryTemplateTitle');
+    const descEl = document.getElementById('primaryTemplateDescription');
+    const badgesEl = document.getElementById('primaryTemplateBadges');
+    const statsEl = document.getElementById('primaryTemplateStats');
+    const metaEl = document.getElementById('composerMeta');
+
+    if (titleEl) titleEl.textContent = template.title;
+    if (descEl) descEl.textContent = template.description || '';
+    if (badgesEl) {
+        badgesEl.innerHTML = `
+            ${templateStatusChip(template)}
+            ${templateModeChip(template.mode)}
+            <span class="template-chip muted">Risk ${escapeHtml(template.risk_level || 'medium')}</span>
+        `;
+    }
+    if (metaEl) {
+        metaEl.innerHTML = `
+            ${templateStatusChip(template)}
+            ${templateModeChip(template.mode)}
+        `;
+    }
+    if (statsEl) {
+        const runningCount = dashboardOverview?.running?.by_template?.[template.name] || 0;
+        const fallbackText = template.fallback_behavior || 'No fallback metadata';
+        statsEl.innerHTML = `
+            <div class="template-stat-block">
+                <span class="template-stat-label">Running now</span>
+                <span class="template-stat-value">${runningCount} session(s)</span>
+            </div>
+            <div class="template-stat-block">
+                <span class="template-stat-label">Fallback</span>
+                <span class="template-stat-value">${escapeHtml(fallbackText)}</span>
+            </div>
+            <div class="template-stat-block">
+                <span class="template-stat-label">Expected AI calls</span>
+                <span class="template-stat-value">${template.mode === 'hybrid' ? '≈ 1 / verified comment' : template.mode === 'ai' ? 'Step-based' : '0'}</span>
+            </div>
+        `;
+    }
+}
+
+function buildTemplateField(field, template) {
+    const defaultValue = template.default_vars?.[field.key];
+    const safeHelp = field.help ? `<small class="field-help">${escapeHtml(field.help)}</small>` : '';
+    const id = `field-${field.key}`;
+    const full = field.type === 'textarea' ? 'full' : '';
+
+    if (field.type === 'checkbox') {
+        return `
+            <div class="form-group full ${full}">
+                <label class="checkbox-label composer-checkbox">
+                    <input type="checkbox" id="${id}" ${defaultValue ? 'checked' : ''} onchange="updateCostEstimate(); updateSubmitButton();">
+                    <span>${escapeHtml(field.label || field.key)}</span>
+                </label>
+                ${safeHelp}
+            </div>
+        `;
+    }
+
+    if (field.type === 'select') {
+        const options = Array.isArray(field.options) ? field.options : [];
+        return `
+            <div class="form-group ${full}">
+                <label>${escapeHtml(field.label || field.key)}</label>
+                <select id="${id}" onchange="updateCostEstimate(); updateSubmitButton();">
+                    ${options.map(option => {
+                        const value = typeof option === 'string' ? option : option.value;
+                        const label = typeof option === 'string' ? option : option.label;
+                        const selected = String(value) === String(defaultValue) ? 'selected' : '';
+                        return `<option value="${escapeHtml(String(value))}" ${selected}>${escapeHtml(String(label))}</option>`;
+                    }).join('')}
+                </select>
+                ${safeHelp}
+            </div>
+        `;
+    }
+
+    return `
+        <div class="form-group ${full}">
+            <label>${escapeHtml(field.label || field.key)}</label>
+            <input
+                type="${field.type === 'number' ? 'number' : 'text'}"
+                id="${id}"
+                value="${defaultValue ?? ''}"
+                ${field.min !== undefined ? `min="${field.min}"` : ''}
+                ${field.max !== undefined ? `max="${field.max}"` : ''}
+                ${field.step !== undefined ? `step="${field.step}"` : ''}
+                oninput="updateCostEstimate(); updateSubmitButton();"
+            >
+            ${safeHelp}
+        </div>
+    `;
+}
+
+function renderTemplateFields(template) {
+    const container = document.getElementById('dynamicTemplateFields');
+    const commandGroup = document.getElementById('composerCommandGroup');
+    if (!container || !template) return;
+
+    const fields = Array.isArray(template.ui_fields) ? template.ui_fields : [];
+    container.innerHTML = fields.map(field => buildTemplateField(field, template)).join('');
+
+    if (commandGroup) {
+        commandGroup.style.display = template.mode === 'ai' ? 'block' : 'none';
+    }
+}
+
+function renderTemplateDetail(template) {
+    const titleEl = document.getElementById('templateDetailTitle');
+    const bodyEl = document.getElementById('templateDetail');
+    if (!template || !titleEl || !bodyEl) return;
+
+    titleEl.textContent = template.title;
+    const defaultVars = Object.entries(template.default_vars || {})
+        .map(([key, value]) => `<span><strong>${escapeHtml(key)}</strong>: ${escapeHtml(String(value))}</span>`)
+        .join('');
+    const capabilities = (template.capabilities || [])
+        .map(item => `<span>${escapeHtml(item)}</span>`)
+        .join('');
+    const limitations = (template.limitations || [])
+        .map(item => `<span>${escapeHtml(item)}</span>`)
+        .join('');
+
+    bodyEl.innerHTML = `
+        <div class="template-detail-copy">${escapeHtml(template.description || '')}</div>
+        <div class="template-detail-section">
+            <h4>Runtime flow</h4>
+            <div class="template-detail-list">${capabilities || '<span>Không có metadata capabilities.</span>'}</div>
+        </div>
+        <div class="template-detail-section">
+            <h4>Defaults</h4>
+            <div class="template-detail-list">${defaultVars || '<span>No defaults</span>'}</div>
+        </div>
+        <div class="template-detail-section">
+            <h4>Limitations</h4>
+            <div class="template-detail-list">${limitations || '<span>No limitations metadata.</span>'}</div>
+        </div>
+    `;
+}
+
+function selectDashboardTemplate(name) {
+    const template = templateMap[name];
+    if (!template) return;
+
+    selectedTemplateName = name;
+    const selectedEl = document.getElementById('selectedTemplate');
+    if (selectedEl) selectedEl.value = name;
+
+    renderTemplateLibrary();
+    renderPrimaryTemplateSummary();
+    renderTemplateFields(template);
+    renderTemplateDetail(template);
+
     const commandInput = document.getElementById('commandInput');
-    const templateInfo = document.getElementById('templateInfo');
-
-    if (meta && (meta.mode === 'script' || meta.mode === 'hybrid')) {
-        // Script or Hybrid → hide command input, show info
-        if (commandGroup) commandGroup.style.display = 'none';
-        if (templateInfo) {
-            templateInfo.style.display = 'block';
-            templateInfo.innerHTML = `
-                <div class="template-info-badge ${meta.mode}">
-                    <span>${meta.label}</span>
-                    <span class="template-cost">${meta.cost}</span>
-                </div>
-                <div class="template-desc">${meta.desc}</div>
-                ${meta.mode === 'hybrid' ? '<div class="template-note">📸 AI phân tích screenshot → sinh comment phù hợp nội dung video</div>' : ''}
-            `;
-        }
-        // Auto-fill command from template description
-        if (tpl && commandInput) {
-            commandInput.value = tpl.description || `Script: ${name}`;
-        }
-        // Update mode
-        document.getElementById('executionMode').value = meta.mode === 'hybrid' ? 'script' : 'script';
-    } else if (name && tpl) {
-        // Pure AI template
-        if (commandGroup) commandGroup.style.display = 'block';
-        if (templateInfo) {
-            templateInfo.style.display = 'block';
-            templateInfo.innerHTML = `
-                <div class="template-info-badge ai">
-                    <span>🧠 AI</span>
-                    <span class="template-cost">$0.01+</span>
-                </div>
-                <div class="template-desc">${tpl.description}</div>
-            `;
-        }
-        commandInput.placeholder = tpl.description;
-        document.getElementById('executionMode').value = 'ai';
-    } else {
-        // No template selected
-        if (commandGroup) commandGroup.style.display = 'block';
-        if (templateInfo) templateInfo.style.display = 'none';
+    if (commandInput && template.mode === 'ai' && !commandInput.value.trim()) {
+        commandInput.placeholder = template.description || 'Mô tả yêu cầu cho AI task';
     }
 
     updateCostEstimate();
     updateSubmitButton();
 }
 
-// ===== ACTION CARDS =====
+function onTemplateChange() {
+    const name = document.getElementById('selectedTemplate')?.value;
+    if (name) selectDashboardTemplate(name);
+}
 
+// Legacy hook for old cards — map action name directly to template selection.
 function selectAction(card) {
-    document.querySelectorAll('.action-card').forEach(c => c.classList.remove('selected'));
-    card.classList.add('selected');
-
-    const action = card.dataset.action;
-    const mode = card.dataset.mode;
-    document.getElementById('selectedAction').value = action;
-    document.getElementById('executionMode').value = mode;
-
-    document.getElementById('scriptConfig').style.display = mode === 'script' ? 'block' : 'none';
-    document.getElementById('aiConfig').style.display = mode === 'ai' ? 'block' : 'none';
-
-    // Reset template state when switching modes
-    if (mode === 'ai') {
-        const commandGroup = document.getElementById('commandGroup');
-        if (commandGroup) commandGroup.style.display = 'block';
-        const templateInfo = document.getElementById('templateInfo');
-        if (templateInfo) templateInfo.style.display = 'none';
-        // Auto-select template if present in templates list
-        const tplSelect = document.getElementById('templateSelect');
-        if (tplSelect) tplSelect.value = '';
+    const action = card?.dataset?.action;
+    if (action && templateMap[action]) {
+        selectDashboardTemplate(action);
     }
-
-    updateCostEstimate();
-    updateSubmitButton();
 }
 
 function updateSubmitButton() {
     const btn = document.getElementById('submitBtn');
-    const mode = document.getElementById('executionMode').value;
-    const selectedCard = document.querySelector('.action-card.selected');
-    btn.disabled = false;
+    const template = templateMap[selectedTemplateName];
+    if (!btn) return;
 
-    if (mode === 'script') {
-        const nm = selectedCard ? selectedCard.querySelector('.action-name').textContent : '';
-        btn.textContent = `🔧 Chạy ${nm} — $0`;
-    } else {
-        const tplName = document.getElementById('templateSelect').value;
-        const meta = SCRIPT_TEMPLATES[tplName];
-        if (meta && meta.mode === 'hybrid') {
-            btn.textContent = `⚡ Chạy Hybrid — ${meta.cost}`;
-        } else if (meta && meta.mode === 'script') {
-            btn.textContent = `🔧 Chạy Script — $0`;
-        } else {
-            btn.textContent = '🧠 Chạy AI Task';
-        }
+    if (!template) {
+        btn.disabled = true;
+        btn.textContent = 'Chọn template để bắt đầu';
+        return;
     }
+
+    if (template.mode === 'ai') {
+        const cmd = document.getElementById('commandInput')?.value.trim();
+        btn.disabled = !cmd;
+        btn.textContent = `Run ${template.title}`;
+        return;
+    }
+
+    btn.disabled = false;
+    btn.textContent = `Run ${template.title}`;
 }
 
 // ===== SUBMIT TASK =====
 
+function collectTemplateVars(template) {
+    const defaults = { ...(template.default_vars || {}) };
+    const fields = Array.isArray(template.ui_fields) ? template.ui_fields : [];
+
+    for (const field of fields) {
+        const el = document.getElementById(`field-${field.key}`);
+        if (!el) continue;
+
+        let value;
+        if (field.type === 'checkbox') {
+            value = !!el.checked;
+        } else if (field.type === 'number') {
+            value = Number(el.value);
+            if (Number.isNaN(value)) continue;
+        } else {
+            value = el.value;
+        }
+        defaults[field.key] = value;
+    }
+
+    return defaults;
+}
+
 async function submitTask(e) {
     e.preventDefault();
 
-    const action = document.getElementById('selectedAction').value;
-    const mode = document.getElementById('executionMode').value;
-    if (!action) { toast('Chọn hành động trước', 'error'); return; }
-
-    // Check if a script/hybrid template is selected via AI card
-    const tplName = document.getElementById('templateSelect')?.value;
-    const tplMeta = SCRIPT_TEMPLATES[tplName];
-    const isScriptTemplate = tplMeta && (tplMeta.mode === 'script' || tplMeta.mode === 'hybrid');
-
-    if (mode === 'ai' && !isScriptTemplate) {
-        const cmd = document.getElementById('commandInput').value.trim();
-        if (!cmd) { toast('⚠️ Nhập lệnh cho AI', 'error'); return; }
-    }
+    const template = templateMap[selectedTemplateName];
+    if (!template) { toast('Chọn template trước', 'error'); return; }
 
     const btn = document.getElementById('submitBtn');
     btn.disabled = true;
     btn.textContent = '⏳ Đang gửi...';
 
     const batchMode = document.getElementById('batchMode').checked;
+    const templateVars = collectTemplateVars(template);
+    const mode = template.mode === 'ai' ? 'ai' : 'script';
 
-    let payload;
-    if (mode === 'script' && !isScriptTemplate) {
-        // Script card (e.g., tiktok_browse selected from script cards)
-        const count = parseInt(document.getElementById('scriptCount').value) || 5;
-        const viewTimeStr = document.getElementById('scriptViewTime').value || '5-15';
-        const likeChance = parseFloat(document.getElementById('scriptLikeChance').value);
-        const [vtMin, vtMax] = viewTimeStr.split('-').map(Number);
+    let payload = {
+        command: `${template.title}`,
+        template: template.name,
+        execution_mode: mode,
+        max_steps: 50,
+        max_retries: 1,
+        template_vars: templateVars,
+    };
 
-        payload = {
-            command: `Script: ${action}`,
-            template: action,
-            execution_mode: 'script',
-            max_steps: 50,
-            max_retries: 1,
-            template_vars: {
-                count,
-                view_time_min: vtMin || 5,
-                view_time_max: vtMax || 15,
-                like_chance: likeChance,
-            },
-        };
-    } else if (isScriptTemplate) {
-        // Script/Hybrid template selected via AI card → route as script
-        const count = 5;
-        payload = {
-            command: `${tplMeta.label}: ${tplName}`,
-            template: tplName,
-            execution_mode: 'script',
-            max_steps: 50,
-            max_retries: 1,
-            template_vars: {
-                count,
-                view_time_min: 5,
-                view_time_max: 15,
-                like_chance: 0.3,
-                use_ai: tplMeta.mode === 'hybrid',
-            },
-        };
-    } else {
-        // Pure AI task
-        const command = document.getElementById('commandInput').value;
-        const template = tplName || null;
-        const maxSteps = parseInt(document.getElementById('maxSteps').value) || 20;
-        const maxRetries = parseInt(document.getElementById('maxRetries').value) || 2;
+    if (mode === 'ai') {
+        const command = document.getElementById('commandInput').value.trim();
+        if (!command) {
+            toast('Nhập command cho AI task', 'error');
+            btn.disabled = false;
+            updateSubmitButton();
+            return;
+        }
 
         payload = {
             command,
-            template,
+            template: template.name,
             execution_mode: 'ai',
-            max_steps: maxSteps,
-            max_retries: maxRetries,
+            max_steps: parseInt(document.getElementById('maxSteps').value, 10) || 20,
+            max_retries: parseInt(document.getElementById('maxRetries').value, 10) || 2,
+            template_vars: templateVars,
         };
     }
 
@@ -720,17 +894,12 @@ async function submitTask(e) {
         }
         refreshRunning();
         refreshStats();
+        refreshRecentOutcomes();
     } catch (err) {
         toast('Gửi thất bại', 'error');
     } finally {
         btn.disabled = false;
-        const selectedCard = document.querySelector('.action-card.selected');
-        if (selectedCard) {
-            const nm = selectedCard.querySelector('.action-name').textContent;
-            btn.textContent = mode === 'script' ? `🔧 Chạy ${nm} — $0` : '🧠 Chạy AI Task';
-        } else {
-            btn.textContent = 'Chọn hành động để bắt đầu';
-        }
+        updateSubmitButton();
     }
 }
 
@@ -750,7 +919,7 @@ const INPUT_COST_PER_M = 2.50;
 const OUTPUT_COST_PER_M = 10.00;
 
 function updateCostEstimate() {
-    const mode = document.getElementById('executionMode').value;
+    const template = templateMap[selectedTemplateName];
     const batchMode = document.getElementById('batchMode').checked;
     const onlineDevices = devices.filter(d => d.status !== 'offline').length || 1;
     const multiplier = batchMode ? onlineDevices : 1;
@@ -758,26 +927,26 @@ function updateCostEstimate() {
     const modeEl = document.getElementById('estMode');
     const costEl = document.getElementById('estCost');
 
-    if (!mode) {
+    if (!modeEl || !costEl) return;
+
+    if (!template) {
         modeEl.textContent = '—';
         costEl.textContent = '—';
         return;
     }
 
-    // Check if a hybrid/script template is selected
-    const tplName = document.getElementById('templateSelect')?.value;
-    const meta = SCRIPT_TEMPLATES[tplName];
+    const vars = collectTemplateVars(template);
 
-    if (meta && meta.mode === 'hybrid') {
-        // Hybrid: low AI cost per comment
-        const count = parseInt(document.getElementById('scriptCount')?.value) || 5;
-        const aiCalls = Math.ceil(count * 0.4);
+    if (template.mode === 'hybrid') {
+        const aiEnabled = vars.use_ai !== false;
+        const count = Number(vars.count || 0);
+        const aiCalls = aiEnabled ? count : 0;
         const cost = (aiCalls * 0.001 * multiplier).toFixed(4);
-        modeEl.textContent = `⚡ Hybrid${batchMode ? ` ×${onlineDevices}` : ''}`;
-        costEl.textContent = `~$${cost}`;
-        costEl.style.color = 'var(--yellow)';
-    } else if (mode === 'script' || (meta && meta.mode === 'script')) {
-        modeEl.textContent = `🔧 Script${batchMode ? ` ×${onlineDevices}` : ''}`;
+        modeEl.textContent = `Hybrid${batchMode ? ` ×${onlineDevices}` : ''}${aiEnabled ? '' : ' (AI off)'}`;
+        costEl.textContent = aiEnabled ? `~$${cost}` : '$0.00';
+        costEl.style.color = aiEnabled ? 'var(--yellow)' : 'var(--green)';
+    } else if (template.mode === 'script') {
+        modeEl.textContent = `Script${batchMode ? ` ×${onlineDevices}` : ''}`;
         costEl.textContent = '$0.00';
         costEl.style.color = 'var(--green)';
     } else {
@@ -788,7 +957,7 @@ function updateCostEstimate() {
         const costOut = (totalTokensOut / 1_000_000) * OUTPUT_COST_PER_M;
         const totalCost = costIn + costOut;
 
-        modeEl.textContent = `🧠 AI${batchMode ? ` ×${onlineDevices}` : ''}`;
+        modeEl.textContent = `AI${batchMode ? ` ×${onlineDevices}` : ''}`;
         costEl.textContent = `$${totalCost.toFixed(4)}`;
         costEl.style.color = 'var(--yellow)';
     }
@@ -840,7 +1009,8 @@ async function refreshRunning() {
             const deviceName = device ? device.name : `Device ${t.device_id}`;
             const progress = Math.min((t.steps_taken / t.max_steps) * 100, 100);
             const cmd = t.command.length > 60 ? t.command.substring(0, 60) + '...' : t.command;
-            const modeLabel = t.execution_mode === 'script' ? '🔧' : '🧠';
+            const templateMeta = templateMap[t.template] || null;
+            const modeLabel = t.execution_mode === 'script' ? 'SCRIPT' : 'AI';
 
             // Live step data
             const live = liveStepData[t.id] || {};
@@ -856,6 +1026,9 @@ async function refreshRunning() {
                 tap: '👆', key: '⌨️', scroll: '📜', swipe: '👉',
                 type: '✏️', wait: '⏳', input: '✏️', error: '❌',
                 launch: '🚀', open: '📂', back: '◀️',
+                info: 'ℹ️', read_comments: '🗒️', ai_comment: '🧠',
+                verify: '✅', comment_retry: '🔁', comment_failed: '⚠️',
+                send: '📤',
             };
 
             const currentAction = live.action || '';
@@ -877,6 +1050,11 @@ async function refreshRunning() {
                         <span class="task-id">${modeLabel} #${t.id}</span>
                         <span class="task-device">📱 ${deviceName}</span>
                     </div>
+                    ${templateMeta ? `
+                        <div class="task-command" title="${templateMeta.title}">
+                            ${templateMeta.title}
+                        </div>
+                    ` : ''}
                     <div class="task-command" title="${t.command}">${cmd}</div>
                     ${currentAction ? `
                         <div class="task-live-step">
@@ -1048,6 +1226,57 @@ async function refreshHistory() {
     } catch (e) { /* retry */ }
 }
 
+async function refreshRecentOutcomes() {
+    const container = document.getElementById('recentOutcomes');
+    if (!container) return;
+
+    try {
+        const res = await fetch(`${API}/api/tasks?limit=8`);
+        const tasks = await res.json();
+        const recent = tasks.filter(
+            t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
+        ).slice(0, 6);
+
+        if (!recent.length) {
+            container.innerHTML = '<div class="empty-state"><div class="empty-icon">LOG</div><div class="empty-text">Chưa có run hoàn tất</div></div>';
+            return;
+        }
+
+        container.innerHTML = recent.map(t => {
+            const template = templateMap[t.template] || null;
+            const device = devices.find(d => d.id === t.device_id);
+            const summary = t.result || t.command || 'No summary';
+            const time = t.completed_at
+                ? new Date(t.completed_at).toLocaleString('vi-VN', {
+                    hour: '2-digit', minute: '2-digit',
+                    day: '2-digit', month: '2-digit'
+                })
+                : '—';
+            return `
+                <div class="recent-outcome-card">
+                    <div class="recent-outcome-top">
+                        <div>
+                            <div class="recent-outcome-title">${escapeHtml(template?.title || t.template || `Task #${t.id}`)}</div>
+                            <div class="recent-outcome-copy">${escapeHtml(shortenText(summary, 120))}</div>
+                        </div>
+                        <div class="recent-outcome-meta">
+                            <span class="template-chip ${t.status === 'completed' ? 'script' : 'muted'}">${escapeHtml(t.status)}</span>
+                            ${template ? templateModeChip(template.mode) : ''}
+                        </div>
+                    </div>
+                    <div class="recent-outcome-foot">
+                        <span class="template-mini-stat">${escapeHtml(device?.name || `Device ${t.device_id}`)}</span>
+                        <span class="template-mini-stat">${time}</span>
+                        <span class="template-mini-stat">${t.execution_mode === 'script' ? '$0' : `$${calcTaskCost(t.steps_taken)}`}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-icon">ERR</div><div class="empty-text">Không tải được recent outcomes</div></div>';
+    }
+}
+
 // ===== TASK DETAIL MODAL =====
 
 async function openTaskDetail(taskId) {
@@ -1179,6 +1408,8 @@ async function refreshQueueStatus() {
 // ===== WEBSOCKET =====
 
 function subscribeTask(taskId) {
+    if (subscribedTasks.has(taskId)) return;
+    subscribedTasks.add(taskId);
     const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProto}//${location.host}/ws/tasks/${taskId}`);
     ws.onmessage = (e) => {
@@ -1198,6 +1429,9 @@ function subscribeTask(taskId) {
             });
             // Update task card in-place for smoother UX
             updateLiveTaskCard(taskId, data);
+            if (currentPage === 'videos') {
+                renderAssignmentViews();
+            }
         } else if (data.event === 'completed') {
             delete liveStepData[taskId];
             subscribedTasks.delete(taskId);
@@ -1206,6 +1440,8 @@ function subscribeTask(taskId) {
             refreshHistory();
             refreshDevices();
             refreshStats();
+            refreshVideos();
+            refreshAssignments();
         } else if (data.event === 'failed') {
             delete liveStepData[taskId];
             subscribedTasks.delete(taskId);
@@ -1214,6 +1450,8 @@ function subscribeTask(taskId) {
             refreshHistory();
             refreshDevices();
             refreshStats();
+            refreshVideos();
+            refreshAssignments();
         } else if (data.event === 'retry') {
             toast(`🔄 Task #${taskId} retry #${data.attempt} in ${data.delay}s`, 'info');
         } else if (data.event === 'cancelled') {
@@ -1221,6 +1459,8 @@ function subscribeTask(taskId) {
             subscribedTasks.delete(taskId);
             toast(`⛔ Task #${taskId} cancelled`, 'info');
             refreshRunning();
+            refreshVideos();
+            refreshAssignments();
         }
     };
     ws.onerror = () => { subscribedTasks.delete(taskId); };
@@ -1482,6 +1722,10 @@ function onSchedActionChange() {
 
 let selectedVideoFile = null;
 let videoList = [];
+let deviceAccounts = [];
+let assignmentList = [];
+let selectedAssignmentIds = new Set();
+let focusedVideoId = null;
 
 // --- Upload ---
 
@@ -1566,10 +1810,287 @@ async function uploadVideo() {
     }
 }
 
-// --- Video Library ---
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function escapeJsString(value) {
+    return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'");
+}
+
+function formatDateTime(value, fallback = '—') {
+    if (!value) return fallback;
+    try {
+        return new Date(value).toLocaleString('vi-VN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            day: '2-digit',
+            month: '2-digit',
+        });
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function platformIcon(platform) {
+    return { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' }[platform] || '📦';
+}
+
+function normalizePushStatus(status) {
+    return status === 'failed' ? 'push_failed' : (status || 'pending');
+}
+
+function renderPushBadge(status) {
+    const normalized = normalizePushStatus(status);
+    const labels = {
+        pending: '⏳ Chưa push',
+        pushed: '📱 Đã push',
+        uploaded: '✅ Đã upload',
+        push_failed: '❌ Push lỗi',
+    };
+    return `<span class="push-status-badge ${normalized}">${labels[normalized] || normalized}</span>`;
+}
+
+function renderUploadBadge(status) {
+    const labels = {
+        pending: '⏳ Chờ chạy',
+        queued: '🟡 Đã queue',
+        running: '🟦 Đang chạy',
+        uploaded: '✅ Thành công',
+        upload_failed: '❌ Upload lỗi',
+        verify_failed: '⚠️ Verify lỗi',
+    };
+    return `<span class="upload-status-badge ${status || 'pending'}">${labels[status] || status || 'pending'}</span>`;
+}
+
+function shortenText(value, max = 80) {
+    const text = String(value || '');
+    return text.length > max ? `${text.substring(0, max)}…` : text;
+}
+
+function getVideoById(videoId) {
+    return videoList.find(video => video.id === videoId);
+}
+
+function getAssignmentById(assignmentId) {
+    return assignmentList.find(item => item.id === assignmentId)
+        || videoList.flatMap(video => video.assignments || []).find(item => item.id === assignmentId);
+}
+
+function getPlatformSummary(video, platform) {
+    return (video?.platform_summary || {})[platform] || {
+        eligible_targets: 0,
+        assigned_targets: 0,
+        uploaded_targets: 0,
+        running_targets: 0,
+        failed_targets: 0,
+        missing_targets: 0,
+        missing_target_devices: [],
+        coverage_complete: false,
+    };
+}
+
+function renderArtifactActionButton(item, compact = false) {
+    if (!item?.artifact_manifest_url) return '';
+    const label = compact ? '🗂️' : '🗂️ Artifact';
+    return `<a class="btn btn-xs btn-ghost" href="${item.artifact_manifest_url}" target="_blank" rel="noreferrer">${label}</a>`;
+}
+
+function renderPrimaryUploadAction(item, compact = false) {
+    if (!item) return '';
+    if (item.can_push) {
+        return `<button class="btn btn-xs btn-ghost" onclick="pushAssignment(${item.id}, this)">📤 Push</button>`;
+    }
+    if (item.can_rerun || item.rerun_requires_confirm) {
+        return `<button class="btn btn-xs btn-primary" onclick="retryFailedAssignment(${item.id}, this)">${compact ? '🔁' : '🔁 Retry'}</button>`;
+    }
+    if (item.can_run_upload) {
+        return `<button class="btn btn-xs btn-primary" onclick="runUploadAssignment(${item.id}, this)">🚀 ${compact ? '' : 'Run'}</button>`;
+    }
+    return '';
+}
+
+function renderLiveTaskState(item) {
+    if (!item?.task_id) return '';
+    const live = liveStepData[item.task_id];
+    if (!live) return '';
+    const action = live.action || 'running';
+    const detail = shortenText(live.detail || action, 72);
+    const stepNum = live.current_step ? `#${live.current_step}` : 'live';
+    return `
+        <div class="assignment-live-state">
+            <span class="assignment-live-step">${stepNum}</span>
+            <span class="assignment-live-detail">${escapeHtml(detail)}</span>
+        </div>
+    `;
+}
+
+function getVisibleAssignments() {
+    const search = (document.getElementById('assignmentSearch')?.value || '').trim().toLowerCase();
+    return assignmentList.filter(item => {
+        if (focusedVideoId && item.video_id !== focusedVideoId) return false;
+        if (!search) return true;
+        const haystack = [
+            item.video_title,
+            item.video_filename,
+            item.device_name,
+            item.account_name,
+            item.device_path,
+            item.latest_error,
+        ].join(' ').toLowerCase();
+        return haystack.includes(search);
+    });
+}
+
+function syncSelectedAssignments() {
+    const visibleIds = new Set(getVisibleAssignments().map(item => item.id));
+    selectedAssignmentIds = new Set([...selectedAssignmentIds].filter(id => visibleIds.has(id)));
+}
+
+function renderVideoOpsSummary() {
+    const container = document.getElementById('videoOpsSummary');
+    if (!container) return;
+
+    const assignments = assignmentList;
+    const tiktokAssignments = assignments.filter(item => item.platform === 'tiktok');
+    const readyCount = tiktokAssignments.filter(item => item.ready_to_upload).length;
+    const runningCount = tiktokAssignments.filter(item => ['queued', 'running'].includes(item.upload_status)).length;
+    const uploadedCount = tiktokAssignments.filter(item => item.upload_status === 'uploaded').length;
+    const issueCount = tiktokAssignments.filter(item => item.has_errors).length;
+    const focusedVideo = focusedVideoId ? getVideoById(focusedVideoId) : null;
+    const eligibleTikTokTargets = videoList.reduce((sum, video) => sum + getPlatformSummary(video, 'tiktok').eligible_targets, 0);
+
+    container.innerHTML = `
+        <div class="video-stat-card">
+            <span class="video-stat-label">Videos</span>
+            <span class="video-stat-value">${videoList.length}</span>
+            <span class="video-stat-sub">${focusedVideo ? `Đang focus: ${escapeHtml(shortenText(focusedVideo.title || focusedVideo.filename, 26))}` : 'Kho video hiện có'}</span>
+        </div>
+        <div class="video-stat-card accent">
+            <span class="video-stat-label">TikTok Targets</span>
+            <span class="video-stat-value">${tiktokAssignments.length}/${eligibleTikTokTargets || 0}</span>
+            <span class="video-stat-sub">${readyCount} sẵn sàng upload</span>
+        </div>
+        <div class="video-stat-card success">
+            <span class="video-stat-label">Uploaded</span>
+            <span class="video-stat-value">${uploadedCount}</span>
+            <span class="video-stat-sub">${runningCount} đang chạy</span>
+        </div>
+        <div class="video-stat-card warn">
+            <span class="video-stat-label">Needs Review</span>
+            <span class="video-stat-value">${issueCount}</span>
+            <span class="video-stat-sub">Lỗi push/upload gần nhất</span>
+        </div>
+    `;
+}
+
+function renderDistributionFocus() {
+    const container = document.getElementById('videoDistributionFocus');
+    if (!container) return;
+
+    if (!focusedVideoId) {
+        container.innerHTML = `
+            <div class="distribution-focus distribution-focus-empty">
+                <div>
+                    <strong>Distribution Board</strong>
+                    <div>Chọn một video để gom toàn bộ assignment TikTok, metadata và hành động vào cùng một chỗ.</div>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    const video = getVideoById(focusedVideoId);
+    if (!video) {
+        focusedVideoId = null;
+        renderDistributionFocus();
+        return;
+    }
+
+    const assignments = (video.assignments || []).filter(item => item.platform === 'tiktok');
+    const tiktokAssignment = assignments[0] || null;
+    const summary = getPlatformSummary(video, 'tiktok');
+    const metadataCount = [video.title, video.tags, video.description].filter(Boolean).length;
+    const coverageLine = `${summary.assigned_targets}/${summary.eligible_targets} targets assigned · ${summary.uploaded_targets} uploaded · ${summary.failed_targets} failed · ${summary.missing_targets} missing`;
+    const targetCards = assignments.map(item => `
+        <div class="distribution-target-card assigned">
+            <div class="distribution-target-top">
+                <div class="distribution-target-name">${escapeHtml(item.device_name || `#${item.device_id}`)}</div>
+                <div class="distribution-target-account">${escapeHtml(item.account_name || 'No account')}</div>
+            </div>
+            <div class="distribution-target-badges">
+                ${renderPushBadge(item.push_status)}
+                ${renderUploadBadge(item.upload_status)}
+            </div>
+            <div class="distribution-target-actions">
+                ${renderPrimaryUploadAction(item) || ''}
+                ${renderArtifactActionButton(item, true) || ''}
+                <button class="btn btn-xs btn-ghost" onclick="openAssignmentDetail(${item.id})">Detail</button>
+            </div>
+        </div>
+    `).join('');
+    const missingCards = (summary.missing_target_devices || []).map(target => `
+        <div class="distribution-target-card missing">
+            <div class="distribution-target-top">
+                <div class="distribution-target-name">${escapeHtml(target.device_name || `#${target.device_id}`)}</div>
+                <div class="distribution-target-account">${escapeHtml(target.account_name || 'No account')}</div>
+            </div>
+            <div class="distribution-target-missing">Chưa có assignment TikTok cho target này</div>
+            <div class="distribution-target-actions">
+                <button class="btn btn-xs btn-primary" onclick="quickAssignVideoTarget(${video.id}, ${target.device_id}, 'tiktok')">📌 Assign</button>
+            </div>
+        </div>
+    `).join('');
+
+    container.innerHTML = `
+        <div class="distribution-focus">
+            <div class="distribution-focus-main">
+                <div class="distribution-focus-title">
+                    <span>${platformIcon('tiktok')} TikTok Focus</span>
+                    <button class="btn btn-xs btn-ghost" onclick="clearVideoFocus()">Bỏ focus</button>
+                </div>
+                <div class="distribution-focus-name">${escapeHtml(video.title || video.filename)}</div>
+                <div class="distribution-focus-meta">
+                    <span>${metadataCount}/3 metadata fields</span>
+                    <span>${assignments.length ? `Assignment #${assignments[0].id}` : 'Chưa assign TikTok'}</span>
+                    <span>${video.thumbnail ? 'Có thumbnail' : 'Chưa có thumbnail'}</span>
+                </div>
+                <div class="distribution-focus-coverage">${escapeHtml(coverageLine)}</div>
+                <div class="distribution-focus-copy">${escapeHtml(shortenText(video.description || 'Chưa có description cho video này.', 160))}</div>
+            </div>
+            <div class="distribution-focus-actions">
+                <button class="btn btn-sm btn-accent" onclick="openAiSuggestModal(${video.id}, '${escapeJsString(video.title || video.filename)}')">🤖 AI Metadata</button>
+                ${tiktokAssignment
+                    ? `
+                        ${renderPrimaryUploadAction(tiktokAssignment) || ''}
+                        ${renderArtifactActionButton(tiktokAssignment) || ''}
+                        <button class="btn btn-sm btn-ghost" onclick="openAssignmentDetail(${tiktokAssignment.id})">🔍 Detail</button>
+                    `
+                    : `<button class="btn btn-sm btn-primary" onclick="openAssignModal(${video.id}, '${escapeJsString(video.title || video.filename)}', 'tiktok')">📌 Assign TikTok</button>`
+                }
+            </div>
+        </div>
+        <div class="distribution-target-grid">
+            ${targetCards || ''}
+            ${missingCards || ''}
+            ${!targetCards && !missingCards ? '<div class="distribution-target-empty">TikTok chưa có target nào khả dụng. Hãy tạo Device Account trước.</div>' : ''}
+        </div>
+    `;
+}
 
 async function refreshVideos() {
     const platform = document.getElementById('videoPlatformFilter')?.value || '';
+    const container = document.getElementById('videoGrid');
+    if (container) {
+        container.innerHTML = '<div class="assignment-skeleton-grid"><div class="assignment-skeleton-card"></div><div class="assignment-skeleton-card"></div><div class="assignment-skeleton-card"></div></div>';
+    }
     try {
         const url = platform
             ? `${API}/api/videos?platform=${platform}`
@@ -1577,6 +2098,8 @@ async function refreshVideos() {
         const res = await fetch(url);
         videoList = await res.json();
         renderVideoGrid(videoList);
+        renderVideoOpsSummary();
+        renderDistributionFocus();
 
         const cnt = document.getElementById('videoCount');
         if (cnt) cnt.textContent = videoList.length;
@@ -1592,43 +2115,106 @@ function renderVideoGrid(videos) {
         return;
     }
 
-    container.innerHTML = videos.map(v => {
-        const sizeMB = (v.file_size / 1024 / 1024).toFixed(1);
-        const assignments = v.assignments || [];
-        const platformBadges = assignments.map(a => {
-            const icons = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
-            return `<span class="platform-badge ${a.push_status}" title="${a.push_status}">${icons[a.platform] || '?'} ${a.platform}</span>`;
-        }).join('');
-
-        const hasAssignment = assignments.length > 0;
-        const hasAi = v.ai_title || v.ai_tags || v.ai_description;
+    container.innerHTML = videos.map(video => {
+        const sizeMB = (video.file_size / 1024 / 1024).toFixed(1);
+        const assignments = video.assignments || [];
+        const tiktokAssignment = assignments.find(item => item.platform === 'tiktok');
+        const tiktokSummary = getPlatformSummary(video, 'tiktok');
+        const hasAi = video.ai_title || video.ai_tags || video.ai_description;
         const aiIndicator = hasAi ? '<span class="ai-badge" title="AI đã gợi ý">✨</span>' : '';
+        const selectedClass = focusedVideoId === video.id ? 'selected' : '';
+        const platformBadges = Object.entries(video.platform_summary || {}).length
+            ? Object.entries(video.platform_summary || {}).map(([platform, summary]) => `
+                <span class="platform-badge ${summary.failed_targets ? 'push_failed' : summary.uploaded_targets ? 'uploaded' : summary.assigned_targets ? 'pushed' : 'pending'}" title="${escapeHtml(platform)}">
+                    ${platformIcon(platform)} ${platform} ${summary.assigned_targets}/${summary.eligible_targets}
+                </span>
+            `).join('')
+            : '<span class="video-platform-empty">Chưa assign platform</span>';
+
+        const tiktokStatus = tiktokSummary.assigned_targets
+            ? `<span class="platform-summary-line">TikTok ${tiktokSummary.uploaded_targets}/${tiktokSummary.assigned_targets} uploaded · ${tiktokSummary.missing_targets} missing</span>`
+            : '<span class="video-platform-empty">TikTok chưa assign</span>';
+
         return `
-        <div class="video-card">
-            <div class="video-thumb" ${v.thumbnail ? `style="background:url('${API}/api/videos/${v.id}/thumbnail');background-size:cover;background-position:center"` : ''}>
-                ${v.thumbnail ? '' : '🎬'}
-                <span class="video-size-badge">${sizeMB}MB</span>
-                ${aiIndicator}
+            <div class="video-card ${selectedClass}">
+                <div class="video-thumb" ${video.thumbnail ? `style="background:url('${API}/api/videos/${video.id}/thumbnail');background-size:cover;background-position:center"` : ''}>
+                    ${video.thumbnail ? '' : '🎬'}
+                    <span class="video-size-badge">${sizeMB}MB</span>
+                    ${aiIndicator}
+                </div>
+                <div class="video-info">
+                    <div class="video-title-row">
+                        <div class="video-title" title="${escapeHtml(video.title || video.filename)}">${escapeHtml(video.title || video.filename)}</div>
+                        <span class="video-assignment-count">${assignments.length}</span>
+                    </div>
+                    <div class="video-meta">${escapeHtml(shortenText(video.tags || video.filename, 44))}</div>
+                    <div class="video-platforms">${platformBadges}</div>
+                    <div class="video-tiktok-state">${tiktokStatus}</div>
+                </div>
+                <div class="video-actions">
+                    <button class="btn btn-xs btn-ghost" onclick="focusVideoAssignments(${video.id})">🧭 Focus</button>
+                    <button class="btn btn-xs btn-accent" onclick="openAiSuggestModal(${video.id}, '${escapeJsString(video.title || video.filename)}')">🤖 AI</button>
+                    ${tiktokAssignment
+                        ? `${renderPrimaryUploadAction(tiktokAssignment, true) || `<button class="btn btn-xs btn-primary" onclick="openAssignmentDetail(${tiktokAssignment.id})">🔍 Detail</button>`}`
+                        : `<button class="btn btn-xs btn-primary" onclick="openAssignModal(${video.id}, '${escapeJsString(video.title || video.filename)}', 'tiktok')">📌 TikTok</button>`
+                    }
+                    <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${video.id}, this)">🗑️</button>
+                </div>
             </div>
-            <div class="video-info">
-                <div class="video-title" title="${v.title || v.filename}">${v.title || v.filename}</div>
-                <div class="video-meta">${v.tags ? v.tags.split(',').slice(0,2).join(', ') : 'No tags'}</div>
-                <div class="video-platforms">${platformBadges || '<span style="color:var(--text-muted);font-size:11px">Chưa assign</span>'}</div>
-            </div>
-            <div class="video-actions">
-                <button class="btn btn-xs btn-accent" onclick="openAiSuggestModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\\'")}')" title="AI gợi ý Title/Tags/Description">🤖 AI</button>
-                <button class="btn btn-xs btn-primary" onclick="openAssignModal(${v.id}, '${(v.title || v.filename).replace(/'/g, "\\\'")}')" title="Assign cho device">📌</button>
-                <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${v.id}, this)" title="Xoá video">🗑️</button>
-            </div>
-        </div>`;
+        `;
     }).join('');
 }
 
-// --- Assign Modal (inline, quick) ---
+async function autoAssignTikTok() {
+    const candidateIds = videoList
+        .filter(video => getPlatformSummary(video, 'tiktok').missing_targets > 0)
+        .map(video => video.id);
+
+    if (!candidateIds.length) {
+        toast('Không có video TikTok nào chưa assign', 'info');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/api/videos/auto-assign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ platform: 'tiktok', video_ids: candidateIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            toast(`❌ ${data.detail || 'Auto-assign thất bại'}`, 'error');
+            return;
+        }
+        toast(`⚙️ Auto-assigned ${data.assigned}/${candidateIds.length} video cho TikTok`, data.assigned ? 'success' : 'info');
+        await Promise.all([refreshVideos(), refreshAssignments()]);
+    } catch (e) {
+        toast(`Auto-assign lỗi: ${e.message}`, 'error');
+    }
+}
+
+async function quickAssignVideoTarget(videoId, deviceId, platform) {
+    try {
+        const res = await fetch(`${API}/api/videos/${videoId}/assign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_id: deviceId, platform }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            toast(`❌ ${data.detail || 'Assign target thất bại'}`, 'error');
+            return;
+        }
+        toast(`✅ Assigned target ${platform}`, 'success');
+        await Promise.all([refreshVideos(), refreshAssignments()]);
+    } catch (e) {
+        toast(`Assign target lỗi: ${e.message}`, 'error');
+    }
+}
 
 let _assignVideoId = null;
 
-function openAssignModal(videoId, videoTitle) {
+function openAssignModal(videoId, videoTitle, initialPlatform = 'tiktok') {
     _assignVideoId = videoId;
 
     if (!devices.length) {
@@ -1636,45 +2222,55 @@ function openAssignModal(videoId, videoTitle) {
         return;
     }
 
-    // Build quick inline assign form in a toast-like panel
-    const deviceOptions = devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+    const deviceOptions = devices.map(device => {
+        const account = deviceAccounts.find(item => item.device_id === device.id && item.platform === initialPlatform);
+        const suffix = account?.account_name ? ` · ${account.account_name}` : '';
+        return `<option value="${device.id}">${escapeHtml(device.name)}${escapeHtml(suffix)}</option>`;
+    }).join('');
+
     const modal = document.createElement('div');
     modal.id = 'assignModal';
     modal.className = 'modal-overlay open';
     modal.style.cssText = 'z-index:9999';
 
     modal.innerHTML = `
-    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:400px">
-        <div class="modal-header">
-            <h3>📌 Assign: ${videoTitle}</h3>
-            <button class="modal-close" onclick="document.getElementById('assignModal').remove()">×</button>
-        </div>
-        <div class="modal-body">
-            <div class="form-group">
-                <label>📱 Device</label>
-                <select id="assignDeviceSel">${deviceOptions}</select>
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width:420px">
+            <div class="modal-header">
+                <h3>📌 Assign: ${escapeHtml(videoTitle)}</h3>
+                <button class="modal-close" onclick="document.getElementById('assignModal').remove()">×</button>
             </div>
-            <div class="form-group">
-                <label>🌐 Platform</label>
-                <select id="assignPlatformSel">
-                    <option value="tiktok">🎵 TikTok</option>
-                    <option value="youtube">▶️ YouTube</option>
-                    <option value="instagram">📷 Instagram</option>
-                    <option value="facebook">📘 Facebook</option>
-                </select>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>📱 Device</label>
+                    <select id="assignDeviceSel">${deviceOptions}</select>
+                </div>
+                <div class="form-group">
+                    <label>🌐 Platform</label>
+                    <select id="assignPlatformSel">
+                        <option value="tiktok" ${initialPlatform === 'tiktok' ? 'selected' : ''}>🎵 TikTok</option>
+                        <option value="youtube" ${initialPlatform === 'youtube' ? 'selected' : ''}>▶️ YouTube</option>
+                        <option value="instagram" ${initialPlatform === 'instagram' ? 'selected' : ''}>📷 Instagram</option>
+                        <option value="facebook" ${initialPlatform === 'facebook' ? 'selected' : ''}>📘 Facebook</option>
+                    </select>
+                </div>
+                <div class="info-box">
+                    <h4>TikTok-first flow</h4>
+                    <div>Assign xong bạn có thể push và run upload ngay từ Distribution Board, không cần tạo task ở Dashboard.</div>
+                </div>
+                <button class="btn btn-primary btn-block" onclick="doAssignVideo()">✅ Assign Video</button>
             </div>
-            <button class="btn btn-primary btn-block" onclick="doAssignVideo()">✅ Assign Video</button>
-        </div>
-    </div>`;
+        </div>`;
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
     document.body.appendChild(modal);
-
 }
 
 async function doAssignVideo() {
     const deviceId = parseInt(document.getElementById('assignDeviceSel').value);
     const platform = document.getElementById('assignPlatformSel').value;
-    if (!deviceId) { toast('Chọn device', 'error'); return; }
+    if (!deviceId) {
+        toast('Chọn device', 'error');
+        return;
+    }
 
     try {
         const res = await fetch(`${API}/api/videos/${_assignVideoId}/assign`, {
@@ -1683,21 +2279,26 @@ async function doAssignVideo() {
             body: JSON.stringify({ device_id: deviceId, platform }),
         });
         const data = await res.json();
-        if (res.ok) {
-            toast(`✅ Assigned thành công → ${platform}`, 'success');
-            document.getElementById('assignModal')?.remove();
-            refreshVideos();
-            refreshAssignments();
-        } else {
+        if (!res.ok) {
             toast(`❌ ${data.detail}`, 'error');
+            return;
         }
-    } catch (e) { toast(`Lỗi: ${e.message}`, 'error'); }
+
+        focusedVideoId = _assignVideoId;
+        toast(`✅ Assigned thành công → ${platform}`, 'success');
+        document.getElementById('assignModal')?.remove();
+        await Promise.all([refreshVideos(), refreshAssignments()]);
+    } catch (e) {
+        toast(`Lỗi: ${e.message}`, 'error');
+    }
 }
 
-// --- Push ---
-
 async function pushAssignment(assignmentId, btnEl) {
-    if (btnEl) { btnEl.disabled = true; btnEl.textContent = '⏳'; }
+    const originalLabel = btnEl?.textContent || '📤 Push';
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = '⏳';
+    }
     try {
         const res = await fetch(`${API}/api/videos/assignments/${assignmentId}/push`, { method: 'POST' });
         const data = await res.json();
@@ -1706,58 +2307,500 @@ async function pushAssignment(assignmentId, btnEl) {
         } else {
             toast(`❌ ${data.detail}`, 'error');
         }
-        refreshAssignments();
-        refreshVideos();
+        await Promise.all([refreshAssignments(), refreshVideos()]);
     } catch (e) {
         toast(`Push lỗi: ${e.message}`, 'error');
     } finally {
-        if (btnEl) { btnEl.disabled = false; btnEl.textContent = '📤 Push'; }
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.textContent = originalLabel;
+        }
     }
 }
 
-// --- Delete video — double-click confirm (same pattern as deleteDevice) ---
+function buildRetryPrompt(assignment) {
+    const hint = assignment?.error_hint_label || 'Kiểm tra logs/artifacts trước khi retry.';
+    const cooldown = assignment?.rerun_cooldown_remaining_sec
+        ? `Cooldown còn ${assignment.rerun_cooldown_remaining_sec}s.`
+        : 'Không có cooldown đang chặn.';
+    return `${hint}\n\n${cooldown}\n\nTiếp tục retry assignment #${assignment?.id}?`;
+}
+
+async function retryFailedAssignment(assignmentId, btnEl) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) {
+        toast('Không tìm thấy assignment để retry', 'error');
+        return;
+    }
+
+    if (!window.confirm(buildRetryPrompt(assignment))) {
+        return;
+    }
+    await runUploadAssignment(assignmentId, btnEl, true);
+}
+
+async function runUploadAssignment(assignmentId, btnEl, force = false) {
+    const originalLabel = btnEl?.textContent || '🚀 Run';
+    if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.textContent = '⏳';
+    }
+    try {
+        const res = await fetch(`${API}/api/videos/assignments/${assignmentId}/run-upload`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto_push: true, force }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            if (!force && res.status === 409) {
+                const assignment = getAssignmentById(assignmentId);
+                if (assignment?.rerun_requires_confirm && window.confirm(buildRetryPrompt(assignment))) {
+                    await runUploadAssignment(assignmentId, btnEl, true);
+                    return;
+                }
+            }
+            toast(`❌ ${data.detail || 'Run upload thất bại'}`, 'error');
+            return;
+        }
+        if (data.task_id) {
+            subscribeTask(data.task_id);
+        }
+        toast(`🚀 ${data.message}`, 'success');
+        await Promise.all([refreshAssignments(), refreshVideos(), refreshRunning(), refreshHistory()]);
+    } catch (e) {
+        toast(`Run upload lỗi: ${e.message}`, 'error');
+    } finally {
+        if (btnEl) {
+            btnEl.disabled = false;
+            btnEl.textContent = originalLabel;
+        }
+    }
+}
 
 let _deleteVideoConfirmId = null;
 let _deleteVideoConfirmTimer = null;
 
 function deleteVideo(videoId, btnEl) {
     if (_deleteVideoConfirmId === videoId) {
-        // Second click — actually delete
         clearTimeout(_deleteVideoConfirmTimer);
         _deleteVideoConfirmId = null;
         _doDeleteVideo(videoId, btnEl);
-    } else {
-        // First click — show confirmation
-        if (_deleteVideoConfirmTimer) clearTimeout(_deleteVideoConfirmTimer);
-        _deleteVideoConfirmId = videoId;
-        if (btnEl) {
-            btnEl.textContent = '⚠️ Sure?';
-            btnEl.classList.add('btn-warning');
-        }
-        // Auto-reset after 3 seconds
-        _deleteVideoConfirmTimer = setTimeout(() => {
-            _deleteVideoConfirmId = null;
-            if (btnEl) {
-                btnEl.textContent = '🗑️';
-                btnEl.classList.remove('btn-warning');
-            }
-        }, 3000);
+        return;
     }
+
+    if (_deleteVideoConfirmTimer) clearTimeout(_deleteVideoConfirmTimer);
+    _deleteVideoConfirmId = videoId;
+    if (btnEl) {
+        btnEl.textContent = '⚠️ Sure?';
+        btnEl.classList.add('btn-warning');
+    }
+    _deleteVideoConfirmTimer = setTimeout(() => {
+        _deleteVideoConfirmId = null;
+        if (btnEl) {
+            btnEl.textContent = '🗑️';
+            btnEl.classList.remove('btn-warning');
+        }
+    }, 3000);
 }
 
 async function _doDeleteVideo(videoId, btnEl) {
     try {
         await fetch(`${API}/api/videos/${videoId}`, { method: 'DELETE' });
+        if (focusedVideoId === videoId) focusedVideoId = null;
         toast('🗑️ Đã xoá video', 'success');
-        refreshVideos();
-        refreshAssignments();
+        await Promise.all([refreshVideos(), refreshAssignments()]);
     } catch (e) {
         toast('Xoá thất bại', 'error');
-        if (btnEl) { btnEl.textContent = '🗑️'; btnEl.classList.remove('btn-warning'); }
+        if (btnEl) {
+            btnEl.textContent = '🗑️';
+            btnEl.classList.remove('btn-warning');
+        }
     }
 }
 
-// --- AI Metadata Suggest ---
+function focusVideoAssignments(videoId) {
+    focusedVideoId = videoId;
+    renderVideoGrid(videoList);
+    renderVideoOpsSummary();
+    renderDistributionFocus();
+    renderAssignmentViews();
+}
+
+function clearVideoFocus() {
+    focusedVideoId = null;
+    renderVideoGrid(videoList);
+    renderVideoOpsSummary();
+    renderDistributionFocus();
+    renderAssignmentViews();
+}
+
+function renderAssignmentViews() {
+    syncSelectedAssignments();
+    renderDistributionFocus();
+    renderVideoOpsSummary();
+    renderAssignmentBulkBar();
+    renderAssignmentMatrix(getVisibleAssignments());
+}
+
+function populateAssignmentDeviceFilter() {
+    const selectEl = document.getElementById('assignmentDeviceFilter');
+    if (!selectEl) return;
+    const current = selectEl.value;
+    selectEl.innerHTML = '<option value="">Tất cả device</option>' +
+        devices.map(device => `<option value="${device.id}">${escapeHtml(device.name)}</option>`).join('');
+    if ([...selectEl.options].some(opt => opt.value === current)) {
+        selectEl.value = current;
+    }
+}
+
+function buildAssignmentQuery() {
+    const params = new URLSearchParams();
+    const platform = document.getElementById('assignmentPlatformFilter')?.value || '';
+    const deviceId = document.getElementById('assignmentDeviceFilter')?.value || '';
+    const pushStatus = document.getElementById('assignmentPushFilter')?.value || '';
+    const uploadStatus = document.getElementById('assignmentUploadFilter')?.value || '';
+    const actionableOnly = document.getElementById('assignmentActionableOnly')?.checked;
+
+    if (platform) params.set('platform', platform);
+    if (deviceId) params.set('device_id', deviceId);
+    if (pushStatus) params.set('push_status', pushStatus);
+    if (uploadStatus) params.set('upload_status', uploadStatus);
+    if (actionableOnly) params.set('actionable_only', 'true');
+
+    return params.toString() ? `?${params.toString()}` : '';
+}
+
+async function refreshAssignments() {
+    const container = document.getElementById('assignmentMatrix');
+    if (container) {
+        container.innerHTML = '<div class="assignment-skeleton-grid"><div class="assignment-skeleton-row"></div><div class="assignment-skeleton-row"></div><div class="assignment-skeleton-row"></div></div>';
+    }
+    try {
+        populateAssignmentDeviceFilter();
+        const res = await fetch(`${API}/api/videos/assignments${buildAssignmentQuery()}`);
+        assignmentList = await res.json();
+        renderAssignmentViews();
+    } catch (e) { /* retry */ }
+}
+
+function clearAssignmentFilters() {
+    const platform = document.getElementById('assignmentPlatformFilter');
+    const device = document.getElementById('assignmentDeviceFilter');
+    const push = document.getElementById('assignmentPushFilter');
+    const upload = document.getElementById('assignmentUploadFilter');
+    const search = document.getElementById('assignmentSearch');
+    const actionable = document.getElementById('assignmentActionableOnly');
+
+    if (platform) platform.value = 'tiktok';
+    if (device) device.value = '';
+    if (push) push.value = '';
+    if (upload) upload.value = '';
+    if (search) search.value = '';
+    if (actionable) actionable.checked = false;
+    focusedVideoId = null;
+    selectedAssignmentIds.clear();
+    refreshAssignments();
+}
+
+function toggleAssignmentSelection(assignmentId, checked) {
+    if (checked) selectedAssignmentIds.add(assignmentId);
+    else selectedAssignmentIds.delete(assignmentId);
+    renderAssignmentBulkBar();
+}
+
+function toggleAllAssignments(checked) {
+    const visible = getVisibleAssignments();
+    if (checked) {
+        visible.forEach(item => selectedAssignmentIds.add(item.id));
+    } else {
+        visible.forEach(item => selectedAssignmentIds.delete(item.id));
+    }
+    renderAssignmentViews();
+}
+
+function renderAssignmentBulkBar() {
+    const container = document.getElementById('assignmentBulkBar');
+    if (!container) return;
+
+    const visible = getVisibleAssignments();
+    const selected = visible.filter(item => selectedAssignmentIds.has(item.id));
+    const pushable = selected.filter(item => item.can_push);
+    const runnable = selected.filter(item => item.can_run_upload);
+    const visibleRunnable = visible.filter(item => item.can_run_upload);
+    const visiblePushable = visible.filter(item => item.can_push);
+    const retryable = selected.filter(item => item.can_rerun || item.rerun_requires_confirm);
+    const visibleRetryable = visible.filter(item => item.can_rerun || item.rerun_requires_confirm);
+
+    container.innerHTML = `
+        <div class="bulkbar-main">
+            <div class="bulkbar-title">${selected.length ? `${selected.length} assignment đã chọn` : `${visible.length} assignment đang hiển thị`}</div>
+            <div class="bulkbar-sub">TikTok-first flow: assign → push → run upload → review logs/artifacts.</div>
+        </div>
+        <div class="bulkbar-actions">
+            <button class="btn btn-sm btn-ghost" ${pushable.length ? '' : 'disabled'} onclick="pushAssignmentsBatch([${pushable.map(item => item.id).join(',')}])">📤 Push Selected</button>
+            <button class="btn btn-sm btn-primary" ${runnable.length ? '' : 'disabled'} onclick="runAssignmentsBatch([${runnable.map(item => item.id).join(',')}])">🚀 Run Selected</button>
+            <button class="btn btn-sm btn-ghost" ${retryable.length ? '' : 'disabled'} onclick="retryAssignmentsBatch([${retryable.map(item => item.id).join(',')}])">🔁 Retry Selected</button>
+            <button class="btn btn-sm btn-ghost" ${visiblePushable.length ? '' : 'disabled'} onclick="pushAssignmentsBatch([${visiblePushable.map(item => item.id).join(',')}])">📦 Push Visible</button>
+            <button class="btn btn-sm btn-primary" ${visibleRunnable.length ? '' : 'disabled'} onclick="runAssignmentsBatch([${visibleRunnable.map(item => item.id).join(',')}])">⚡ Run All Ready</button>
+            <button class="btn btn-sm btn-ghost" ${visibleRetryable.length ? '' : 'disabled'} onclick="retryAssignmentsBatch([${visibleRetryable.map(item => item.id).join(',')}])">🛟 Retry Failed</button>
+            <button class="btn btn-sm btn-ghost" ${selected.length ? '' : 'disabled'} onclick="selectedAssignmentIds.clear(); renderAssignmentViews()">Clear</button>
+        </div>
+    `;
+}
+
+async function pushAssignmentsBatch(ids) {
+    const assignmentIds = ids.filter(Boolean);
+    if (!assignmentIds.length) {
+        toast('Không có assignment nào cần push', 'info');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/api/videos/assignments/push-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ assignment_ids: assignmentIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            toast(`❌ ${data.detail || 'Batch push thất bại'}`, 'error');
+            return;
+        }
+        toast(`📤 Push xong ${data.succeeded}/${data.total} assignment`, data.failed ? 'info' : 'success');
+        await Promise.all([refreshAssignments(), refreshVideos()]);
+    } catch (e) {
+        toast(`Batch push lỗi: ${e.message}`, 'error');
+    }
+}
+
+async function runAssignmentsBatch(ids) {
+    return runAssignmentsBatchWithOptions(ids, { force: false });
+}
+
+async function retryAssignmentsBatch(ids) {
+    const assignmentIds = ids.filter(Boolean);
+    if (!assignmentIds.length) {
+        toast('Không có assignment failed nào để retry', 'info');
+        return;
+    }
+    if (!window.confirm(`Retry ${assignmentIds.length} assignment failed? Hãy kiểm tra artifact/log trước nếu lỗi liên quan gallery hoặc verify.`)) {
+        return;
+    }
+    return runAssignmentsBatchWithOptions(assignmentIds, { force: true });
+}
+
+async function runAssignmentsBatchWithOptions(ids, { force = false } = {}) {
+    const assignmentIds = ids.filter(Boolean);
+    if (!assignmentIds.length) {
+        toast('Không có assignment nào sẵn sàng upload', 'info');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/api/videos/assignments/run-batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ assignment_ids: assignmentIds, auto_push: true, force }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            toast(`❌ ${data.detail || 'Batch run thất bại'}`, 'error');
+            return;
+        }
+        (data.results || []).forEach(item => {
+            if (item.task_id) subscribeTask(item.task_id);
+        });
+        toast(`🚀 Queue ${data.succeeded}/${data.total} assignment`, data.failed ? 'info' : 'success');
+        await Promise.all([refreshAssignments(), refreshVideos(), refreshRunning(), refreshHistory()]);
+    } catch (e) {
+        toast(`Batch run lỗi: ${e.message}`, 'error');
+    }
+}
+
+function renderAssignmentMatrix(assignments) {
+    const container = document.getElementById('assignmentMatrix');
+    if (!container) return;
+
+    if (!assignments.length) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-text">Không có assignment phù hợp bộ lọc hiện tại</div></div>';
+        return;
+    }
+
+    const allSelected = assignments.length > 0 && assignments.every(item => selectedAssignmentIds.has(item.id));
+    const rows = assignments.map(item => {
+        const selected = selectedAssignmentIds.has(item.id);
+        const lastEvent = item.uploaded_at || item.last_run_at || item.pushed_at || item.created_at;
+        const taskLink = item.task_id
+            ? `<button class="btn btn-xs btn-ghost" onclick="openTaskDetail(${item.task_id})">🧾 Task</button>`
+            : '';
+        const artifactLink = renderArtifactActionButton(item);
+        const errorLine = item.latest_error
+            ? `<div class="assignment-error-line">${escapeHtml(shortenText(item.latest_error, 120))}</div>`
+            : '';
+        const hintLine = item.error_hint_label
+            ? `<div class="assignment-hint-line">${escapeHtml(item.error_hint_label)}</div>`
+            : '';
+        const liveHtml = renderLiveTaskState(item);
+        return `
+            <tr class="${selected ? 'selected' : ''}">
+                <td><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleAssignmentSelection(${item.id}, this.checked)"></td>
+                <td>
+                    <div class="assignment-primary">${escapeHtml(shortenText(item.video_title || item.video_filename || `#${item.video_id}`, 48))}</div>
+                    <div class="assignment-secondary">#${item.video_id} · ${escapeHtml(item.video_filename || '')}</div>
+                    ${errorLine}
+                    ${hintLine}
+                </td>
+                <td>
+                    <div class="assignment-primary">${escapeHtml(item.device_name || `#${item.device_id}`)}</div>
+                    <div class="assignment-secondary">${escapeHtml(item.account_name || 'Chưa map account')}</div>
+                </td>
+                <td>
+                    <div class="assignment-primary">${platformIcon(item.platform)} ${escapeHtml(item.platform)}</div>
+                    <div class="assignment-secondary">${escapeHtml(item.device_path || 'Chưa có device path')}</div>
+                </td>
+                <td>${renderPushBadge(item.push_status)}</td>
+                <td>${renderUploadBadge(item.upload_status)}</td>
+                <td>
+                    <div class="assignment-primary">${formatDateTime(lastEvent)}</div>
+                    <div class="assignment-secondary">${item.task_status ? `task ${item.task_status}` : 'chưa tạo task'}</div>
+                    ${liveHtml}
+                </td>
+                <td class="assignment-actions-cell">
+                    <button class="btn btn-xs btn-ghost" onclick="openAssignmentDetail(${item.id})">🔍 Detail</button>
+                    ${renderPrimaryUploadAction(item) || ''}
+                    ${artifactLink || ''}
+                    ${taskLink}
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <div class="assignment-table-wrap">
+            <table class="assignment-table assignment-board-table">
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" ${allSelected ? 'checked' : ''} onchange="toggleAllAssignments(this.checked)"></th>
+                        <th>Video</th>
+                        <th>Device / Account</th>
+                        <th>Platform / Path</th>
+                        <th>Push</th>
+                        <th>Upload</th>
+                        <th>Last Event</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+async function openAssignmentDetail(assignmentId) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) {
+        toast('Không tìm thấy assignment', 'error');
+        return;
+    }
+
+    const modal = document.getElementById('assignmentDetailModal');
+    const title = document.getElementById('assignmentDetailTitle');
+    const body = document.getElementById('assignmentDetailBody');
+    title.textContent = `Assignment #${assignment.id} · ${assignment.video_title || assignment.video_filename || assignment.video_id}`;
+    body.innerHTML = '<div class="loading">Loading assignment review...</div>';
+    modal.classList.add('open');
+
+    let logs = [];
+    let artifact = null;
+    try {
+        const requests = [];
+        if (assignment.task_id) {
+            requests.push(fetch(`${API}/api/tasks/${assignment.task_id}/logs`).then(r => r.ok ? r.json() : []));
+        } else {
+            requests.push(Promise.resolve([]));
+        }
+        requests.push(fetch(`${API}/api/videos/assignments/${assignment.id}/artifacts`).then(r => r.ok ? r.json() : null));
+        [logs, artifact] = await Promise.all(requests);
+    } catch (_) {
+        logs = [];
+        artifact = null;
+    }
+
+    const recentSteps = (logs || []).slice(-8).map(log => `
+        <div class="assignment-detail-step">
+            <span class="assignment-detail-step-num">#${log.step}</span>
+            <span class="assignment-detail-step-action">${escapeHtml(log.action)}</span>
+            <span class="assignment-detail-step-detail">${escapeHtml(shortenText(log.detail || log.action, 120))}</span>
+        </div>
+    `).join('');
+
+    const artifactLinks = artifact
+        ? `
+            <div class="assignment-detail-artifacts">
+                <div class="assignment-detail-line"><strong>Session:</strong> ${escapeHtml(artifact.session_name || '—')}</div>
+                <div class="assignment-detail-line"><strong>Finished:</strong> ${formatDateTime(artifact.finished_at)}</div>
+                <div class="assignment-detail-link-row">
+                    ${artifact.manifest_url ? `<a class="btn btn-xs btn-ghost" href="${artifact.manifest_url}" target="_blank" rel="noreferrer">Manifest</a>` : ''}
+                    ${artifact.screenrecord_url ? `<a class="btn btn-xs btn-ghost" href="${artifact.screenrecord_url}" target="_blank" rel="noreferrer">Screenrecord</a>` : ''}
+                    ${artifact.latest_snapshot?.screenshot_url ? `<a class="btn btn-xs btn-ghost" href="${artifact.latest_snapshot.screenshot_url}" target="_blank" rel="noreferrer">Latest Screenshot</a>` : ''}
+                    ${artifact.latest_snapshot?.xml_url ? `<a class="btn btn-xs btn-ghost" href="${artifact.latest_snapshot.xml_url}" target="_blank" rel="noreferrer">Latest XML</a>` : ''}
+                </div>
+            </div>
+        `
+        : '<div class="assignment-detail-line">Chưa có artifact cho assignment này.</div>';
+
+    body.innerHTML = `
+        <div class="assignment-detail-grid">
+            <div class="assignment-detail-card">
+                <h4>Pipeline State</h4>
+                <div class="assignment-detail-badges">${renderPushBadge(assignment.push_status)} ${renderUploadBadge(assignment.upload_status)}</div>
+                <div class="assignment-detail-line"><strong>Device:</strong> ${escapeHtml(assignment.device_name || `#${assignment.device_id}`)}</div>
+                <div class="assignment-detail-line"><strong>Account:</strong> ${escapeHtml(assignment.account_name || 'Chưa map')}</div>
+                <div class="assignment-detail-line"><strong>Device path:</strong> ${escapeHtml(assignment.device_path || 'Chưa push')}</div>
+                <div class="assignment-detail-line"><strong>Task:</strong> ${assignment.task_id ? `#${assignment.task_id} · ${escapeHtml(assignment.task_status || 'unknown')}` : 'Chưa có'}</div>
+                <div class="assignment-detail-line"><strong>Retry hint:</strong> ${escapeHtml(assignment.error_hint_label || 'Không cần')}</div>
+            </div>
+            <div class="assignment-detail-card">
+                <h4>Video Metadata</h4>
+                <div class="assignment-detail-line"><strong>Title:</strong> ${escapeHtml(assignment.video_title || '—')}</div>
+                <div class="assignment-detail-line"><strong>Tags:</strong> ${escapeHtml(assignment.video_tags || '—')}</div>
+                <div class="assignment-detail-line"><strong>Description:</strong> ${escapeHtml(assignment.video_description || '—')}</div>
+            </div>
+            <div class="assignment-detail-card">
+                <h4>Timeline</h4>
+                <div class="assignment-detail-line"><strong>Created:</strong> ${formatDateTime(assignment.created_at)}</div>
+                <div class="assignment-detail-line"><strong>Pushed:</strong> ${formatDateTime(assignment.pushed_at)}</div>
+                <div class="assignment-detail-line"><strong>Last run:</strong> ${formatDateTime(assignment.last_run_at)}</div>
+                <div class="assignment-detail-line"><strong>Uploaded:</strong> ${formatDateTime(assignment.uploaded_at)}</div>
+            </div>
+            <div class="assignment-detail-card">
+                <h4>Review</h4>
+                <div class="assignment-detail-line"><strong>Last error:</strong> ${escapeHtml(assignment.latest_error || 'Không có')}</div>
+                <div class="assignment-detail-line"><strong>Task result:</strong> ${escapeHtml(assignment.task_result || assignment.task_error || 'Chưa có')}</div>
+                <div class="assignment-detail-line"><strong>Cooldown:</strong> ${assignment.rerun_cooldown_remaining_sec ? `${assignment.rerun_cooldown_remaining_sec}s` : 'Không chặn'}</div>
+            </div>
+            <div class="assignment-detail-card">
+                <h4>Artifacts</h4>
+                ${artifactLinks}
+            </div>
+            <div class="assignment-detail-card">
+                <h4>Recent Task Steps</h4>
+                ${recentSteps || '<div class="assignment-detail-line">Chưa có step logs.</div>'}
+            </div>
+        </div>
+        <div class="assignment-detail-actions">
+            ${renderPrimaryUploadAction(assignment) || ''}
+            ${renderArtifactActionButton(assignment) || ''}
+            ${assignment.task_id ? `<button class="btn btn-sm btn-ghost" onclick="openTaskDetail(${assignment.task_id})">🧾 Open Task Detail</button>` : ''}
+        </div>
+    `;
+}
+
+function closeAssignmentDetail(event) {
+    if (event && event.target !== event.currentTarget) return;
+    document.getElementById('assignmentDetailModal').classList.remove('open');
+}
 
 function openAiSuggestModal(videoId, videoTitle) {
     const video = videoList.find(v => v.id === videoId);
@@ -1773,9 +2816,9 @@ function openAiSuggestModal(videoId, videoTitle) {
         existingHtml = `
             <div class="ai-suggest-existing">
                 <h4>✨ Gợi ý hiện có</h4>
-                <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${video.ai_title || '—'}</span></div>
-                <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${video.ai_tags || '—'}</span></div>
-                <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${video.ai_description || '—'}</span></div>
+                <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${escapeHtml(video.ai_title || '—')}</span></div>
+                <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${escapeHtml(video.ai_tags || '—')}</span></div>
+                <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${escapeHtml(video.ai_description || '—')}</span></div>
                 <div style="display:flex;gap:8px;margin-top:12px">
                     <button class="btn btn-xs btn-primary" onclick="applyAiSuggestions(${videoId})">✅ Apply</button>
                     <button class="btn btn-xs btn-ghost" onclick="requestAiSuggest(${videoId})">🔄 Tạo lại</button>
@@ -1785,51 +2828,45 @@ function openAiSuggestModal(videoId, videoTitle) {
     }
 
     modal.innerHTML = `
-    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:480px">
-        <div class="modal-header">
-            <h3>🤖 AI Suggest: ${videoTitle}</h3>
-            <button class="modal-close" onclick="document.getElementById('aiSuggestModal').remove()">×</button>
-        </div>
-        <div class="modal-body">
-            ${existingHtml}
-            <div id="aiCacheBadges" style="margin-bottom:12px"></div>
-            <div class="form-group">
-                <label>🌐 Platform target</label>
-                <select id="aiPlatformSel">
-                    <option value="tiktok">🎵 TikTok</option>
-                    <option value="youtube">▶️ YouTube</option>
-                    <option value="instagram">📷 Instagram</option>
-                    <option value="facebook">📘 Facebook</option>
-                </select>
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width:480px">
+            <div class="modal-header">
+                <h3>🤖 AI Suggest: ${escapeHtml(videoTitle)}</h3>
+                <button class="modal-close" onclick="document.getElementById('aiSuggestModal').remove()">×</button>
             </div>
-            <div class="form-group">
-                <label>🗣️ Ngôn ngữ output</label>
-                <select id="aiLangSel">
-                    <option value="vi">🇻🇳 Tiếng Việt</option>
-                    <option value="en">🇺🇸 English</option>
-                    <option value="ja">🇯🇵 日本語</option>
-                    <option value="ko">🇰🇷 한국어</option>
-                    <option value="zh">🇨🇳 中文</option>
-                    <option value="th">🇹🇭 ภาษาไทย</option>
-                    <option value="id">🇮🇩 Bahasa Indonesia</option>
-                    <option value="auto">🤖 Auto-detect</option>
-                </select>
+            <div class="modal-body">
+                ${existingHtml}
+                <div id="aiCacheBadges" style="margin-bottom:12px"></div>
+                <div class="form-group">
+                    <label>🌐 Platform target</label>
+                    <select id="aiPlatformSel">
+                        <option value="tiktok">🎵 TikTok</option>
+                        <option value="youtube">▶️ YouTube</option>
+                        <option value="instagram">📷 Instagram</option>
+                        <option value="facebook">📘 Facebook</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>🗣️ Ngôn ngữ output</label>
+                    <select id="aiLangSel">
+                        <option value="vi">🇻🇳 Tiếng Việt</option>
+                        <option value="en">🇺🇸 English</option>
+                        <option value="ja">🇯🇵 日本語</option>
+                        <option value="ko">🇰🇷 한국어</option>
+                        <option value="zh">🇨🇳 中文</option>
+                        <option value="th">🇹🇭 ภาษาไทย</option>
+                        <option value="id">🇮🇩 Bahasa Indonesia</option>
+                        <option value="auto">🤖 Auto-detect</option>
+                    </select>
+                </div>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-primary" style="flex:1" onclick="requestAiSuggest(${videoId}, false)">⚡ Lấy gợi ý</button>
+                    <button class="btn btn-ghost" onclick="requestAiSuggest(${videoId}, true)" title="Tạo mới (tốn token)">🔄 Tạo mới</button>
+                </div>
+                <div id="aiSuggestResult" style="margin-top:16px"></div>
             </div>
-            <div style="display:flex;gap:8px">
-                <button class="btn btn-primary" style="flex:1" onclick="requestAiSuggest(${videoId}, false)">
-                    ⚡ Lấy gợi ý
-                </button>
-                <button class="btn btn-ghost" onclick="requestAiSuggest(${videoId}, true)" title="Tạo mới (tốn token)">
-                    🔄 Tạo mới
-                </button>
-            </div>
-            <div id="aiSuggestResult" style="margin-top:16px"></div>
-        </div>
-    </div>`;
+        </div>`;
     modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
     document.body.appendChild(modal);
-
-    // Load cached versions
     _loadAiCache(videoId);
 }
 
@@ -1844,19 +2881,17 @@ async function _loadAiCache(videoId) {
         const langFlags = { vi: '🇻🇳', en: '🇺🇸', ja: '🇯🇵', ko: '🇰🇷', zh: '🇨🇳', th: '🇹🇭', id: '🇮🇩', auto: '🤖' };
         const badges = cache.map(c => {
             const flag = langFlags[c.language] || '🌐';
-            return `<span class="ai-cache-badge" onclick="_loadCachedResult(${videoId}, '${c.language}', '${c.platform}')" title="${c.platform} / ${c.language} — click to load">${flag} ${c.language}/${c.platform}</span>`;
+            return `<span class="ai-cache-badge" onclick="_loadCachedResult(${videoId}, '${c.language}', '${c.platform}')" title="${escapeHtml(`${c.platform} / ${c.language}`)}">${flag} ${escapeHtml(c.language)}/${escapeHtml(c.platform)}</span>`;
         }).join(' ');
         badgesDiv.innerHTML = `<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">💾 Cached (click to load, 0 tokens):</div>${badges}`;
     } catch (e) { /* ignore */ }
 }
 
 async function _loadCachedResult(videoId, language, platform) {
-    // Set dropdowns to match cached entry
     const langSel = document.getElementById('aiLangSel');
     const platSel = document.getElementById('aiPlatformSel');
     if (langSel) langSel.value = language;
     if (platSel) platSel.value = platform;
-    // Fetch with force=false → will return cache instantly
     await requestAiSuggest(videoId, false);
 }
 
@@ -1880,7 +2915,7 @@ async function requestAiSuggest(videoId, force = false) {
         const data = await res.json();
 
         if (!res.ok) {
-            if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ ${data.detail || 'AI generation failed'}</div>`;
+            if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ ${escapeHtml(data.detail || 'AI generation failed')}</div>`;
             toast('❌ AI suggest thất bại', 'error');
             return;
         }
@@ -1894,18 +2929,18 @@ async function requestAiSuggest(videoId, force = false) {
             resultDiv.innerHTML = `
                 <div class="ai-suggest-result">
                     <h4>✨ Kết quả AI ${cacheLabel}</h4>
-                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">🌐 ${data.language || language} / ${data.platform || platform}</div>
-                    <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${data.ai_title || '—'}</span></div>
-                    <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${data.ai_tags || '—'}</span></div>
-                    <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${data.ai_description || '—'}</span></div>
+                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">🌐 ${escapeHtml(data.language || language)} / ${escapeHtml(data.platform || platform)}</div>
+                    <div class="ai-field"><span class="ai-label">Title</span><span class="ai-value">${escapeHtml(data.ai_title || '—')}</span></div>
+                    <div class="ai-field"><span class="ai-label">Tags</span><span class="ai-value">${escapeHtml(data.ai_tags || '—')}</span></div>
+                    <div class="ai-field"><span class="ai-label">Desc</span><span class="ai-value">${escapeHtml(data.ai_description || '—')}</span></div>
                     <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="applyAiSuggestions(${videoId})">✅ Apply gợi ý → Video</button>
                 </div>`;
         }
 
-        refreshVideos();
-        _loadAiCache(videoId); // Refresh cache badges
+        await refreshVideos();
+        _loadAiCache(videoId);
     } catch (e) {
-        if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ Lỗi: ${e.message}</div>`;
+        if (resultDiv) resultDiv.innerHTML = `<div class="ai-error">❌ Lỗi: ${escapeHtml(e.message)}</div>`;
         toast(`AI lỗi: ${e.message}`, 'error');
     }
 }
@@ -1921,7 +2956,8 @@ async function applyAiSuggestions(videoId) {
         if (res.ok) {
             toast('✅ Đã apply AI suggestions', 'success');
             document.getElementById('aiSuggestModal')?.remove();
-            refreshVideos();
+            await refreshVideos();
+            renderDistributionFocus();
         } else {
             toast(`❌ ${data.detail || 'Apply thất bại'}`, 'error');
         }
@@ -1929,71 +2965,6 @@ async function applyAiSuggestions(videoId) {
         toast(`Lỗi: ${e.message}`, 'error');
     }
 }
-
-// --- Assignment Matrix ---
-
-async function refreshAssignments() {
-    try {
-        const [assignRes, videoRes] = await Promise.all([
-            fetch(`${API}/api/videos/assignments`),
-            fetch(`${API}/api/videos`),
-        ]);
-        const assignments = await assignRes.json();
-        const vids = await videoRes.json();
-        renderAssignmentMatrix(assignments, vids);
-    } catch (e) { /* retry */ }
-}
-
-function renderAssignmentMatrix(assignments, vids) {
-    const container = document.getElementById('assignmentMatrix');
-    if (!container) return;
-
-    if (!assignments.length) {
-        container.innerHTML = '<div class="empty-state"><div class="empty-icon">📊</div><div class="empty-text">Chưa có assignment nào</div></div>';
-        return;
-    }
-
-    const videoMap = Object.fromEntries(vids.map(v => [v.id, v]));
-    const deviceMap = Object.fromEntries(devices.map(d => [d.id, d]));
-    const platformIcons = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
-    const statusLabel = {
-        pending:  '<span class="push-status-badge pending">⏳ Pending</span>',
-        pushed:   '<span class="push-status-badge pushed">📱 Pushed</span>',
-        uploaded: '<span class="push-status-badge uploaded">✅ Uploaded</span>',
-        failed:   '<span class="push-status-badge failed">❌ Failed</span>',
-    };
-
-    const rows = assignments.map(a => {
-        const vid = videoMap[a.video_id];
-        const dev = deviceMap[a.device_id];
-        const icon = platformIcons[a.platform] || '?';
-        const st = statusLabel[a.push_status] || a.push_status;
-        const pushBtn = a.push_status === 'pending' || a.push_status === 'failed'
-            ? `<button class="btn btn-xs btn-primary" onclick="pushAssignment(${a.id}, this)">📤 Push</button>`
-            : '';
-        return `<tr>
-            <td>${vid ? (vid.title || vid.filename) : `#${a.video_id}`}</td>
-            <td>${dev ? dev.name : `#${a.device_id}`}</td>
-            <td>${icon} ${a.platform}</td>
-            <td>${st}</td>
-            <td style="white-space:nowrap">${pushBtn}</td>
-        </tr>`;
-    }).join('');
-
-    container.innerHTML = `
-    <div class="assignment-table-wrap">
-    <table class="assignment-table">
-        <thead><tr>
-            <th>Video</th><th>Device</th><th>Platform</th><th>Status</th><th>Action</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-    </table>
-    </div>`;
-}
-
-// --- Device Accounts ---
-
-let deviceAccounts = [];
 
 async function refreshDeviceAccounts() {
     try {
@@ -2010,19 +2981,17 @@ function renderAccountList(accounts) {
         container.innerHTML = '<div style="font-size:12px;color:var(--text-muted);text-align:center;padding:12px">Chưa có account nào</div>';
         return;
     }
-    const devMap = Object.fromEntries(devices.map(d => [d.id, d]));
-    const icons  = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
-    container.innerHTML = accounts.map(a => {
-        const dev = devMap[a.device_id];
-        return `
+
+    const icons = { tiktok: '🎵', youtube: '▶️', instagram: '📷', facebook: '📘' };
+    container.innerHTML = accounts.map(account => `
         <div class="account-list-item">
             <div>
-                <div class="account-name">${a.account_name || '(unnamed)'}</div>
-                <div class="account-plat">${icons[a.platform] || '?'} ${a.platform} · ${dev ? dev.name : `#${a.device_id}`}</div>
+                <div class="account-name">${escapeHtml(account.account_name || '(unnamed)')}</div>
+                <div class="account-plat">${icons[account.platform] || '?'} ${escapeHtml(account.platform)} · ${escapeHtml(account.device_name || `#${account.device_id}`)}</div>
             </div>
-            <button class="btn btn-xs btn-danger" onclick="deleteDeviceAccount(${a.id})">🗑️</button>
-        </div>`;
-    }).join('');
+            <button class="btn btn-xs btn-danger" onclick="deleteDeviceAccount(${account.id})">🗑️</button>
+        </div>
+    `).join('');
 }
 
 async function saveDeviceAccount(e) {
@@ -2032,7 +3001,10 @@ async function saveDeviceAccount(e) {
     const accountName = document.getElementById('accountName').value.trim();
     const notes = document.getElementById('accountNotes').value.trim();
 
-    if (!deviceId) { toast('Chọn device', 'error'); return; }
+    if (!deviceId) {
+        toast('Chọn device', 'error');
+        return;
+    }
 
     try {
         const res = await fetch(`${API}/api/device-accounts`, {
@@ -2040,32 +3012,38 @@ async function saveDeviceAccount(e) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ device_id: deviceId, platform, account_name: accountName || null, notes: notes || null }),
         });
-        if (res.ok) {
-            toast('✅ Đã lưu account', 'success');
-            document.getElementById('accountForm').reset();
-            refreshDeviceAccounts();
-        } else {
+        if (!res.ok) {
             const err = await res.json();
             toast(`❌ ${err.detail}`, 'error');
+            return;
         }
-    } catch (e) { toast(`Lỗi: ${e.message}`, 'error'); }
+
+        toast('✅ Đã lưu account', 'success');
+        document.getElementById('accountForm').reset();
+        await refreshDeviceAccounts();
+        await refreshAssignments();
+    } catch (e) {
+        toast(`Lỗi: ${e.message}`, 'error');
+    }
 }
 
 async function deleteDeviceAccount(id) {
     try {
         await fetch(`${API}/api/device-accounts/${id}`, { method: 'DELETE' });
         toast('🗑️ Đã xoá mapping', 'success');
-        refreshDeviceAccounts();
-    } catch (e) { toast('Xoá thất bại', 'error'); }
+        await refreshDeviceAccounts();
+        await refreshAssignments();
+    } catch (e) {
+        toast('Xoá thất bại', 'error');
+    }
 }
 
-// Populate account device select from global devices list
 function _populateAccountDeviceSelect() {
     const sel = document.getElementById('accountDevice');
     if (!sel) return;
     const cur = sel.value;
     sel.innerHTML = '<option value="">Chọn device...</option>' +
-        devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+        devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
     if (cur) sel.value = cur;
+    populateAssignmentDeviceFilter();
 }
-

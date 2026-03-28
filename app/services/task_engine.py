@@ -58,7 +58,26 @@ class TaskEngine:
         else:
             device_target = f"{device_ip}:{device_port}"
             # Ensure device is connected via ADB
-            connected = await device_manager.ensure_connected(device_ip, device_port)
+            logger.info(f"🔌 Ensuring ADB connection to {device_target}")
+            try:
+                connected = await asyncio.wait_for(
+                    device_manager.ensure_connected(device_ip, device_port),
+                    timeout=35.0,
+                )
+            except asyncio.TimeoutError:
+                return TaskResult(
+                    success=False,
+                    reason="Device not reachable",
+                    steps=0,
+                    error=f"Connection check timed out for {device_target}",
+                )
+            except Exception as e:
+                return TaskResult(
+                    success=False,
+                    reason="Device not reachable",
+                    steps=0,
+                    error=f"Connection check failed for {device_target}: {e}",
+                )
             if not connected:
                 return TaskResult(
                     success=False,

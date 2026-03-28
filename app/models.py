@@ -3,6 +3,7 @@
 import json
 
 from sqlmodel import SQLModel, Field
+from sqlalchemy import UniqueConstraint
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, List
@@ -388,8 +389,17 @@ class VideoAIMetadata(SQLModel, table=True):
 class VideoAssignment(SQLModel, table=True):
     """Assignment of a video to a specific device/platform.
 
-    Constraint: UNIQUE(video_id, platform) — 1 video per platform.
+    Constraint: UNIQUE(video_id, device_id, platform) — 1 target per device/platform.
     """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "video_id",
+            "device_id",
+            "platform",
+            name="uq_videoassignment_video_device_platform",
+        ),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     video_id: int = Field(foreign_key="video.id")
@@ -397,7 +407,7 @@ class VideoAssignment(SQLModel, table=True):
     platform: str  # tiktok / youtube / instagram / facebook
     push_status: PushStatus = PushStatus.PENDING
     upload_status: UploadStatus = UploadStatus.PENDING
-    device_path: Optional[str] = None  # /sdcard/DCIM/xxx.mp4
+    device_path: Optional[str] = None  # /sdcard/DCIM/xxx.mp4 — used to bind the exact file
     pushed_at: Optional[datetime] = None
     uploaded_at: Optional[datetime] = None
     task_id: Optional[int] = None  # Link to upload Task
@@ -413,7 +423,12 @@ class DeviceAccount(SQLModel, table=True):
     """Maps a device to a social media account.
 
     Each device can have 1 account on each platform.
+    Constraint: UNIQUE(device_id, platform) — 1 account per device per platform.
     """
+
+    __table_args__ = (
+        UniqueConstraint("device_id", "platform", name="uq_deviceaccount_device_platform"),
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     device_id: int = Field(foreign_key="device.id")
@@ -531,6 +546,7 @@ class RunUploadRequest(SQLModel):
     """Schema for run-upload endpoint."""
 
     auto_push: bool = True  # Auto-push via ADB if not yet pushed
+    force: bool = False  # Bypass rerun cooldown for explicit manual retry
 
 
 class RunBatchUploadRequest(SQLModel):
@@ -538,3 +554,4 @@ class RunBatchUploadRequest(SQLModel):
 
     assignment_ids: List[int]
     auto_push: bool = True
+    force: bool = False
