@@ -1,7 +1,7 @@
 # Dashboard TikTok-First Redesign
 
 > Created: 2026-03-28  
-> Updated: 2026-03-28 08:05 (ICT)  
+> Updated: 2026-03-28 14:44 (ICT)  
 > Owner: UI Dashboard + Platform Core  
 > Scope: biến tab `Dashboard` thành cockpit TikTok-first, chuẩn hóa metadata template, và đồng bộ UI với runtime thật
 
@@ -140,8 +140,20 @@ Status: 🔄 In Progress
 - [x] JS syntax check bằng `node --check`.
 - [x] Python compile check cho các file backend chính.
 - [x] Manual assertion cho `TemplateManager` metadata/rendering.
-- [ ] Full browser smoke test với server runtime đầy đủ dependency.
-- [ ] E2E submit thử `tiktok_comment` từ Dashboard mới trên môi trường app chạy thật.
+- [x] Deploy lên `max.lan` với rule `push backup trước rồi mới deploy`.
+- [x] Authenticated server smoke pass:
+  - `/dashboard`
+  - `/api/templates`
+  - `/api/dashboard/overview`
+  - `/api/devices`
+  - `/api/tasks/running`
+- [x] Cloud-device E2E smoke pass:
+  - `POST /api/device/register`
+  - `ws://.../ws/device/{token}`
+  - heartbeat ack
+  - `device_hub.connected_devices >= 1`
+- [ ] Full browser smoke test với tương tác UI thật trên Dashboard sau login.
+- [ ] E2E submit thử `tiktok_comment` từ Dashboard mới trên môi trường có device thật sau redeploy.
 - [ ] Rà thêm visual polish khi có feedback thực tế từ thao tác operator.
 
 ---
@@ -151,6 +163,7 @@ Status: 🔄 In Progress
 - Môi trường local hiện chưa đủ package runtime để chạy full app smoke test ngay trong turn này.
 - `/api/dashboard/overview` hiện dựa nhiều vào metadata tĩnh hơn là telemetry thật vì local DB đang rỗng.
 - Composer mới đã metadata-driven, nhưng các template planned/beta cần tiếp tục được review nếu sau này được đưa lên luồng primary.
+- Server smoke hiện chưa cover task execution với device thật vì sau redeploy không có physical/cloud device production nào giữ kết nối ổn định để submit run thật; mới xác nhận được auth + dashboard APIs + cloud registration/WebSocket flow.
 
 ---
 
@@ -161,4 +174,5 @@ Status: 🔄 In Progress
 - [x] Template library và detail panel phản ánh metadata thực.
 - [x] Nội dung `tiktok_comment` khớp pipeline runtime thật.
 - [x] Các template chính không còn mô tả vượt quá khả năng runner hiện tại.
-- [ ] Đã chạy smoke test end-to-end trên môi trường server/dashboard đầy đủ dependency.
+- [x] Đã chạy server smoke với deploy thật + auth/API flow + cloud-device websocket flow.
+- [ ] Đã chạy smoke test browser/task-submit hoàn chỉnh với device thật trên môi trường server.
