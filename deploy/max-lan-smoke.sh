@@ -7,6 +7,8 @@ set -euo pipefail
 
 SERVER="${SERVER:-max@max.lan}"
 REMOTE_DIR="${REMOTE_DIR:-/home/max/android-control}"
+REMOTE_COMPOSE_FILE="${REMOTE_COMPOSE_FILE:-docker-compose.yml}"
+REMOTE_DB_PATH="${REMOTE_DB_PATH:-$REMOTE_DIR/data/android_control.db}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$PROJECT_DIR"
@@ -36,6 +38,7 @@ fi
 
 echo "✅ Backup rule satisfied: origin/$BRANCH matches current HEAD."
 echo "📦 Deploying $HEAD_SHA to $SERVER:$REMOTE_DIR"
+echo "🧱 Remote compose: $REMOTE_COMPOSE_FILE"
 
 rsync -avz --delete \
     --exclude '.git' \
@@ -56,7 +59,15 @@ rsync -avz --delete \
     --exclude '*.egg-info' \
     "$PROJECT_DIR/" "$SERVER:$REMOTE_DIR/"
 
-ssh "$SERVER" "cd $REMOTE_DIR && docker compose up -d --build"
+ssh "$SERVER" "set -e; \
+    cd $REMOTE_DIR && \
+    mkdir -p data/backups && \
+    if [ -f \"$REMOTE_DB_PATH\" ]; then \
+        TS=\$(date +%Y%m%d-%H%M%S); \
+        cp \"$REMOTE_DB_PATH\" \"data/backups/android_control.db.pre_deploy_\$TS\"; \
+        echo \"🗄️ Backed up database to data/backups/android_control.db.pre_deploy_\$TS\"; \
+    fi && \
+    docker compose -f \"$REMOTE_COMPOSE_FILE\" up -d --build"
 
 echo "⏳ Waiting for app to come back..."
 sleep 6

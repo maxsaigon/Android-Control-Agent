@@ -14,6 +14,8 @@ Control multiple Android devices via natural language commands with hybrid autom
 - Trước mọi deploy lên server để smoke test hoặc demo, phải **commit + push branch hiện tại lên `origin` trước** để có backup khớp với code được deploy.
 - Chỉ deploy khi `origin/<current-branch>` trùng `HEAD` local.
 - Script hỗ trợ rule này: `./deploy/max-lan-smoke.sh`
+- Script deploy hiện backup thêm DB production hiện tại vào `data/backups/` trên server trước khi restart container.
+- `max.lan` đang được deploy bằng `docker-compose.yml` và dùng DB bind-mounted tại `./data/android_control.db`; không đổi compose target trên cùng server nếu chưa migrate DB rõ ràng.
 
 ### Option 1: Docker (Recommended)
 
