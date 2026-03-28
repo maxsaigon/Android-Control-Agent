@@ -39,11 +39,15 @@ echo "📦 Deploying $HEAD_SHA to $SERVER:$REMOTE_DIR"
 
 rsync -avz --delete \
     --exclude '.git' \
+    --exclude '.env' \
+    --exclude '.DS_Store' \
+    --exclude '.pytest_cache' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
     --exclude 'venv' \
     --exclude 'node_modules' \
     --exclude '.agents' \
+    --exclude 'data' \
     --exclude 'screenshots' \
     --exclude 'android-helper/build' \
     --exclude 'android-helper/.gradle' \
