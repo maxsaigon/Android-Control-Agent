@@ -1,7 +1,7 @@
 # Dashboard TikTok-First Redesign
 
 > Created: 2026-03-28  
-> Updated: 2026-03-28 15:15 (ICT)  
+> Updated: 2026-03-28 15:34 (ICT)  
 > Owner: UI Dashboard + Platform Core  
 > Scope: biến tab `Dashboard` thành cockpit TikTok-first, chuẩn hóa metadata template, và đồng bộ UI với runtime thật
 
@@ -154,6 +154,7 @@ Status: 🔄 In Progress
   - `device_hub.connected_devices >= 1`
 - [x] Restored production data after compose/storage-path mismatch on `max.lan`.
 - [x] Added pre-deploy DB backup to `./deploy/max-lan-smoke.sh`.
+- [x] Added public-domain Playwright smoke to deploy flow to catch stale asset / frontend crash issues.
 - [ ] Full browser smoke test với tương tác UI thật trên Dashboard sau login.
 - [ ] E2E submit thử `tiktok_comment` từ Dashboard mới trên môi trường có device thật sau redeploy.
 - [ ] Rà thêm visual polish khi có feedback thực tế từ thao tác operator.
@@ -167,6 +168,7 @@ Status: 🔄 In Progress
 - Composer mới đã metadata-driven, nhưng các template planned/beta cần tiếp tục được review nếu sau này được đưa lên luồng primary.
 - Server smoke hiện chưa cover task execution với device thật vì sau redeploy không có physical/cloud device production nào giữ kết nối ổn định để submit run thật; mới xác nhận được auth + dashboard APIs + cloud registration/WebSocket flow.
 - `max.lan` từng có 2 storage targets khác nhau (`./data/android_control.db` và Docker volume `android-control_app-data`); các deploy sau phải giữ nhất quán compose target hoặc migrate DB có chủ đích.
+- Public smoke hiện phụ thuộc môi trường chạy deploy có sẵn Playwright + Chromium binary.
 
 ---
 

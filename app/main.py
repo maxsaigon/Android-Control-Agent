@@ -1,12 +1,14 @@
 """FastAPI application entry point for Android Control System."""
 
+import hashlib
 import logging
 from contextlib import asynccontextmanager
+from functools import lru_cache
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
@@ -142,6 +144,22 @@ app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
 app.mount("/debug-media", StaticFiles(directory=settings.screenshots_dir), name="debug-media")
 
 
+@lru_cache(maxsize=1)
+def _static_asset_version() -> str:
+    """Build a cache-busting token from the current dashboard asset contents."""
+    digest = hashlib.sha256()
+    for path in (_static_dir / "style.css", _static_dir / "app.js"):
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+@lru_cache(maxsize=1)
+def _render_dashboard_html() -> str:
+    """Render dashboard HTML with fresh asset version query params."""
+    html = (_static_dir / "index.html").read_text(encoding="utf-8")
+    return html.replace("__STATIC_VERSION__", _static_asset_version())
+
+
 @app.get("/login")
 def login_page():
     """Serve the login page."""
@@ -151,7 +169,7 @@ def login_page():
 @app.get("/dashboard")
 def dashboard():
     """Serve the web dashboard (requires auth)."""
-    return FileResponse(str(_static_dir / "index.html"))
+    return HTMLResponse(_render_dashboard_html())
 
 @app.get("/")
 def root():

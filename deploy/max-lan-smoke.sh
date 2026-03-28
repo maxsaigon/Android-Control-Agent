@@ -9,6 +9,8 @@ SERVER="${SERVER:-max@max.lan}"
 REMOTE_DIR="${REMOTE_DIR:-/home/max/android-control}"
 REMOTE_COMPOSE_FILE="${REMOTE_COMPOSE_FILE:-docker-compose.yml}"
 REMOTE_DB_PATH="${REMOTE_DB_PATH:-$REMOTE_DIR/data/android_control.db}"
+PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://m.buonme.com}"
+PUBLIC_SMOKE_OUT_DIR="${PUBLIC_SMOKE_OUT_DIR:-/tmp/android-control-public-smoke}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 cd "$PROJECT_DIR"
@@ -116,5 +118,12 @@ print('OVERVIEW_OK', overview['snapshot']['active_comment_sessions'])
 print('DEVICES_OK', len(devices))
 print('RUNNING_OK', len(running))
 PY"
+
+echo "🌐 Running public-domain Playwright smoke on $PUBLIC_BASE_URL"
+python3 "$PROJECT_DIR/deploy/public_domain_smoke.py" \
+    --base-url "$PUBLIC_BASE_URL" \
+    --username admin \
+    --password admin \
+    --out-dir "$PUBLIC_SMOKE_OUT_DIR"
 
 echo "🎉 Deploy + smoke test complete."

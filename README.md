@@ -16,6 +16,8 @@ Control multiple Android devices via natural language commands with hybrid autom
 - Script hỗ trợ rule này: `./deploy/max-lan-smoke.sh`
 - Script deploy hiện backup thêm DB production hiện tại vào `data/backups/` trên server trước khi restart container.
 - `max.lan` đang được deploy bằng `docker-compose.yml` và dùng DB bind-mounted tại `./data/android_control.db`; không đổi compose target trên cùng server nếu chưa migrate DB rõ ràng.
+- Deploy smoke giờ chạy thêm Playwright trên domain public mặc định `https://m.buonme.com` để bắt lỗi stale JS/CSS cache hoặc crash frontend mà localhost smoke không thấy.
+- Máy chạy deploy cần có `playwright` cho Python và Chromium binary: `pip install playwright && python -m playwright install chromium`
 
 ### Option 1: Docker (Recommended)
 
