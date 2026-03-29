@@ -1146,6 +1146,13 @@ class ScriptRunner:
                         pass
 
                     # [Step 2] Open comment panel to read existing comments
+                    if await tiktok.is_live_session(self._device):
+                        cycle_status = "skipped_live"
+                        await self._step("skip_live", "LIVE session detected; skip because template targets video comments")
+                        videos_since_last_comment = 0
+                        await self._swipe_up()
+                        continue
+
                     tapped = await tiktok.tap_comment_icon(self._device)
                     await self._step("tap", f"open comments ({'ui' if tapped else 'failed'})")
                     if not tapped:
@@ -1154,6 +1161,13 @@ class ScriptRunner:
                         cycle_status = "tap_failed"
                         continue
                     await self._wait(1.5, 3, "comments loading")
+
+                    if await tiktok.is_live_session(self._device):
+                        cycle_status = "skipped_live"
+                        await self._step("skip_live", "LIVE chat UI detected after opening comments; skip this session")
+                        videos_since_last_comment = 0
+                        await self._swipe_up()
+                        continue
 
                     # [Step 3] Read existing comments for AI context
                     existing_comments = []

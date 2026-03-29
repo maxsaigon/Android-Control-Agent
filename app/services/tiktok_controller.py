@@ -1477,6 +1477,42 @@ class TikTokController:
         logger.info(f"  📖 [read_comments] Found {len(paired)} comments")
         return paired
 
+    async def is_live_session(self, device: str) -> bool:
+        """Detect whether the current TikTok screen is a LIVE session.
+
+        `tiktok_comment` is meant for video comments that should appear in
+        comment history. LIVE chat uses a different UI and different posting
+        semantics, so we explicitly skip it.
+        """
+        elements = await self.dump_ui(device)
+        if not elements:
+            return False
+
+        markers = 0
+        for el in elements:
+            text = (el.text or "").strip().lower()
+            desc = (el.content_desc or "").strip().lower()
+            haystack = f"{text} {desc}".strip()
+            if not haystack:
+                continue
+
+            if "shopping ranking" in haystack:
+                markers += 1
+            elif text == "type..." or " type..." in haystack:
+                markers += 1
+            elif " joined" in haystack or haystack.endswith("joined"):
+                markers += 1
+            elif text == "follow" and el.center[1] < 260:
+                markers += 1
+            elif "live" == text or haystack.startswith("live "):
+                markers += 1
+
+            if markers >= 2:
+                logger.info("  📺 [live_detect] LIVE session markers=%s", markers)
+                return True
+
+        return False
+
     async def is_tiktok_foreground(self, device: str) -> bool:
         """Check if TikTok is currently the foreground app.
 
