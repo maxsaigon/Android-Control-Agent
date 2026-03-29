@@ -109,7 +109,7 @@ overview = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/dashbo
 devices = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/devices']))
 running = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/tasks/running']))
 helper_release = json.loads(run(['curl', '-sf', f'{base}/api/helper/release']))
-helper_headers = run(['curl', '-sI', f'{base}/download/helper.apk'])
+helper_headers = run(['curl', '-s', '-D', '-', '-o', '/dev/null', f'{base}/download/helper.apk'])
 
 assert any(t['name'] == 'tiktok_comment' and t['mode'] == 'hybrid' for t in templates)
 assert overview['primary_template']['name'] == 'tiktok_comment'
