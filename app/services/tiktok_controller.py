@@ -110,6 +110,24 @@ class TikTokController:
         self._backend = backend  # DeviceBackend, if available
         self._device_hint = device_hint
         self._screen_cache: dict[str, tuple[int, int]] = {}
+        self._helper_service_issue: dict[str, str] = {}
+
+    @staticmethod
+    def _is_service_not_running_error(exc: Exception) -> bool:
+        return "service not running" in str(exc).lower()
+
+    async def _record_backend_issue(self, device: str, exc: Exception) -> None:
+        """Track helper service dropouts so callers can trigger self-healing."""
+        if not self._is_service_not_running_error(exc):
+            return
+        self._helper_service_issue[device] = str(exc)
+        logger.warning("  🚨 [helper] Accessibility service degraded on %s: %s", device, exc)
+
+    def has_helper_service_issue(self, device: str) -> bool:
+        return device in self._helper_service_issue
+
+    def clear_helper_service_issue(self, device: str) -> None:
+        self._helper_service_issue.pop(device, None)
 
     async def _get_backend(self, device: str | None = None):
         """Lazy-init backend."""
@@ -120,6 +138,80 @@ class TikTokController:
             self._backend = await backend_manager.get_backend(target_device)
         return self._backend
 
+    async def recover_helper_service(self, device: str) -> bool:
+        """Re-enable helper accessibility + websocket service after runtime dropouts."""
+        from app.services.backend_manager import backend_manager
+
+        logger.warning("  🔄 [helper] Attempting helper service recovery on %s", device)
+        service_component = (
+            "com.androidcontrol.helper/"
+            "com.androidcontrol.helper.HelperAccessibilityService"
+        )
+        ws_component = "com.androidcontrol.helper/.WebSocketService"
+
+        try:
+            try:
+                await backend_manager.accessibility.disconnect(device)
+            except Exception:
+                pass
+
+            backend_manager.clear_cache(device)
+            self._backend = None
+
+            await self._adb._run_adb(
+                device,
+                "shell",
+                "settings",
+                "put",
+                "secure",
+                "enabled_accessibility_services",
+                service_component,
+            )
+            await self._adb._run_adb(
+                device,
+                "shell",
+                "settings",
+                "put",
+                "secure",
+                "accessibility_enabled",
+                "1",
+            )
+            await self._adb._run_adb(
+                device,
+                "shell",
+                "am",
+                "start-foreground-service",
+                "-n",
+                ws_component,
+            )
+            await self._adb._run_adb(
+                device,
+                "shell",
+                "monkey",
+                "-p",
+                "com.androidcontrol.helper",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            )
+
+            for _ in range(6):
+                await asyncio.sleep(1.0)
+                try:
+                    if await backend_manager.accessibility.ping(device):
+                        backend_manager.set_backend(device, "accessibility")
+                        self._backend = backend_manager.accessibility
+                        self.clear_helper_service_issue(device)
+                        logger.info("  ✅ [helper] Accessibility service recovered on %s", device)
+                        return True
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.warning("  ⚠️ [helper] Recovery command failed on %s: %s", device, exc)
+
+        logger.error("  ❌ [helper] Accessibility service recovery failed on %s", device)
+        return False
+
     async def _tap(self, device: str, x: int, y: int):
         """Tap via backend (preferred) or ADB (fallback)."""
         await self._get_backend(device)
@@ -128,6 +220,7 @@ class TikTokController:
                 await self._backend.tap(device, x, y)
                 return
             except Exception as e:
+                await self._record_backend_issue(device, e)
                 logger.warning(f"  ⚠️ [tap] Backend failed, fallback to ADB: {e}")
                 self._backend = None
 
@@ -150,6 +243,7 @@ class TikTokController:
                 await self._backend.swipe(device, x1, y1, x2, y2, duration_ms)
                 return
             except Exception as e:
+                await self._record_backend_issue(device, e)
                 logger.warning(f"  ⚠️ [swipe] Backend failed, fallback to ADB: {e}")
                 self._backend = None
 
@@ -175,6 +269,7 @@ class TikTokController:
                     self._screen_cache[device] = (w, h)
                     return (w, h)
                 except Exception as e:
+                    await self._record_backend_issue(device, e)
                     logger.warning(
                         f"  ⚠️ [screen_size] Backend failed, fallback raw ADB: {e}"
                     )
@@ -1665,6 +1760,7 @@ class TikTokController:
                         "  ⚠️ [type_text] Accessibility Unicode input not visible, falling back"
                     )
             except Exception as e:
+                await self._record_backend_issue(device, e)
                 logger.warning(f"  ⚠️ [type_text] Accessibility Unicode path failed: {e}")
 
         # Lazy-init run backend (often ADB for upload flow).
@@ -1681,6 +1777,7 @@ class TikTokController:
                     "  ⚠️ [type_text] Backend input not visible in EditText, trying fallbacks"
                 )
             except Exception as e:
+                await self._record_backend_issue(device, e)
                 logger.warning(f"  ⚠️ [type_text] Backend failed, fallback ADB: {e}")
                 self._backend = None
 
@@ -2063,6 +2160,7 @@ class TikTokController:
                 await self._backend.swipe(device, x, y, x, y, dur)
                 return
             except Exception as e:
+                await self._record_backend_issue(device, e)
                 logger.warning(f"  ⚠️ [realistic_tap] Backend failed, fallback ADB: {e}")
                 self._backend = None
 
@@ -2119,7 +2217,13 @@ class TikTokController:
         for attempt in range(3):
             await self._get_backend(device)
             if self._backend:
-                await self._backend.key_event(device, "BACK")
+                try:
+                    await self._backend.key_event(device, "BACK")
+                except Exception as e:
+                    await self._record_backend_issue(device, e)
+                    logger.warning(f"  ⚠️ [close_panel] Backend BACK failed, fallback ADB: {e}")
+                    self._backend = None
+                    await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
             else:
                 # FALLBACK: ADB
                 await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
@@ -2157,7 +2261,13 @@ class TikTokController:
         # Last resort: press HOME then reopen TikTok feed
         logger.warning("  ⚠️ Panel stuck — pressing BACK one more time")
         if self._backend:
-            await self._backend.key_event(device, "BACK")
+            try:
+                await self._backend.key_event(device, "BACK")
+            except Exception as e:
+                await self._record_backend_issue(device, e)
+                logger.warning(f"  ⚠️ [close_panel] Last BACK failed, fallback ADB: {e}")
+                self._backend = None
+                await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
         else:
             # FALLBACK: ADB
             await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
