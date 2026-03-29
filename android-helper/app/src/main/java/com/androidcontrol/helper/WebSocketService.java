@@ -51,6 +51,8 @@ public class WebSocketService extends Service {
         super.onCreate();
         createNotificationChannel();
         config = new ConnectionConfig(this);
+        Log.i(TAG, "Helper service booting: " + HelperBuildInfo.releaseLabel() +
+                " | " + HelperBuildInfo.debugLabel());
     }
 
     @Override
@@ -82,7 +84,7 @@ public class WebSocketService extends Service {
         if (wsServer != null) return;
 
         startForeground(NOTIFICATION_ID, buildNotification(
-                "LAN Mode — WebSocket server on port " + WS_PORT));
+                "LAN Mode — " + HelperBuildInfo.shortLabel() + " — port " + WS_PORT));
 
         wsServer = new HelperWebSocketServer(new InetSocketAddress(WS_PORT));
         wsServer.setReuseAddr(true);
@@ -99,7 +101,7 @@ public class WebSocketService extends Service {
         Log.i(TAG, "☁️ Cloud mode: connecting to " + wsUrl);
 
         startForeground(NOTIFICATION_ID, buildNotification(
-                "Cloud Mode — connecting to server..."));
+                "Cloud Mode — " + HelperBuildInfo.shortLabel() + " — connecting..."));
 
         try {
             URI uri = new URI(wsUrl);

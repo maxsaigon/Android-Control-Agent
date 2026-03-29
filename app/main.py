@@ -19,6 +19,12 @@ from app.routers.auth import router as auth_router
 from app.routers.videos import router as videos_router, account_router as accounts_router
 from app.middleware.auth_middleware import AuthMiddleware
 from app.services.connection_watchdog import watchdog
+from app.services.helper_release import (
+    HELPER_LATEST_ALIAS,
+    helper_download_filename,
+    load_helper_release_metadata,
+    resolve_helper_apk_path,
+)
 from app.services.scheduler import scheduler
 
 # Configure logging
@@ -187,6 +193,20 @@ def list_templates():
     """List available task templates."""
     from app.services.template_manager import template_manager
     return template_manager.list_templates()
+
+
+@app.get("/api/helper/release")
+def helper_release():
+    """Expose the latest published helper APK metadata."""
+    metadata = load_helper_release_metadata() or {}
+    apk_path = resolve_helper_apk_path()
+    return {
+        "available": apk_path is not None,
+        "download_path": "/download/helper.apk",
+        "latest_alias": HELPER_LATEST_ALIAS,
+        "artifact_name": helper_download_filename() if apk_path else None,
+        "metadata": metadata,
+    }
 
 
 def _build_dashboard_overview():
@@ -447,38 +467,46 @@ def dashboard_stats():
 
 @app.get("/download/helper.apk")
 def download_apk():
-    """Download the latest AC Helper APK."""
-    import os
-    # Try multiple locations
-    paths = [
-        str(_static_dir / "downloads" / "ac-helper.apk"),
-        str(pathlib.Path("/app/static/downloads/ac-helper.apk")),  # Docker
-        str(pathlib.Path(__file__).parent.parent / "android-helper" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk"),  # Local dev
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            return FileResponse(
-                p,
-                media_type="application/vnd.android.package-archive",
-                filename="ac-helper.apk",
-            )
+    """Download the latest published Android Control Helper APK."""
+    apk_path = resolve_helper_apk_path()
+    if apk_path and apk_path.exists():
+        return FileResponse(
+            str(apk_path),
+            media_type="application/vnd.android.package-archive",
+            filename=helper_download_filename(),
+        )
     from fastapi import HTTPException
-    raise HTTPException(404, "APK not found. Build it first: cd android-helper && ./gradlew assembleDebug")
+    raise HTTPException(
+        404,
+        "APK not found. Build and publish it first: cd android-helper && ./build-and-publish.sh",
+    )
 
 
 @app.get("/set")
 def setup_page():
-    """Device onboarding page — download APK + setup instructions."""
+    """Device onboarding page — download helper APK + setup instructions."""
     from fastapi.responses import HTMLResponse
     from app.services.device_hub import device_hub
 
     hub = device_hub.status
+    release = load_helper_release_metadata() or {}
+    version_name = release.get("version_name", "unpublished")
+    version_code = release.get("version_code", "—")
+    build_sha = release.get("build_sha", "—")
+    build_time_utc = release.get("build_time_utc", "—")
+    artifact_name = release.get("artifact_name", helper_download_filename())
+    file_size_mb = release.get("file_size_bytes")
+    file_size_label = (
+        f"{file_size_mb / (1024 * 1024):.2f} MB"
+        if isinstance(file_size_mb, (int, float))
+        else "—"
+    )
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AC Helper — Device Setup</title>
+    <title>Android Control Helper — Device Setup</title>
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -529,6 +557,31 @@ def setup_page():
             transition: transform 0.2s;
         }}
         .download-btn:hover {{ transform: scale(1.02); }}
+        .release-grid {{
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }}
+        .release-item {{
+            padding: 12px;
+            border-radius: 10px;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+        }}
+        .release-item strong {{
+            display: block;
+            color: #fff;
+            margin-bottom: 4px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }}
+        .release-item span {{
+            color: #c7c9e8;
+            font-size: 14px;
+            word-break: break-word;
+        }}
         .step {{
             display: flex;
             gap: 16px;
@@ -568,14 +621,40 @@ def setup_page():
 <body>
     <div class="container">
         <div class="logo">
-            <h1>📱 AC Helper Setup</h1>
-            <p>Android Control — Device Onboarding</p>
+            <h1>📱 Android Control Helper</h1>
+            <p>Cloud onboarding + release tracking for mobile helper</p>
         </div>
 
         <div class="card">
             <a href="/download/helper.apk" class="download-btn">
-                ⬇️ Download AC Helper APK
+                ⬇️ Download Latest Helper APK
             </a>
+            <div class="release-grid">
+                <div class="release-item">
+                    <strong>Version</strong>
+                    <span id="helperVersion">v{version_name} ({version_code})</span>
+                </div>
+                <div class="release-item">
+                    <strong>Artifact</strong>
+                    <span id="helperArtifact">{artifact_name}</span>
+                </div>
+                <div class="release-item">
+                    <strong>Build SHA</strong>
+                    <span id="helperBuildSha">{build_sha}</span>
+                </div>
+                <div class="release-item">
+                    <strong>Built UTC</strong>
+                    <span id="helperBuildTime">{build_time_utc}</span>
+                </div>
+                <div class="release-item">
+                    <strong>File Size</strong>
+                    <span id="helperFileSize">{file_size_label}</span>
+                </div>
+                <div class="release-item">
+                    <strong>Latest Alias</strong>
+                    <span id="helperAlias">/download/helper.apk</span>
+                </div>
+            </div>
         </div>
 
         <div class="card">
@@ -584,14 +663,14 @@ def setup_page():
                 <div class="step-num">1</div>
                 <div class="step-text">
                     <h3>Download & Install APK</h3>
-                    <p>Tap the button above on your Android device. Allow install from unknown sources if prompted.</p>
+                    <p>Tap the button above on your Android device. Install the latest helper build and allow unknown sources if prompted.</p>
                 </div>
             </div>
             <div class="step">
                 <div class="step-num">2</div>
                 <div class="step-text">
                     <h3>Enable Accessibility Service</h3>
-                    <p>Open AC Helper → tap "Accessibility Settings" → enable "AC Helper".</p>
+                    <p>Open Android Control Helper → tap "Accessibility Settings" → enable the helper service.</p>
                 </div>
             </div>
             <div class="step">
@@ -615,7 +694,7 @@ def setup_page():
                 <div class="step-text">
                     <h3>Tap Connect</h3>
                     <p>Tap "Save & Connect". The notification should show "Connected ✅".<br>
-                    Device sẽ tự động được thêm vào dashboard.</p>
+                    Device sẽ tự động được thêm vào dashboard. Khi debug hãy đối chiếu version/build SHA ngay trên màn hình helper.</p>
                 </div>
             </div>
         </div>

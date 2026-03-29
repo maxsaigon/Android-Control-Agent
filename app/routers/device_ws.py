@@ -87,9 +87,21 @@ async def device_connect(websocket: WebSocket, token: str):
 
             msg_type = data.get("type", "")
 
-            if msg_type == "heartbeat":
+            if msg_type == "hello":
+                helper_meta = data.get("helper") or {}
+                conn.update_metadata(helper_meta)
+                logger.info(
+                    "📱 Device %s helper hello: version=%s code=%s sha=%s",
+                    device_id,
+                    helper_meta.get("version_name", "?"),
+                    helper_meta.get("version_code", "?"),
+                    helper_meta.get("build_sha", "?"),
+                )
+
+            elif msg_type == "heartbeat":
                 # Device heartbeat — update last_seen
                 conn.last_ping = datetime.now(timezone.utc)
+                conn.update_metadata(data.get("helper") or {})
                 with Session(engine) as session:
                     device = session.get(Device, device_id)
                     if device:

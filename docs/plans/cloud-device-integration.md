@@ -73,8 +73,8 @@ Device (Internet)                        Server (m.buonme.com)
 - **Docker**: `Dockerfile` + `docker-compose.yml` (app + cloudflared)
 - **Deploy script**: `deploy/cloud-setup.sh` (rsync → docker build → start)
 - **Cloudflare Tunnel**: QUIC connections, route `m.buonme.com` → `localhost:8001`
-- **Build**: Gradle 8.9 + APK committed to `app/static/downloads/ac-helper.apk`
-- **Endpoint**: `/download/helper.apk` (474KB) + `/set` (onboarding page)
+- **Build**: Gradle 8.9 + helper release published vào `app/static/downloads/` với metadata riêng
+- **Endpoint**: `/download/helper.apk` + `/set` (onboarding page, hiển thị helper version/build info)
 - **Health**: `https://m.buonme.com/api/health` ✅ healthy
 
 ---

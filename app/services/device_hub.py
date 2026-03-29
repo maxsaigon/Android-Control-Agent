@@ -40,6 +40,7 @@ class DeviceConnection:
         self.ws = ws
         self.connected_at = datetime.now(timezone.utc)
         self.last_ping = datetime.now(timezone.utc)
+        self.metadata: dict = {}
         self._pending: dict[str, asyncio.Future] = {}
 
     async def send_command(self, action: str, params: dict = None) -> dict:
@@ -69,6 +70,15 @@ class DeviceConnection:
         else:
             # Unsolicited event (status update, heartbeat, etc.)
             logger.debug(f"Device {self.device_id} event: {data}")
+
+    def update_metadata(self, metadata: dict | None):
+        """Merge helper/device metadata reported by the remote helper."""
+        if not metadata:
+            return
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            self.metadata[key] = value
 
 
 class DeviceHub:
@@ -141,6 +151,7 @@ class DeviceHub:
                     "user_id": conn.user_id,
                     "connected_at": conn.connected_at.isoformat(),
                     "last_ping": conn.last_ping.isoformat(),
+                    "metadata": conn.metadata,
                 }
                 for did, conn in self._connections.items()
             },

@@ -17,7 +17,23 @@ Control multiple Android devices via natural language commands with hybrid autom
 - Script deploy hiện backup thêm DB production hiện tại vào `data/backups/` trên server trước khi restart container.
 - `max.lan` đang được deploy bằng `docker-compose.yml` và dùng DB bind-mounted tại `./data/android_control.db`; không đổi compose target trên cùng server nếu chưa migrate DB rõ ràng.
 - Deploy smoke giờ chạy thêm Playwright trên domain public mặc định `https://m.buonme.com` để bắt lỗi stale JS/CSS cache hoặc crash frontend mà localhost smoke không thấy.
+- Deploy smoke giờ kiểm tra thêm helper release public qua `/set`, `/api/helper/release` và `/download/helper.apk`; deploy sẽ fail nếu APK public chưa được publish đúng.
 - Máy chạy deploy cần có `playwright` cho Python và Chromium binary: `pip install playwright && python -m playwright install chromium`
+
+## Helper APK Release
+
+- Build + publish helper release trước khi deploy nếu có thay đổi trong `android-helper/`:
+  ```bash
+  cd android-helper
+  ./build-and-publish.sh
+  ```
+- Script này sẽ:
+  - build APK versioned dạng `android-control-helper-v<version>+<code>.apk`
+  - copy ra `app/static/downloads/`
+  - cập nhật alias `android-control-helper-latest.apk`
+  - ghi metadata vào `app/static/downloads/helper-release.json`
+- `/download/helper.apk` luôn serve bản latest nhưng giữ filename versioned để dễ trace ngoài thực địa.
+- `/set` hiển thị `version`, `build SHA`, `build time UTC` và artifact hiện hành để hỗ trợ debug.
 
 ### Option 1: Docker (Recommended)
 

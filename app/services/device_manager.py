@@ -6,6 +6,7 @@ import shutil
 from datetime import datetime, timezone
 
 from app.config import settings
+from app.services.helper_release import resolve_helper_apk_path
 
 logger = logging.getLogger(__name__)
 
@@ -249,11 +250,15 @@ class DeviceManager:
     # --- Helper APK management ---
 
     HELPER_PACKAGE = "com.androidcontrol.helper"
-    HELPER_APK_PATH = "/app/ac-helper.apk"  # Bundled in Docker image
     HELPER_SERVICE = (
         "com.androidcontrol.helper/"
         "com.androidcontrol.helper.HelperAccessibilityService"
     )
+
+    @staticmethod
+    def _helper_apk_path() -> str | None:
+        path = resolve_helper_apk_path()
+        return str(path) if path else None
 
     async def _is_helper_installed(self, ip: str, port: int = 5555) -> bool:
         """Check if AC Helper APK is installed on device."""
@@ -319,13 +324,14 @@ class DeviceManager:
             else:
                 # Step 2: Install APK
                 import os
-                if not os.path.exists(self.HELPER_APK_PATH):
-                    result["error"] = f"APK not found: {self.HELPER_APK_PATH}"
+                helper_apk_path = self._helper_apk_path()
+                if not helper_apk_path or not os.path.exists(helper_apk_path):
+                    result["error"] = f"APK not found: {helper_apk_path or 'unresolved helper release'}"
                     return result
 
-                logger.info(f"  📦 Installing Helper APK on {target}...")
+                logger.info(f"  📦 Installing Helper APK on {target} from {helper_apk_path}...")
                 code, out, err = await self._run_adb(
-                    "-s", target, "install", "-r", self.HELPER_APK_PATH
+                    "-s", target, "install", "-r", helper_apk_path
                 )
                 if code != 0 or "Success" not in out:
                     result["error"] = f"Install failed: {out} {err}"

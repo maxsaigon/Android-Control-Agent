@@ -15,6 +15,7 @@
 | 5 | [auth-protection.md](auth-protection.md) | ✅ COMPLETE | Session-based auth middleware — bảo vệ toàn bộ dashboard và API khỏi truy cập public |
 | 6 | [ai-video-metadata.md](ai-video-metadata.md) | 🔄 IN PROGRESS | AI auto-suggest Title/Tags/Description cho video — GPT-4o-mini Vision + keyframe analysis |
 | 7 | [dashboard-tiktok-first-redesign.md](dashboard-tiktok-first-redesign.md) | 🔄 IN PROGRESS | Dashboard TikTok-first, template metadata, live run composer, parity với runtime thật |
+| 8 | [tiktok-comment-hardening.md](tiktok-comment-hardening.md) | 🔄 IN PROGRESS | Helper APK release/version pipeline, comment send telemetry, regression gates cho `/set` + TikTok comment |
 
 ## Completed Features (No Separate Plan Files)
 

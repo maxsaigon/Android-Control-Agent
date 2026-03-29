@@ -255,6 +255,13 @@ class ScriptRunner:
             else:
                 self._on_step(step)
 
+    async def _comment_checkpoint(self, checkpoint: str, ok: bool, detail: str = ""):
+        """Structured comment-flow checkpoint logging for regression/debugging."""
+        action = f"comment_checkpoint:{checkpoint}"
+        suffix = f" | {detail}" if detail else ""
+        status_text = "ok" if ok else "fail"
+        await self._step(action, f"{status_text}{suffix}")
+
     async def _open_app(self, app_name: str) -> str:
         """Force-stop and launch an app by name. Returns package name."""
         package = await self._resolve_package(app_name)
@@ -1116,6 +1123,11 @@ class ScriptRunner:
 
         # [Verify] Check if text was actually typed (excludes placeholder)
         text_ok = await tiktok._verify_text_entered(self._device, comment_text)
+        await self._comment_checkpoint(
+            "text_entered_ok",
+            text_ok,
+            "retry" if is_retry else "primary",
+        )
         if text_ok:
             await self._step("verify", f"text confirmed in field{retry_label}")
         else:
@@ -1131,6 +1143,11 @@ class ScriptRunner:
 
         # [Verify] TikTok sometimes shows text but leaves Send disabled.
         send_ready = await tiktok.ensure_comment_send_ready(self._device, comment_text)
+        await self._comment_checkpoint(
+            "send_ready_ok",
+            send_ready,
+            "retry" if is_retry else "primary",
+        )
         if send_ready:
             await self._step("verify", f"send button active{retry_label}")
         else:
@@ -1139,6 +1156,11 @@ class ScriptRunner:
 
         # [Controller] Send comment only when an active target was detected.
         sent = await tiktok.send_comment(self._device, allow_blind_fallback=False)
+        await self._comment_checkpoint(
+            "send_tap_ok",
+            sent,
+            "retry" if is_retry else "primary",
+        )
         if not sent:
             await self._step("verify_fail", f"send target missing{retry_label}")
             return False
@@ -1147,6 +1169,11 @@ class ScriptRunner:
         # [Verify] Check if comment was actually posted
         posted = await tiktok.verify_comment_posted(
             self._device, comment_text, timeout=3.0
+        )
+        await self._comment_checkpoint(
+            "posted_ok",
+            posted,
+            "retry" if is_retry else "primary",
         )
         return posted
 

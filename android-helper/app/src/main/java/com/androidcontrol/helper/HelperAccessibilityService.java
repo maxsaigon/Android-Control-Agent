@@ -33,7 +33,8 @@ public class HelperAccessibilityService extends AccessibilityService {
     public void onServiceConnected() {
         super.onServiceConnected();
         instance = this;
-        Log.i(TAG, "AccessibilityService connected");
+        Log.i(TAG, "AccessibilityService connected: " + HelperBuildInfo.releaseLabel() +
+                " | " + HelperBuildInfo.debugLabel());
 
         // Start WebSocket service
         Intent wsIntent = new Intent(this, WebSocketService.class);
@@ -301,6 +302,13 @@ public class HelperAccessibilityService extends AccessibilityService {
         info.addProperty("device_model", Build.MODEL);
         info.addProperty("sdk_int", Build.VERSION.SDK_INT);
         info.addProperty("manufacturer", Build.MANUFACTURER);
+        JsonObject helper = HelperBuildInfo.asJson();
+        info.add("helper", helper);
+        info.addProperty("helper_release_name", helper.get("release_name").getAsString());
+        info.addProperty("helper_version_name", helper.get("version_name").getAsString());
+        info.addProperty("helper_version_code", helper.get("version_code").getAsInt());
+        info.addProperty("helper_build_sha", helper.get("build_sha").getAsString());
+        info.addProperty("helper_build_time_utc", helper.get("build_time_utc").getAsString());
         return info;
     }
 

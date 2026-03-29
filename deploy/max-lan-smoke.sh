@@ -108,15 +108,21 @@ templates = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/templ
 overview = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/dashboard/overview']))
 devices = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/devices']))
 running = json.loads(run(['curl', '-sf', '-b', cookie_path, f'{base}/api/tasks/running']))
+helper_release = json.loads(run(['curl', '-sf', f'{base}/api/helper/release']))
+helper_headers = run(['curl', '-sI', f'{base}/download/helper.apk'])
 
 assert any(t['name'] == 'tiktok_comment' and t['mode'] == 'hybrid' for t in templates)
 assert overview['primary_template']['name'] == 'tiktok_comment'
+assert helper_release['available'] is True
+assert helper_release['metadata'].get('version_name')
+assert 'android-control-helper' in helper_headers.lower()
 
 print('AUTH_OK')
 print('TEMPLATES_OK', len(templates))
 print('OVERVIEW_OK', overview['snapshot']['active_comment_sessions'])
 print('DEVICES_OK', len(devices))
 print('RUNNING_OK', len(running))
+print('HELPER_OK', helper_release['metadata'].get('version_name'))
 PY"
 
 echo "🌐 Running public-domain Playwright smoke on $PUBLIC_BASE_URL"

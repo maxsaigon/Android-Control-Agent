@@ -53,6 +53,7 @@ public class MainActivity extends Activity {
 
     private ConnectionConfig config;
     private TextView statusText;
+    private TextView versionText;
     private LinearLayout lanInfoLayout;
     private LinearLayout cloudConfigLayout;
     private EditText serverUrlInput;
@@ -73,12 +74,20 @@ public class MainActivity extends Activity {
 
         // Title
         TextView title = new TextView(this);
-        title.setText("AC Helper");
+        title.setText(getString(R.string.app_name));
         title.setTextSize(28);
         title.setTextColor(Color.WHITE);
         title.setTypeface(null, Typeface.BOLD);
         title.setGravity(Gravity.CENTER);
         root.addView(title);
+
+        versionText = new TextView(this);
+        versionText.setText(buildVersionLabel());
+        versionText.setTextSize(12);
+        versionText.setTextColor(Color.parseColor("#9ea6d6"));
+        versionText.setGravity(Gravity.CENTER);
+        versionText.setPadding(0, 8, 0, 8);
+        root.addView(versionText);
 
         // Status
         statusText = new TextView(this);
@@ -261,6 +270,7 @@ public class MainActivity extends Activity {
         }
 
         setContentView(root);
+        Log.i(TAG, "🚀 " + HelperBuildInfo.releaseLabel() + " | " + HelperBuildInfo.debugLabel());
     }
 
     @Override
@@ -433,9 +443,17 @@ public class MainActivity extends Activity {
             sb.append("🔌 ws://" + getDeviceIP() + ":38301");
         }
 
+        sb.append("\n🏷️ ").append(HelperBuildInfo.shortLabel());
+        sb.append("\n🧾 ").append(HelperBuildInfo.debugLabel());
+
         statusText.setText(sb.toString());
+        versionText.setText(buildVersionLabel());
         statusText.setTextColor(service != null ?
                 Color.parseColor("#00ff88") : Color.parseColor("#ff4444"));
+    }
+
+    private String buildVersionLabel() {
+        return HelperBuildInfo.releaseLabel() + "\n" + HelperBuildInfo.debugLabel();
     }
 
     private String getDeviceIP() {

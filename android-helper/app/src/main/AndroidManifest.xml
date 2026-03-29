@@ -18,14 +18,14 @@
     <application
         android:allowBackup="true"
         android:icon="@android:drawable/ic_menu_manage"
-        android:label="AC Helper"
+        android:label="@string/app_name"
         android:supportsRtl="true">
 
         <!-- Main Activity — minimal UI for status -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="AC Helper">
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -62,7 +62,10 @@ public class CloudWebSocketClient extends WebSocketClient {
     @Override
     public void onOpen(ServerHandshake handshake) {
         Log.i(TAG, "☁️ Connected to cloud server: " + getURI());
+        Log.i(TAG, "☁️ Helper build: " + HelperBuildInfo.releaseLabel() +
+                " | " + HelperBuildInfo.debugLabel());
         reconnectAttempt = 0;
+        sendHello();
         startHeartbeat();
         if (listener != null) {
             mainHandler.post(() -> listener.onConnected());
@@ -138,6 +141,7 @@ public class CloudWebSocketClient extends WebSocketClient {
                         JsonObject hb = new JsonObject();
                         hb.addProperty("type", "heartbeat");
                         // TODO: add battery level from BatteryManager
+                        hb.add("helper", HelperBuildInfo.asJson());
                         send(hb.toString());
                         Log.d(TAG, "💓 Heartbeat sent");
                     } catch (Exception e) {
@@ -146,6 +150,21 @@ public class CloudWebSocketClient extends WebSocketClient {
                 }
             }
         }, HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS);
+    }
+
+    private void sendHello() {
+        if (!isOpen()) {
+            return;
+        }
+        try {
+            JsonObject hello = new JsonObject();
+            hello.addProperty("type", "hello");
+            hello.add("helper", HelperBuildInfo.asJson());
+            send(hello.toString());
+            Log.i(TAG, "👋 Helper hello sent: " + HelperBuildInfo.shortLabel());
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to send helper hello", e);
+        }
     }
 
     private void stopHeartbeat() {

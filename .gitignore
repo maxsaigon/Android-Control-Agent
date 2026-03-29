@@ -13,6 +13,7 @@ android-helper/.gradle/
 android-helper/app/build/
 android-helper/build/
 android-helper/local.properties
+app/static/downloads/helper-release.json
 *.class
 *.dex
 *.apk

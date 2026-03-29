@@ -12,6 +12,8 @@ import json
 import sys
 import tempfile
 from pathlib import Path
+import urllib.error
+import urllib.request
 
 
 def _parse_args() -> argparse.Namespace:
@@ -32,6 +34,18 @@ def _json_dump(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def _fetch(url: str, binary: bool = False) -> dict:
+    request = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(request, timeout=30) as response:
+        body = response.read()
+        return {
+            "url": url,
+            "status": response.status,
+            "headers": dict(response.headers.items()),
+            "body": body if binary else body.decode("utf-8", errors="replace"),
+        }
+
+
 def main() -> int:
     args = _parse_args()
 
@@ -44,7 +58,38 @@ def main() -> int:
         "console": [],
         "pageerrors": [],
         "checks": [],
+        "public_assets": {},
     }
+
+    public_base = args.base_url.rstrip("/")
+    try:
+        helper_release = _fetch(f"{public_base}/api/helper/release")
+        set_page = _fetch(f"{public_base}/set")
+        helper_apk = _fetch(f"{public_base}/download/helper.apk", binary=True)
+        report["public_assets"] = {
+            "helper_release": {
+                "status": helper_release["status"],
+                "body": helper_release["body"][:4000],
+                "headers": helper_release["headers"],
+            },
+            "set_page": {
+                "status": set_page["status"],
+                "body": set_page["body"][:4000],
+            },
+            "helper_download": {
+                "status": helper_apk["status"],
+                "headers": helper_apk["headers"],
+                "size_bytes": len(helper_apk["body"]),
+            },
+        }
+    except urllib.error.HTTPError as exc:
+        report["public_assets"]["error"] = {
+            "url": exc.url,
+            "status": exc.code,
+            "reason": str(exc),
+        }
+    except Exception as exc:
+        report["public_assets"]["error"] = {"reason": str(exc)}
 
     try:
         from playwright.sync_api import Error, sync_playwright
@@ -135,8 +180,28 @@ def main() -> int:
     responses = report["responses"]
     templates_ok = any(r["url"].endswith("/api/templates") and r["status"] == 200 for r in responses)
     auth_ok = any("/auth/me" in r["url"] and r["status"] == 200 for r in responses)
+    helper_release = report["public_assets"].get("helper_release", {})
+    set_page = report["public_assets"].get("set_page", {})
+    helper_download = report["public_assets"].get("helper_download", {})
+    helper_release_body = helper_release.get("body", "")
+    try:
+        helper_release_json = json.loads(helper_release_body) if helper_release_body else {}
+    except json.JSONDecodeError:
+        helper_release_json = {}
+    set_page_body = set_page.get("body", "")
+    helper_download_name = helper_download.get("headers", {}).get("Content-Disposition", "")
 
     checks = [
+        ("set_page_ok", set_page.get("status") == 200),
+        ("helper_release_ok", helper_release.get("status") == 200 and helper_release_json.get("available") is True),
+        (
+            "helper_release_version_present",
+            bool((helper_release_json.get("metadata") or {}).get("version_name"))
+            and bool((helper_release_json.get("metadata") or {}).get("build_sha")),
+        ),
+        ("helper_download_ok", helper_download.get("status") == 200 and helper_download.get("size_bytes", 0) > 200000),
+        ("helper_download_named", "android-control-helper" in helper_download_name.lower()),
+        ("set_page_version_rendered", "helperVersion" in set_page_body and "helperBuildSha" in set_page_body),
         ("logged_in", auth_ok and "/dashboard" in report["state"]["url"]),
         ("templates_api_ok", templates_ok),
         ("no_pageerrors", not report["pageerrors"]),

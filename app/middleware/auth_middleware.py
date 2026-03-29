@@ -18,6 +18,7 @@ PUBLIC_PATHS = {
     "/auth/logout",
     "/set",
     "/api/health",
+    "/api/helper/release",
     "/api/device/register",
     "/download/helper.apk",
 }
