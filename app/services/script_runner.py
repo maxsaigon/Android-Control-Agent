@@ -1203,7 +1203,12 @@ class ScriptRunner:
                         )
                         recovered = await tiktok.recover_helper_service(self._device)
                         await self._comment_checkpoint("helper_recovered", recovered, "before_retry")
-                        retry_panel_open = recovered
+                        retry_panel_open = False
+                        if recovered:
+                            try:
+                                retry_panel_open = await tiktok.is_comment_panel_open(self._device)
+                            except Exception:
+                                retry_panel_open = False
                         if not recovered:
                             comment_posted = False
 

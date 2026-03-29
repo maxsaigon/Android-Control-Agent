@@ -148,8 +148,14 @@ class TikTokController:
             "com.androidcontrol.helper.HelperAccessibilityService"
         )
         ws_component = "com.androidcontrol.helper/.WebSocketService"
+        previous_foreground = ""
 
         try:
+            try:
+                previous_foreground = await self.get_foreground_app(device)
+            except Exception:
+                previous_foreground = ""
+
             try:
                 await backend_manager.accessibility.disconnect(device)
             except Exception:
@@ -201,6 +207,20 @@ class TikTokController:
                     if await backend_manager.accessibility.ping(device):
                         backend_manager.set_backend(device, "accessibility")
                         self._backend = backend_manager.accessibility
+                        current_foreground = ""
+                        try:
+                            current_foreground = await self.get_foreground_app(device)
+                        except Exception:
+                            current_foreground = ""
+
+                        if (
+                            "com.androidcontrol.helper" in (current_foreground or "")
+                            or TIKTOK_PACKAGE in (previous_foreground or "")
+                        ):
+                            logger.info(
+                                "  🔁 [helper] Restoring TikTok foreground after helper recovery"
+                            )
+                            await self.recover(device)
                         self.clear_helper_service_issue(device)
                         logger.info("  ✅ [helper] Accessibility service recovered on %s", device)
                         return True
