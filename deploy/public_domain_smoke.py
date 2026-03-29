@@ -35,7 +35,17 @@ def _json_dump(path: Path, data: dict) -> None:
 
 
 def _fetch(url: str, binary: bool = False) -> dict:
-    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(
+        url,
+        method="GET",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            )
+        },
+    )
     with urllib.request.urlopen(request, timeout=30) as response:
         body = response.read()
         return {
@@ -69,12 +79,12 @@ def main() -> int:
         report["public_assets"] = {
             "helper_release": {
                 "status": helper_release["status"],
-                "body": helper_release["body"][:4000],
+                "body": helper_release["body"],
                 "headers": helper_release["headers"],
             },
             "set_page": {
                 "status": set_page["status"],
-                "body": set_page["body"][:4000],
+                "body": set_page["body"],
             },
             "helper_download": {
                 "status": helper_apk["status"],
@@ -189,7 +199,10 @@ def main() -> int:
     except json.JSONDecodeError:
         helper_release_json = {}
     set_page_body = set_page.get("body", "")
-    helper_download_name = helper_download.get("headers", {}).get("Content-Disposition", "")
+    helper_download_headers = {
+        str(k).lower(): v for k, v in (helper_download.get("headers", {}) or {}).items()
+    }
+    helper_download_name = helper_download_headers.get("content-disposition", "")
 
     checks = [
         ("set_page_ok", set_page.get("status") == 200),
