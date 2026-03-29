@@ -1129,8 +1129,19 @@ class ScriptRunner:
             await tiktok.type_text(self._device, comment_text)
             await self._wait(0.5, 1, "re-typing")
 
-        # [Controller] Send comment
-        await tiktok.send_comment(self._device)
+        # [Verify] TikTok sometimes shows text but leaves Send disabled.
+        send_ready = await tiktok.ensure_comment_send_ready(self._device, comment_text)
+        if send_ready:
+            await self._step("verify", f"send button active{retry_label}")
+        else:
+            await self._step("verify_fail", f"send button inactive{retry_label}")
+            return False
+
+        # [Controller] Send comment only when an active target was detected.
+        sent = await tiktok.send_comment(self._device, allow_blind_fallback=False)
+        if not sent:
+            await self._step("verify_fail", f"send target missing{retry_label}")
+            return False
         await self._step("send", f"sent comment{retry_label} [{comments_done+1}/{count}]")
 
         # [Verify] Check if comment was actually posted

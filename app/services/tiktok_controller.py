@@ -1937,6 +1937,113 @@ class TikTokController:
             logger.warning(f"  ⚠️ [find_pink] Error: {e}")
             return None
 
+    async def _find_text_send_button(self, device: str) -> tuple[int, int] | None:
+        """Find a visible text-based Send/Post button for non-overlay variants."""
+        elements = await self.dump_ui(device)
+        send_patterns = [
+            re.compile(r"Post$", re.IGNORECASE),
+            re.compile(r"^Send$", re.IGNORECASE),
+            re.compile(r"^Đăng$", re.IGNORECASE),
+            re.compile(r"^Gửi$", re.IGNORECASE),
+            re.compile(r"send comment", re.IGNORECASE),
+            re.compile(r"post comment", re.IGNORECASE),
+        ]
+
+        for el in elements:
+            desc = el.content_desc
+            text = el.text
+            for pat in send_patterns:
+                if (desc and pat.search(desc)) or (text and pat.search(text)):
+                    logger.info(
+                        "  🎯 [find_send_text] Found text button '%s' at (%s, %s)",
+                        text or desc,
+                        el.center[0],
+                        el.center[1],
+                    )
+                    return el.center
+        return None
+
+    async def _get_send_button_target(self, device: str) -> tuple[tuple[int, int] | None, str]:
+        """Return the active send button target and detection source."""
+        pos = await self._find_pink_send_button(device)
+        if pos:
+            return pos, "pink"
+
+        pos = await self._find_text_send_button(device)
+        if pos:
+            return pos, "text"
+
+        return None, "none"
+
+    async def _adb_input_ascii_fragment(self, device: str, text: str) -> bool:
+        """Inject a tiny ASCII fragment via raw ADB to trigger real IME watchers."""
+        normalized = re.sub(r"\s+", " ", text.replace("\n", " ")).strip()
+        if text == " ":
+            normalized = "%s"
+        elif not normalized:
+            return False
+
+        special_chars = ' &|;<>"\'()'
+        escaped = ''.join(
+            ("%s" if c == " " else (f'\\{c}' if c in special_chars else c))
+            for c in normalized
+        )
+        code, _, stderr = await self._adb._run_adb(
+            device, "shell", "input", "text", escaped
+        )
+        if code != 0:
+            logger.warning("  ⚠️ [comment_nudge] ADB text fragment failed: %s", stderr)
+            return False
+        return True
+
+    async def ensure_comment_send_ready(self, device: str, comment_text: str) -> bool:
+        """Ensure TikTok has actually enabled the Send button after text entry.
+
+        TikTok sometimes displays text in the EditText but keeps the Send
+        button disabled because the field was populated programmatically.
+        We detect the active send target first; if absent, force a tiny real
+        input change via ADB (insert char + delete) to trigger TextWatcher.
+        """
+        pos, source = await self._get_send_button_target(device)
+        if pos:
+            logger.info("  ✅ [send_ready] Active send button via %s", source)
+            return True
+
+        logger.warning(
+            "  ⚠️ [send_ready] Text is present but no active send button for '%s'",
+            comment_text[:40],
+        )
+
+        # Re-focus to make sure the field still owns the IME.
+        await self.tap_comment_input(device)
+        await asyncio.sleep(0.3)
+
+        nudges = [
+            ("ascii-char", "x"),
+            ("space", " "),
+        ]
+        for label, fragment in nudges:
+            logger.info("  🔄 [send_ready] Trying %s nudge", label)
+            injected = await self._adb_input_ascii_fragment(device, fragment)
+            if not injected:
+                continue
+            await asyncio.sleep(0.2)
+            await self._adb._run_adb(device, "shell", "input", "keyevent", "67")
+            await asyncio.sleep(0.5)
+
+            pos, source = await self._get_send_button_target(device)
+            if pos:
+                logger.info(
+                    "  ✅ [send_ready] Send button activated after %s nudge via %s",
+                    label,
+                    source,
+                )
+                return True
+
+        logger.warning("  ❌ [send_ready] Send button never activated after nudges")
+        await self.capture_verification_screenshot(device, "comment_send_inactive")
+        return False
+
     async def _realistic_tap(self, device: str, x: int, y: int, duration_ms: int = 80):
         """Tap with realistic press duration.
 
@@ -1965,7 +2072,7 @@ class TikTokController:
             str(x), str(y), str(x), str(y), str(dur)
         )
 
-    async def send_comment(self, device: str) -> bool:
+    async def send_comment(self, device: str, allow_blind_fallback: bool = True) -> bool:
         """Tap Send button to post comment.
 
         TikTok's Send button (pink arrow ↑ icon) is INVISIBLE to uiautomator
@@ -1980,40 +2087,19 @@ class TikTokController:
         2. UI dump → find Send/Post button by text (fallback for other TikTok versions)
         3. Hardcoded fallback coordinates
         """
-        # 1. PRIMARY: Find pink Send button via screenshot pixel analysis
-        pos = await self._find_pink_send_button(device)
+        # 1-2. Prefer detected active send targets only.
+        pos, source = await self._get_send_button_target(device)
         if pos:
             x, y = pos
             x += random.randint(-3, 3)
             y += random.randint(-3, 3)
-            logger.info(f"  🎯 [send_comment] Pink button at ({x}, {y})")
+            logger.info(f"  🎯 [send_comment] {source} button at ({x}, {y})")
             await self._realistic_tap(device, x, y)
             return True
 
-        # 2. FALLBACK: Try UI dump for text-based Send button
-        logger.info("  ℹ️ [send_comment] Pink button not found, trying UI dump")
-        elements = await self.dump_ui(device)
-
-        send_patterns = [
-            re.compile(r"Post$", re.IGNORECASE),
-            re.compile(r"^Send$", re.IGNORECASE),
-            re.compile(r"^Đăng$", re.IGNORECASE),
-            re.compile(r"^Gửi$", re.IGNORECASE),
-            re.compile(r"send comment", re.IGNORECASE),
-            re.compile(r"post comment", re.IGNORECASE),
-        ]
-
-        for el in elements:
-            desc = el.content_desc
-            text = el.text
-            for pat in send_patterns:
-                if (desc and pat.search(desc)) or (text and pat.search(text)):
-                    x, y = el.center
-                    x += random.randint(-3, 3)
-                    y += random.randint(-3, 3)
-                    logger.info(f"  🎯 [send_comment] Found text button: '{text or desc}' at ({x}, {y})")
-                    await self._realistic_tap(device, x, y)
-                    return True
+        if not allow_blind_fallback:
+            logger.warning("  ❌ [send_comment] No active send target detected; refusing blind tap")
+            return False
 
         # 3. LAST RESORT: hardcoded position for 1080-wide screens
         w, h = await self._get_screen_size(device)

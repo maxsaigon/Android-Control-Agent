@@ -186,6 +186,33 @@ Nhạc nền: bài xyz
 
 ---
 
+### 2.14 🟡 Send Button Inactive Sau Khi Text Đã Hiện
+
+**Triệu chứng**: Comment đã xuất hiện trong ô nhập, nhưng nút Send vẫn không bật màu hồng nên bấm gửi không có tác dụng. Flow cũ vẫn tiếp tục tap vào vùng send, dẫn tới verify fail hoặc fail thầm lặng.
+
+**Root cause khả dĩ**:
+1. `ACTION_SET_TEXT` / clipboard / paste có thể làm text hiển thị trong `EditText` nhưng **không kích hoạt TextWatcher** của TikTok
+2. Flow cũ chỉ verify `"text đã có trong ô"` rồi gửi ngay, nhưng **không verify `"send button đã active"`**
+3. Hardcoded fallback tap vào vùng send là blind tap, không phân biệt nút đang active hay disabled
+
+**Giải pháp đã áp dụng** ✅:
+1. Thêm **`ensure_comment_send_ready()`**:
+   - detect active send target qua `_find_pink_send_button()` hoặc button text-based
+   - nếu chưa active: re-focus input rồi dùng **ADB real input nudge** (`x`/space + `DEL`) để kích hoạt watcher
+2. `script_runner._attempt_comment()` chỉ gọi `send_comment()` sau khi `ensure_comment_send_ready()` trả `True`
+3. `send_comment(allow_blind_fallback=False)` được dùng trong comment flow để **từ chối blind tap** khi chưa detect active send target
+4. Nếu vẫn không active → chụp screenshot `comment_send_inactive` để debug
+
+**Quy tắc mới**:
+> **Text visible chưa đủ để gửi comment.** Với TikTok comment flow, phải verify `send-ready` trước khi tap Send.
+
+**Giải pháp dài hạn nên làm tiếp**:
+- Nâng helper APK để hỗ trợ **IME-like incremental typing** hoặc **set-text + synthetic edit event**, thay vì chỉ `ACTION_SET_TEXT`
+- Thêm metric/log riêng cho `text_entered_ok` vs `send_ready_ok` vs `posted_ok` để phân biệt rõ lỗi nhập text và lỗi kích hoạt send
+- Chạy regression task chỉ để test `comment input -> send ready` trên 2-3 version TikTok khác nhau
+
+---
+
 ### 2.3 🟢 Unicode/Vietnamese Text Input — SOLVED
 
 **Vấn đề**: `adb shell input text` chỉ hỗ trợ ASCII. Comment tiếng Việt có dấu (ví dụ: "tuyệt vời!") bị mangled hoặc không gõ được.
