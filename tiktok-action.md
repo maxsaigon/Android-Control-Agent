@@ -325,6 +325,7 @@ Nhạc nền: bài xyz
   - **không abort chỉ vì helper báo degraded** nếu UI verify cho thấy text đã nằm trong field
   - sau helper recovery, ưu tiên **giữ comment panel hiện tại** thay vì tap lại icon comment bằng fallback coords
   - `dump_ui()` phải fallback sang `Accessibility get_ui_tree()` khi ADB `uiautomator dump` trả rỗng/fail
+  - bật `comment-cycle screenrecord` để mỗi lần bot comment đều có MP4 riêng phục vụ audit
 
 ---
 

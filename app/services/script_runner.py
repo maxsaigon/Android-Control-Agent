@@ -89,6 +89,7 @@ class ScriptRunner:
         self._package_cache: dict[str, dict[str, str]] = {}
         self._tiktok: "TikTokController | None" = None
         self._upload_debug: dict | None = None
+        self._comment_debug: dict | None = None
 
     def _get_tiktok_controller(self):
         """Lazy-init TikTok controller."""
@@ -134,6 +135,7 @@ class ScriptRunner:
         self._step_log = []
         self._backend = None  # will be initialized async
         self._upload_debug = None
+        self._comment_debug = None
 
         scripts = {
             "tiktok_browse": self._tiktok_browse,
@@ -381,6 +383,151 @@ class ScriptRunner:
             json.dumps(manifest, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _write_comment_debug_manifest(self):
+        """Persist the current TikTok comment debug manifest to disk."""
+        if not self._comment_debug:
+            return
+        manifest_path: Path = self._comment_debug["manifest_path"]
+        manifest = self._comment_debug["manifest"]
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _start_comment_debug_session(
+        self,
+        *,
+        record_enabled: bool,
+        count: int,
+        use_ai: bool,
+    ):
+        """Initialize debug artifact storage for TikTok comment runs."""
+        if not record_enabled or self._device.startswith("cloud:"):
+            self._comment_debug = None
+            return
+
+        started_at = datetime.now(timezone.utc)
+        session_name = (
+            f"{started_at.strftime('%Y%m%dT%H%M%SZ')}_"
+            f"{self._safe_name(self._device)}"
+        )
+        artifact_dir = Path(settings.screenshots_dir) / "tiktok_comment_debug" / session_name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        manifest = {
+            "script": "tiktok_comment",
+            "device": self._device,
+            "started_at": started_at.isoformat(),
+            "target_count": count,
+            "use_ai": use_ai,
+            "record_enabled": record_enabled,
+            "cycles": [],
+        }
+        self._comment_debug = {
+            "enabled": True,
+            "record": record_enabled,
+            "dir": artifact_dir,
+            "manifest": manifest,
+            "manifest_path": artifact_dir / "manifest.json",
+            "active_cycle": None,
+        }
+        self._write_comment_debug_manifest()
+
+    async def _start_comment_cycle_record(self, label: str):
+        """Start ADB screenrecord for a single comment cycle."""
+        if (
+            not self._comment_debug
+            or not self._comment_debug.get("record")
+            or self._device.startswith("cloud:")
+        ):
+            return
+
+        safe_label = self._safe_name(label)
+        remote_path = f"/sdcard/_{safe_label}.mp4"
+        local_path = self._comment_debug["dir"] / f"{safe_label}.mp4"
+        cmd = [
+            self._adb.adb_path,
+            "-s",
+            self._device,
+            "shell",
+            "screenrecord",
+            "--time-limit",
+            "150",
+            remote_path,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        cycle = {
+            "label": label,
+            "remote_path": remote_path,
+            "local_path": str(local_path),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "step_started": self._step_num,
+        }
+        self._comment_debug["active_cycle"] = {
+            "proc": proc,
+            "meta": cycle,
+        }
+        self._comment_debug["manifest"]["cycles"].append(cycle)
+        self._write_comment_debug_manifest()
+
+    async def _stop_comment_cycle_record(self, status: str):
+        """Stop the active comment-cycle recording and pull it locally."""
+        if not self._comment_debug:
+            return
+
+        active = self._comment_debug.get("active_cycle")
+        if not active:
+            return
+
+        proc = active.get("proc")
+        cycle = active.get("meta", {})
+        remote_path = cycle.get("remote_path")
+        local_path = cycle.get("local_path")
+        cycle["status"] = status
+        cycle["step_finished"] = self._step_num
+        cycle["stopped_at"] = datetime.now(timezone.utc).isoformat()
+
+        try:
+            await self._adb._run_adb(
+                self._device,
+                "shell",
+                "sh",
+                "-c",
+                "pkill -INT screenrecord || killall -INT screenrecord || true",
+            )
+        except Exception:
+            pass
+
+        if proc:
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=8)
+            except Exception:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+
+        if remote_path and local_path:
+            code, _, err = await self._adb._run_adb(
+                self._device,
+                "pull",
+                remote_path,
+                local_path,
+            )
+            if code == 0:
+                cycle["pulled_at"] = datetime.now(timezone.utc).isoformat()
+                logger.info("  🎥 [comment_debug] Saved cycle recording: %s", local_path)
+            else:
+                cycle["pull_error"] = err
+            await self._adb._run_adb(self._device, "shell", "rm", "-f", remote_path)
+
+        self._comment_debug["active_cycle"] = None
+        self._write_comment_debug_manifest()
 
     def _start_upload_debug_session(
         self,
@@ -929,6 +1076,7 @@ class ScriptRunner:
         view_time_max: float = 15.0,
         like_after_comment: float = 0.5,
         use_ai: bool = True,
+        debug_record: bool = True,
         **_,
     ) -> ScriptResult:
         """Hybrid comment: script navigates, AI generates contextual comments.
@@ -951,6 +1099,11 @@ class ScriptRunner:
         tiktok = self._get_tiktok_controller()
         await tiktok.ensure_on_feed(self._device)
         await self._step("ensure_feed", "dismissed popups, on For You feed")
+        self._start_comment_debug_session(
+            record_enabled=debug_record,
+            count=count,
+            use_ai=use_ai,
+        )
 
         comments_done = 0
         comments_verified = 0
@@ -977,116 +1130,126 @@ class ScriptRunner:
 
             if should_comment:
                 tiktok = self._get_tiktok_controller()
-
-                # [Step 1] Get video info from feed (before opening panel)
-                video_info = {}
-                try:
-                    video_info = await tiktok.get_video_info(self._device)
-                    await self._step("info", f"video: {video_info.get('author', '?')} | {video_info.get('description', '')[:40]}")
-                except Exception:
-                    pass
-
-                # [Step 2] Open comment panel to read existing comments
-                tapped = await tiktok.tap_comment_icon(self._device)
-                await self._step("tap", f"open comments ({'ui' if tapped else 'failed'})")
-                if not tapped:
-                    videos_since_last_comment = 0
-                    await self._swipe_up()
-                    continue
-                await self._wait(1.5, 3, "comments loading")
-
-                # [Step 3] Read existing comments for AI context
-                existing_comments = []
-                try:
-                    existing_comments = await tiktok.read_comments(self._device)
-                    if existing_comments:
-                        preview = existing_comments[0].get('text', '')[:30]
-                        await self._step("read_comments", f"read {len(existing_comments)} comments (top: {preview}...)")
-                except Exception as e:
-                    logger.warning(f"Failed to read comments: {e}")
-
-                # [Step 4] Generate AI comment WITH full context
-                if use_ai:
-                    comment_text = await self._ai_generate_comment(
-                        self.TIKTOK_COMMENTS,
-                        existing_comments=existing_comments,
-                        video_info=video_info,
-                    )
-                else:
-                    # Prefer ASCII-safe comments (avoids mangled diacritics in fallback)
-                    ascii_safe = [c for c in self.TIKTOK_COMMENTS
-                                  if all(ord(ch) < 128 for ch in c)
-                                  and c not in used_comments]
-                    if ascii_safe:
-                        comment_text = random.choice(ascii_safe)
-                    else:
-                        available = [c for c in self.TIKTOK_COMMENTS if c not in used_comments]
-                        if not available:
-                            available = list(self.TIKTOK_COMMENTS)
-                            used_comments.clear()
-                        comment_text = random.choice(available)
-                    used_comments.add(comment_text)
-
-                # --- Attempt to post (panel already open, skip re-opening) ---
-                comment_posted = await self._attempt_comment(
-                    tiktok, comment_text, comments_done, count,
-                    panel_already_open=True,
-                    baseline_comments=existing_comments,
+                cycle_index = comments_done + comments_failed + 1
+                cycle_status = "failed"
+                await self._start_comment_cycle_record(
+                    f"{cycle_index:02d}_video_{i+1}"
                 )
 
-                retry_panel_open = True
-                retry_used = False
-                if not comment_posted and tiktok.has_helper_service_issue(self._device):
-                    await self._step(
-                        "helper_recover",
-                        "accessibility service dropped during comment flow; recovering before retry",
-                    )
-                    recovered = await tiktok.recover_helper_service(self._device)
-                    await self._comment_checkpoint("helper_recovered", recovered, "before_retry")
-                    retry_panel_open = recovered
-                    if not recovered:
-                        comment_posted = False
+                try:
+                    # [Step 1] Get video info from feed (before opening panel)
+                    video_info = {}
+                    try:
+                        video_info = await tiktok.get_video_info(self._device)
+                        await self._step("info", f"video: {video_info.get('author', '?')} | {video_info.get('description', '')[:40]}")
+                    except Exception:
+                        pass
 
-                # --- Retry once on failure with ASCII comment ---
-                if not comment_posted:
-                    retry_used = True
-                    await self._step("comment_retry", "retrying with ASCII comment")
-                    retry_text = random.choice(["nice", "love this", "wow", "lol", "so good", ":)"])
+                    # [Step 2] Open comment panel to read existing comments
+                    tapped = await tiktok.tap_comment_icon(self._device)
+                    await self._step("tap", f"open comments ({'ui' if tapped else 'failed'})")
+                    if not tapped:
+                        videos_since_last_comment = 0
+                        await self._swipe_up()
+                        cycle_status = "tap_failed"
+                        continue
+                    await self._wait(1.5, 3, "comments loading")
+
+                    # [Step 3] Read existing comments for AI context
+                    existing_comments = []
+                    try:
+                        existing_comments = await tiktok.read_comments(self._device)
+                        if existing_comments:
+                            preview = existing_comments[0].get('text', '')[:30]
+                            await self._step("read_comments", f"read {len(existing_comments)} comments (top: {preview}...)")
+                    except Exception as e:
+                        logger.warning(f"Failed to read comments: {e}")
+
+                    # [Step 4] Generate AI comment WITH full context
+                    if use_ai:
+                        comment_text = await self._ai_generate_comment(
+                            self.TIKTOK_COMMENTS,
+                            existing_comments=existing_comments,
+                            video_info=video_info,
+                        )
+                    else:
+                        # Prefer ASCII-safe comments (avoids mangled diacritics in fallback)
+                        ascii_safe = [c for c in self.TIKTOK_COMMENTS
+                                      if all(ord(ch) < 128 for ch in c)
+                                      and c not in used_comments]
+                        if ascii_safe:
+                            comment_text = random.choice(ascii_safe)
+                        else:
+                            available = [c for c in self.TIKTOK_COMMENTS if c not in used_comments]
+                            if not available:
+                                available = list(self.TIKTOK_COMMENTS)
+                                used_comments.clear()
+                            comment_text = random.choice(available)
+                        used_comments.add(comment_text)
+
+                    # --- Attempt to post (panel already open, skip re-opening) ---
                     comment_posted = await self._attempt_comment(
-                        tiktok,
-                        retry_text,
-                        comments_done,
-                        count,
-                        is_retry=True,
-                        panel_already_open=retry_panel_open,
+                        tiktok, comment_text, comments_done, count,
+                        panel_already_open=True,
                         baseline_comments=existing_comments,
                     )
 
-                if comment_posted:
-                    comments_done += 1
-                    comments_verified += 1
-                    if retry_used:
-                        await self._step("comment_recovered", f"✅ comment verified after retry [{comments_done}/{count}]")
-                    await self._step("comment_verified", f"✅ comment verified [{comments_done}/{count}]")
-                else:
-                    comments_failed += 1
-                    await self._step("comment_failed", f"❌ comment NOT verified (both attempts failed)")
-                    # Capture screenshot for debugging
-                    await tiktok.capture_verification_screenshot(self._device, "comment")
+                    retry_panel_open = True
+                    retry_used = False
+                    if not comment_posted and tiktok.has_helper_service_issue(self._device):
+                        await self._step(
+                            "helper_recover",
+                            "accessibility service dropped during comment flow; recovering before retry",
+                        )
+                        recovered = await tiktok.recover_helper_service(self._device)
+                        await self._comment_checkpoint("helper_recovered", recovered, "before_retry")
+                        retry_panel_open = recovered
+                        if not recovered:
+                            comment_posted = False
 
-                # [Controller] Close comments (in case panel is still open)
-                try:
-                    await tiktok.close_panel(self._device)
-                    await self._step("key", "close comments")
-                    await self._wait(1, 2, "panel closing animation")
-                except Exception as e:
-                    logger.warning("Failed to close comment panel cleanly: %s", e)
-                    await self._step("key_warn", f"close comments degraded: {e}")
+                    # --- Retry once on failure with ASCII comment ---
+                    if not comment_posted:
+                        retry_used = True
+                        await self._step("comment_retry", "retrying with ASCII comment")
+                        retry_text = random.choice(["nice", "love this", "wow", "lol", "so good", ":)"])
+                        comment_posted = await self._attempt_comment(
+                            tiktok,
+                            retry_text,
+                            comments_done,
+                            count,
+                            is_retry=True,
+                            panel_already_open=retry_panel_open,
+                            baseline_comments=existing_comments,
+                        )
 
-                # [Script] Maybe like the video too
-                if comment_posted and random.random() < like_after_comment:
-                    await tiktok.double_tap_like(self._device)
-                    await self._step("double_tap", "liked")
+                    if comment_posted:
+                        comments_done += 1
+                        comments_verified += 1
+                        cycle_status = "verified"
+                        if retry_used:
+                            await self._step("comment_recovered", f"✅ comment verified after retry [{comments_done}/{count}]")
+                        await self._step("comment_verified", f"✅ comment verified [{comments_done}/{count}]")
+                    else:
+                        comments_failed += 1
+                        cycle_status = "failed"
+                        await self._step("comment_failed", f"❌ comment NOT verified (both attempts failed)")
+                        # Capture screenshot for debugging
+                        await tiktok.capture_verification_screenshot(self._device, "comment")
+
+                    # [Script] Maybe like the video too
+                    if comment_posted and random.random() < like_after_comment:
+                        await tiktok.double_tap_like(self._device)
+                        await self._step("double_tap", "liked")
+                finally:
+                    # [Controller] Close comments (in case panel is still open)
+                    try:
+                        await tiktok.close_panel(self._device)
+                        await self._step("key", "close comments")
+                        await self._wait(1, 2, "panel closing animation")
+                    except Exception as e:
+                        logger.warning("Failed to close comment panel cleanly: %s", e)
+                        await self._step("key_warn", f"close comments degraded: {e}")
+                    await self._stop_comment_cycle_record(cycle_status)
 
                 videos_since_last_comment = 0
             else:
