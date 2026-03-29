@@ -297,6 +297,32 @@ class TikTokController:
         XML parsing. Both contain same info (text, content_desc, bounds, etc.)
         but in different data classes.
         """
+        async def _dump_via_accessibility() -> list[UIElement]:
+            await self._get_backend(device)
+            if not self._backend:
+                return []
+            try:
+                nodes = await self._backend.get_ui_tree(device)
+            except Exception as backend_error:
+                await self._record_backend_issue(device, backend_error)
+                logger.warning(f"UI tree fallback failed: {backend_error}")
+                return []
+
+            elements = [
+                UIElement(
+                    resource_id=node.resource_id,
+                    content_desc=node.content_desc,
+                    text=node.text,
+                    cls=node.class_name,
+                    bounds=node.bounds,
+                    clickable=node.clickable,
+                )
+                for node in nodes
+                if TIKTOK_PACKAGE in (node.package or "")
+            ]
+            logger.info(f"UI tree fallback: found {len(elements)} TikTok elements")
+            return elements
+
         try:
             await asyncio.wait_for(
                 self._adb._run_adb(
@@ -318,7 +344,7 @@ class TikTokController:
                 xml_start = xml_raw.find("<hierarchy")
             if xml_start < 0:
                 logger.warning("UI dump: no valid XML found")
-                return []
+                return await _dump_via_accessibility()
 
             xml_clean = xml_raw[xml_start:]
             root = ET.fromstring(xml_clean)
@@ -345,12 +371,16 @@ class TikTokController:
                     clickable=node.get("clickable", "") == "true",
                 ))
 
-            logger.info(f"UI dump: found {len(elements)} TikTok elements")
-            return elements
+            if elements:
+                logger.info(f"UI dump: found {len(elements)} TikTok elements")
+                return elements
+
+            logger.warning("UI dump returned 0 TikTok elements; trying accessibility tree")
+            return await _dump_via_accessibility()
 
         except Exception as e:
             logger.warning(f"UI dump failed: {e}")
-            return []
+            return await _dump_via_accessibility()
 
     async def dump_ui_xml(self, device: str, save_path: str | None = None) -> str:
         """Dump raw UI XML and optionally persist it locally."""
@@ -1327,6 +1357,25 @@ class TikTokController:
         await self._tap(device, x, y)
         await asyncio.sleep(0.5)
         return True
+
+    async def is_comment_panel_open(self, device: str) -> bool:
+        """Best-effort detector for an open TikTok comment panel."""
+        elements = await self.dump_ui(device)
+        if not elements:
+            return False
+
+        _, h = await self._get_screen_size(device)
+        for el in elements:
+            if "EditText" in el.cls and el.center[1] > h * 0.5:
+                return True
+
+            text = (el.text or "").strip().lower()
+            desc = (el.content_desc or "").strip().lower()
+            if text.startswith("replying to") or desc.startswith("replying to"):
+                return True
+            if "comment" in text and el.center[1] < h * 0.35:
+                return True
+        return False
 
     async def get_video_info(self, device: str) -> dict:
         """Extract current video info from UI elements.

@@ -118,6 +118,30 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         tiktok.send_comment.assert_not_awaited()
         tiktok.verify_comment_posted.assert_not_awaited()
 
+    async def test_helper_issue_after_typing_does_not_abort_when_text_is_verified(self):
+        tiktok = AsyncMock()
+        tiktok.tap_comment_input = AsyncMock()
+        tiktok.type_text = AsyncMock()
+        tiktok.capture_verification_screenshot = AsyncMock()
+        issue_states = iter([False, True])
+        tiktok.has_helper_service_issue = Mock(side_effect=lambda *_: next(issue_states))
+        tiktok._verify_text_entered = AsyncMock(return_value=True)
+        tiktok.ensure_comment_send_ready = AsyncMock(return_value=True)
+        tiktok.send_comment = AsyncMock(return_value=True)
+        tiktok.verify_comment_posted = AsyncMock(return_value=True)
+
+        posted = await self.runner._attempt_comment(
+            tiktok=tiktok,
+            comment_text="hello world",
+            comments_done=0,
+            count=1,
+            panel_already_open=True,
+        )
+
+        self.assertTrue(posted)
+        tiktok.send_comment.assert_awaited_once()
+        tiktok.verify_comment_posted.assert_awaited_once()
+
 class TikTokCommentVerificationTest(unittest.IsolatedAsyncioTestCase):
     def _controller(self) -> TikTokController:
         return TikTokController(adb_agent=Mock())

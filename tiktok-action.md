@@ -321,6 +321,10 @@ Nhạc nền: bài xyz
 - Nếu retry cũng fail → capture debug screenshot
 - Step limit: 100 steps mỗi session
 - `failed` metric chỉ đếm **video fail cuối cùng**, không cộng fail tạm của primary attempt
+- Sau audit task `#9` ngày `2026-03-29`:
+  - **không abort chỉ vì helper báo degraded** nếu UI verify cho thấy text đã nằm trong field
+  - sau helper recovery, ưu tiên **giữ comment panel hiện tại** thay vì tap lại icon comment bằng fallback coords
+  - `dump_ui()` phải fallback sang `Accessibility get_ui_tree()` khi ADB `uiautomator dump` trả rỗng/fail
 
 ---
 

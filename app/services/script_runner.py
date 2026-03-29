@@ -1043,7 +1043,7 @@ class ScriptRunner:
                     )
                     recovered = await tiktok.recover_helper_service(self._device)
                     await self._comment_checkpoint("helper_recovered", recovered, "before_retry")
-                    retry_panel_open = False
+                    retry_panel_open = recovered
                     if not recovered:
                         comment_posted = False
 
@@ -1129,7 +1129,11 @@ class ScriptRunner:
         # Skip if panel was already opened by caller (for reading comments)
         if not panel_already_open:
             tapped = await tiktok.tap_comment_icon(self._device)
-            await self._step("tap", f"open comments{retry_label} ({'ui' if tapped else 'failed'})")
+            if not tapped and await tiktok.is_comment_panel_open(self._device):
+                await self._step("tap", f"open comments{retry_label} (already open)")
+                tapped = True
+            else:
+                await self._step("tap", f"open comments{retry_label} ({'ui' if tapped else 'failed'})")
             if not tapped:
                 return False
             await self._wait(1.5, 3, "comments loading")
@@ -1143,26 +1147,26 @@ class ScriptRunner:
         await self._step("tap", f"comment input{retry_label}")
         await self._wait(0.8, 1.5, "keyboard opening")
 
-        if tiktok.has_helper_service_issue(self._device):
+        helper_issue_before_type = tiktok.has_helper_service_issue(self._device)
+        if helper_issue_before_type:
             await self._step("helper_warn", f"helper degraded before typing{retry_label}")
             await tiktok.capture_verification_screenshot(
                 self._device,
                 "comment_helper_degraded_before_type_retry" if is_retry else "comment_helper_degraded_before_type",
             )
-            return False
 
         # [Controller] Type the comment
         await tiktok.type_text(self._device, comment_text)
         await self._step("type", f"typed{retry_label}: {comment_text}")
         await self._wait(0.5, 1, "text settling")
 
-        if tiktok.has_helper_service_issue(self._device):
+        helper_issue_after_type = tiktok.has_helper_service_issue(self._device)
+        if helper_issue_after_type:
             await self._step("helper_warn", f"helper degraded during typing{retry_label}")
             await tiktok.capture_verification_screenshot(
                 self._device,
                 "comment_helper_degraded_during_type_retry" if is_retry else "comment_helper_degraded_during_type",
             )
-            return False
 
         # [Verify] Check if text was actually typed (excludes placeholder)
         text_ok = await tiktok._verify_text_entered(self._device, comment_text)
@@ -1174,7 +1178,12 @@ class ScriptRunner:
         if text_ok:
             await self._step("verify", f"text confirmed in field{retry_label}")
         else:
-            await self._step("verify_fail", f"text NOT in field{retry_label}")
+            fail_detail = (
+                f"text NOT in field after helper degradation{retry_label}"
+                if (helper_issue_before_type or helper_issue_after_type)
+                else f"text NOT in field{retry_label}"
+            )
+            await self._step("verify_fail", fail_detail)
             # Try one more time with plain ASCII
             if not is_retry:
                 await tiktok.capture_verification_screenshot(self._device, "comment_text_missing_primary")
