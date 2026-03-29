@@ -273,13 +273,16 @@ Nhạc nền: bài xyz
 - Keywords: "unlike", "liked", "bỏ thích"
 
 #### Comment Verification (`verify_comment_posted`)
-- 2 signals kiểm tra sau 3s:
-  1. **EditText cleared** — input rỗng hoặc trở về placeholder = comment đã submit
-  2. **TextView match** — text comment xuất hiện trong comment list
-- Kết hợp cả hai = CONFIRMED
-- EditText cleared alone = LIKELY OK (text có thể bị scroll)
-- EditText still has text = FAILED (nút Send miss)
-- No EditText found = Panel đóng = FAILED
+- Sau lần false-positive ngày `2026-03-29`, **không còn cho phép `EditText cleared` tự động pass**
+- Success chỉ được tính khi:
+  1. panel vẫn mở
+  2. input không còn giữ nguyên text vừa gõ
+  3. **và** có visible comment mới match mạnh với comment vừa gửi
+- Match mới phải **không được tồn tại trong baseline comments trước khi send**
+  - đặc biệt quan trọng với retry comments generic như `"lol"`, `"wow"`, `"nice"`
+- `EditText cleared` nhưng không thấy comment mới = **AMBIGUOUS → FAIL SAFE**
+- `EditText still has text` = FAILED (nút Send miss)
+- `No EditText found` = FAILED (tap lệch ra ngoài / panel đóng)
 
 #### Follow Verification (`verify_follow_state`)
 - Sau khi tap Follow → check button text đổi thành "Following"/"Friends"/"Đang follow"/"Bạn bè"
@@ -317,6 +320,7 @@ Nhạc nền: bài xyz
 - Nếu fail → retry 1 lần với ASCII comment ("nice", "love this", "wow", "lol", ":)")
 - Nếu retry cũng fail → capture debug screenshot
 - Step limit: 100 steps mỗi session
+- `failed` metric chỉ đếm **video fail cuối cùng**, không cộng fail tạm của primary attempt
 
 ---
 

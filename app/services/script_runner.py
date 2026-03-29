@@ -1031,9 +1031,11 @@ class ScriptRunner:
                 comment_posted = await self._attempt_comment(
                     tiktok, comment_text, comments_done, count,
                     panel_already_open=True,
+                    baseline_comments=existing_comments,
                 )
 
                 retry_panel_open = True
+                retry_used = False
                 if not comment_posted and tiktok.has_helper_service_issue(self._device):
                     await self._step(
                         "helper_recover",
@@ -1047,7 +1049,7 @@ class ScriptRunner:
 
                 # --- Retry once on failure with ASCII comment ---
                 if not comment_posted:
-                    comments_failed += 1
+                    retry_used = True
                     await self._step("comment_retry", "retrying with ASCII comment")
                     retry_text = random.choice(["nice", "love this", "wow", "lol", "so good", ":)"])
                     comment_posted = await self._attempt_comment(
@@ -1057,11 +1059,14 @@ class ScriptRunner:
                         count,
                         is_retry=True,
                         panel_already_open=retry_panel_open,
+                        baseline_comments=existing_comments,
                     )
 
                 if comment_posted:
                     comments_done += 1
                     comments_verified += 1
+                    if retry_used:
+                        await self._step("comment_recovered", f"✅ comment verified after retry [{comments_done}/{count}]")
                     await self._step("comment_verified", f"✅ comment verified [{comments_done}/{count}]")
                 else:
                     comments_failed += 1
@@ -1111,6 +1116,7 @@ class ScriptRunner:
         count: int,
         is_retry: bool = False,
         panel_already_open: bool = False,
+        baseline_comments: list[dict] | None = None,
     ) -> bool:
         """Attempt to post a single comment. Returns True if verified.
 
@@ -1213,7 +1219,10 @@ class ScriptRunner:
 
         # [Verify] Check if comment was actually posted
         posted = await tiktok.verify_comment_posted(
-            self._device, comment_text, timeout=3.0
+            self._device,
+            comment_text,
+            timeout=3.0,
+            baseline_comments=baseline_comments,
         )
         await self._comment_checkpoint(
             "posted_ok",

@@ -488,7 +488,14 @@ class TikTokController:
         """Fold text for accent-insensitive matching."""
         lowered = (value or "").lower()
         normalized = unicodedata.normalize("NFKD", lowered)
-        return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        folded = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        return folded.replace("đ", "d")
+
+    def _normalize_comment_text(self, value: str) -> str:
+        """Normalize comment text for reliable cross-checking."""
+        folded = self._fold_text(value or "")
+        folded = re.sub(r"\s+", " ", folded)
+        return folded.strip(" \t\r\n.,!?:;-'\"`()[]{}")
 
     def _expected_text_tokens(self, expected_text: str) -> list[str]:
         """Build stable verification tokens from expected input text."""
@@ -522,6 +529,106 @@ class TikTokController:
             if len(deduped) >= 8:
                 break
         return deduped
+
+    def _collect_comment_panel_texts(
+        self,
+        elements: list[UIElement],
+        *,
+        max_count: int = 25,
+    ) -> list[str]:
+        """Collect visible comment-like texts from the open comment panel."""
+        ignore_patterns = {
+            "reply", "replies", "like", "likes", "report",
+            "view more", "see more", "hide", "got it",
+            "add comment", "newest", "oldest", "most relevant",
+        }
+
+        texts: list[str] = []
+        for el in elements:
+            text = el.text.strip() if el.text else ""
+            if not text:
+                continue
+
+            if len(text) <= 3 and not any(c.isalpha() for c in text):
+                continue
+
+            if self._normalize_comment_text(text) in ignore_patterns:
+                continue
+
+            if re.match(r"^[\d,.KMB]+$", text):
+                continue
+
+            _, el_y = el.center
+            if el_y < 100 or el_y > 1800:
+                continue
+
+            desc = el.content_desc.lower() if el.content_desc else ""
+            if any(kw in desc for kw in ["profile", "follow", "share", "like"]):
+                continue
+
+            texts.append(text)
+            if len(texts) >= max_count:
+                break
+
+        return texts
+
+    def _comment_match_strength(
+        self,
+        expected_text: str,
+        candidate_text: str,
+    ) -> bool:
+        """Return True only for high-confidence visible comment matches."""
+        expected = self._normalize_comment_text(expected_text)
+        candidate = self._normalize_comment_text(candidate_text)
+        if not expected or not candidate:
+            return False
+        if expected == candidate:
+            return True
+
+        shorter = min(len(expected), len(candidate))
+        longer = max(len(expected), len(candidate))
+        if shorter < 8:
+            return False
+        if shorter / max(longer, 1) < 0.72:
+            return False
+
+        return expected in candidate or candidate in expected
+
+    def _comment_already_visible(
+        self,
+        candidate_text: str,
+        baseline_texts: set[str],
+    ) -> bool:
+        """Check whether a visible candidate was already present before send."""
+        candidate = self._normalize_comment_text(candidate_text)
+        if not candidate:
+            return False
+
+        for baseline in baseline_texts:
+            if not baseline:
+                continue
+            if baseline == candidate:
+                return True
+
+            shorter = min(len(candidate), len(baseline))
+            longer = max(len(candidate), len(baseline))
+            if shorter < 8:
+                continue
+            if shorter / max(longer, 1) < 0.8:
+                continue
+            if candidate in baseline or baseline in candidate:
+                return True
+        return False
+
+    def _get_comment_input_bounds(
+        self,
+        elements: list[UIElement],
+    ) -> tuple[int, int, int, int] | None:
+        """Return active comment input bounds when the panel is open."""
+        for el in elements:
+            if "EditText" in el.cls:
+                return el.bounds
+        return None
 
     def _looks_like_feed_signature(
         self,
@@ -1276,55 +1383,10 @@ class TikTokController:
         comments that reference the discussion happening in the video.
         """
         elements = await self.dump_ui(device)
-        comments = []
-
-        # TikTok comment panel structure:
-        # - Each comment has a TextView with username (usually truncated)
-        # - Followed by a TextView with comment text
-        # - Comments are in a RecyclerView/ListView
-        # Strategy: collect all visible text elements in the comment panel area,
-        # filter out UI chrome (buttons, timestamps, counts)
-
-        ignore_patterns = {
-            "reply", "replies", "like", "likes", "report",
-            "view more", "see more", "hide", "got it",
-            "add comment", "newest", "oldest", "most relevant",
-        }
-
-        for el in elements:
-            text = el.text.strip() if el.text else ""
-            if not text:
-                continue
-
-            # Skip short texts (timestamps like "1d", "2h")
-            if len(text) <= 3 and not any(c.isalpha() for c in text):
-                continue
-
-            # Skip UI chrome
-            if text.lower() in ignore_patterns:
-                continue
-
-            # Skip count-only strings ("1.2K", "234")
-            if re.match(r'^[\d,.KMB]+$', text):
-                continue
-
-            # Skip if it's in the bottom input area or top header
-            _, el_y = el.center
-            if el_y < 100 or el_y > 1800:  # Rough bounds for comment area
-                continue
-
-            # Skip elements that are common buttons/actions
-            desc = el.content_desc.lower() if el.content_desc else ""
-            if any(kw in desc for kw in ["profile", "follow", "share", "like"]):
-                continue
-
-            # This looks like a comment or username
-            # Try to pair: if it's a short text followed by longer text,
-            # it's likely username + comment
-            comments.append({"text": text})
-
-            if len(comments) >= max_count:
-                break
+        comments = [{"text": text} for text in self._collect_comment_panel_texts(
+            elements,
+            max_count=max_count * 2,
+        )]
 
         # Post-process: try to identify username vs comment text pairs
         # Typical pattern: username is shorter, comment is longer
@@ -1988,12 +2050,25 @@ class TikTokController:
                 logger.warning(f"  ⚠️ [find_pink] Incomplete data: {len(pixel_data)}/{expected}")
                 return None
 
-            # Scan for pink pixels: R>230, G<120, B<140, (R-G)>100
-            # Only scan right half (x > w*0.7) and middle section (y: 40%-80%)
-            # This avoids false positives from TikTok hearts/reactions
-            x_start = int(w * 0.7)
-            y_start = int(h * 0.4)
-            y_end = int(h * 0.8)
+            input_bounds = None
+            try:
+                elements = await self.dump_ui(device)
+                input_bounds = self._get_comment_input_bounds(elements)
+            except Exception:
+                input_bounds = None
+
+            # Scan for pink pixels only in the send-button lane next to the input field.
+            # If EditText is available, constrain the search to that local strip to avoid
+            # matching unrelated pink overlays or keyboard accents.
+            if input_bounds:
+                _, top, right, bottom = input_bounds
+                x_start = max(int(w * 0.72), right - 40)
+                y_start = max(int(h * 0.42), top - 70)
+                y_end = min(int(h * 0.78), bottom + 70)
+            else:
+                x_start = int(w * 0.78)
+                y_start = int(h * 0.45)
+                y_end = int(h * 0.72)
 
             pink_xs = []
             pink_ys = []
@@ -2018,11 +2093,17 @@ class TikTokController:
             bw = max(pink_xs) - min(pink_xs)
             bh = max(pink_ys) - min(pink_ys)
 
-            # Sanity check: the Send button is a circle ~80-160px wide
-            if bw < 40 or bw > 200 or bh < 40 or bh > 200:
+            # Sanity check: the Send button is a compact circle near the right edge.
+            if bw < 40 or bw > 180 or bh < 40 or bh > 180:
                 logger.warning(
-                    f"  ⚠️ [find_pink] Unusual size {bw}x{bh}, may not be Send button"
+                    f"  ❌ [find_pink] Rejecting oversized target {bw}x{bh} at ({cx},{cy})"
                 )
+                return None
+            if cx < int(w * 0.8):
+                logger.warning(
+                    f"  ❌ [find_pink] Rejecting target too far left at ({cx},{cy})"
+                )
+                return None
 
             logger.info(
                 f"  🎯 [find_pink] Send button at ({cx},{cy}) "
@@ -2343,15 +2424,14 @@ class TikTokController:
         device: str,
         comment_text: str,
         timeout: float = 3.0,
+        baseline_comments: list[dict] | None = None,
+        attempts: int = 3,
+        poll_interval: float = 1.2,
     ) -> bool:
         """Verify a comment was successfully posted.
 
-        Checks TWO signals after tapping Send:
-        1. EditText exists AND is now empty (cleared = comment was submitted)
-        2. Comment text appears as a TextView in the comment list
-
-        BOTH signals together = confirmed. EditText cleared alone = likely OK.
-        No EditText found = panel was closed (= failed, not success).
+        Success requires strong evidence that the new comment is visible in the
+        current panel after tapping Send. Input cleared alone is NOT enough.
 
         Args:
             device: ADB device target
@@ -2359,71 +2439,83 @@ class TikTokController:
             timeout: Max seconds to wait before checking
         """
         await asyncio.sleep(timeout)
-        elements = await self.dump_ui(device)
+        baseline_texts = {
+            self._normalize_comment_text((item or {}).get("text", ""))
+            for item in (baseline_comments or [])
+            if isinstance(item, dict)
+        }
+        baseline_texts = {text for text in baseline_texts if text}
 
-        # First check: is the comment panel still open?
-        has_edit_text = False
-        edit_cleared = False
-        edit_still_has_text = False
-        placeholders = {"add comment...", "add a comment...", "thêm bình luận...",
-                        "viết bình luận...", "say something...", "add comment",
-                        "replying to", ""}
-        for el in elements:
-            if "EditText" not in el.cls:
-                continue
-            has_edit_text = True
-            text_content = (el.text or "").strip().lower()
-            if text_content in placeholders or text_content.startswith("replying"):
-                edit_cleared = True
-            elif comment_text.strip().lower() in text_content:
-                edit_still_has_text = True
-            break
+        placeholders = {
+            "add comment...", "add a comment...", "thêm bình luận...",
+            "viết bình luận...", "say something...", "add comment",
+            "replying to", "",
+        }
 
-        if not has_edit_text:
-            # Panel closed = send likely failed (tap hit X or outside)
-            logger.warning("  ❌ [verify_comment] Panel closed (no EditText) — send likely missed")
-            return False
+        for attempt in range(max(1, attempts)):
+            if attempt:
+                await asyncio.sleep(poll_interval)
 
-        if edit_still_has_text:
-            # Text still in field = send button was NOT tapped correctly
-            logger.warning(f"  ❌ [verify_comment] Text still in field — send button missed")
-            return False
+            elements = await self.dump_ui(device)
 
-        # Signal 2: Comment text found in a TextView (not EditText)
-        text_found = False
-        needle = comment_text.strip().lower()
-        # Only do substring matching for longer comments (4+ chars)
-        # Short comments like "wow" would false-positive match too easily
-        min_len_for_match = 4
-        for el in elements:
-            if "EditText" in el.cls:
-                continue
-            el_text = (el.text or "").strip().lower()
-            if not el_text:
-                continue
-            # Exact match always works
-            if needle == el_text:
-                text_found = True
-                logger.info(f"  🔍 [verify_comment] Exact match in UI: '{el.text[:50]}'")
-                break
-            # Substring match only for longer comments
-            if len(needle) >= min_len_for_match and needle in el_text:
-                text_found = True
-                logger.info(f"  🔍 [verify_comment] Substring match in UI: '{el.text[:50]}'")
+            has_edit_text = False
+            edit_cleared = False
+            edit_still_has_text = False
+            for el in elements:
+                if "EditText" not in el.cls:
+                    continue
+                has_edit_text = True
+                text_content = (el.text or "").strip().lower()
+                if text_content in placeholders or text_content.startswith("replying"):
+                    edit_cleared = True
+                elif self._comment_match_strength(comment_text, text_content):
+                    edit_still_has_text = True
                 break
 
-        if edit_cleared and text_found:
-            logger.info("  ✅ [verify_comment] CONFIRMED: input cleared + text found")
-            return True
-        elif edit_cleared:
-            logger.info("  ✅ [verify_comment] LIKELY OK: input cleared (text not visible, may be scrolled)")
-            return True
-        elif text_found:
-            logger.info("  ✅ [verify_comment] CONFIRMED: text found in comment list")
-            return True
-        else:
-            logger.warning("  ❌ [verify_comment] FAILED: input NOT cleared, text NOT found")
-            return False
+            if not has_edit_text:
+                logger.warning("  ❌ [verify_comment] Panel closed (no EditText) — send likely missed")
+                return False
+
+            if edit_still_has_text:
+                logger.warning("  ❌ [verify_comment] Text still in field — send button missed")
+                return False
+
+            visible_texts = self._collect_comment_panel_texts(elements, max_count=30)
+            matched_text = None
+            for text in visible_texts:
+                if not self._comment_match_strength(comment_text, text):
+                    continue
+                if self._comment_already_visible(text, baseline_texts):
+                    logger.warning(
+                        "  ⚠️ [verify_comment] Matched text already existed before send: '%s'",
+                        text[:60],
+                    )
+                    continue
+                matched_text = text
+                break
+
+            if matched_text:
+                logger.info(
+                    "  ✅ [verify_comment] CONFIRMED visible new comment: '%s'",
+                    matched_text[:60],
+                )
+                return True
+
+            if edit_cleared:
+                logger.info(
+                    "  ⏳ [verify_comment] Input cleared but comment not yet visible (%s/%s)",
+                    attempt + 1,
+                    max(1, attempts),
+                )
+            else:
+                logger.warning(
+                    "  ⚠️ [verify_comment] Input not cleared and comment not visible (%s/%s)",
+                    attempt + 1,
+                    max(1, attempts),
+                )
+
+        logger.warning("  ❌ [verify_comment] FAILED: no new visible comment after send")
+        return False
 
     async def verify_follow_state(self, device: str) -> bool:
         """Verify follow action succeeded.
