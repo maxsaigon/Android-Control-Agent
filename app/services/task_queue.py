@@ -239,10 +239,14 @@ class TaskQueue:
                         )
                     except asyncio.TimeoutError:
                         logger.error(f"Task {task_id}: Timed out after 10 minutes")
+                        live = self._live_steps.get(task_id, {})
+                        step_history = live.get("history") or live.get("steps") or []
+                        current_step = live.get("current_step") or len(step_history)
                         result = TaskResult(
                             success=False,
                             reason="Timeout",
-                            steps=0,
+                            steps=current_step,
+                            step_log=step_history,
                             error="Task timed out after 10 minutes",
                         )
 
@@ -374,11 +378,16 @@ class TaskQueue:
                 live["current_step"] = step.step_num
                 live["action"] = step.action
                 live["detail"] = step.detail
-                live["steps"].append({
+                entry = {
                     "step_num": step.step_num,
                     "action": step.action,
                     "detail": step.detail,
-                })
+                }
+                live["steps"].append(entry)
+                history = live.setdefault("history", [])
+                history.append(entry)
+                if len(history) > 500:
+                    live["history"] = history[-500:]
                 # Keep only last 10 steps in memory
                 if len(live["steps"]) > 10:
                     live["steps"] = live["steps"][-10:]

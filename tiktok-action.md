@@ -2,7 +2,7 @@
 
 > **Mục đích**: Tài liệu này ghi lại toàn bộ vấn đề gặp phải khi automation TikTok, các giải pháp đã thử (kể cả thất bại), và những gì đã hoạt động. Giúp agent mới không phải lặp lại các quy trình đã fail.
 
-> **Cập nhật lần cuối**: 2026-03-20 10:45
+> **Cập nhật lần cuối**: 2026-03-30 14:15
 
 ---
 
@@ -210,6 +210,41 @@ Nhạc nền: bài xyz
 - Nâng helper APK để hỗ trợ **IME-like incremental typing** hoặc **set-text + synthetic edit event**, thay vì chỉ `ACTION_SET_TEXT`
 - Thêm metric/log riêng cho `text_entered_ok` vs `send_ready_ok` vs `posted_ok` để phân biệt rõ lỗi nhập text và lỗi kích hoạt send
 - Chạy regression task chỉ để test `comment input -> send ready` trên 2-3 version TikTok khác nhau
+
+---
+
+### 2.15 🟡 Retry Comment Có Thể Giữ Text Cũ Trong Ô Nhập
+
+**Triệu chứng**: Retry log báo đã gõ comment ngắn như `:)`, `wow`, `lol`, nhưng `EditText` thực tế vẫn còn comment cũ từ lượt primary. Verification cũ vẫn có thể pass vì chỉ match một phần text hoặc chấp nhận text không-placeholder.
+
+**Root cause**:
+1. Retry path không ép clear ô comment trước khi retype
+2. `_verify_text_entered()` quá nới, đặc biệt với retry text ngắn
+3. Khi helper degraded giữa typing, field dễ giữ state cũ nhưng flow vẫn nghĩ retry thành công
+
+**Giải pháp đã áp dụng** ✅:
+1. Thêm `clear_comment_input()` trước cả primary typing và retry typing
+2. Nếu không clear được field → fail sớm, chụp screenshot `comment_input_not_cleared`
+3. `_verify_text_entered(..., strict=True)` cho retry hoặc text rất ngắn, không chấp nhận partial token match
+
+**Quy tắc mới**:
+> Với retry comment, phải clear field và verify đúng text retry. Không được gửi nếu ô nhập còn text cũ.
+
+---
+
+### 2.16 🟡 Task Timeout Làm Mất Forensic Steps
+
+**Triệu chứng**: Khi task bị timeout 10 phút, API/DB có thể trả `steps=0` dù stdout cho thấy task đã chạy rất nhiều step. Điều này làm mất dữ liệu debug cho các case fail dài.
+
+**Root cause**: Nhánh timeout trong `task_queue` tạo `TaskResult` mới với `steps=0`, không dùng lại step history đang giữ trong live memory.
+
+**Giải pháp đã áp dụng** ✅:
+1. `on_step` giữ thêm `history` ring buffer riêng cho mỗi task
+2. Timeout path tái sử dụng `current_step` + `history` để persist partial `step_log`
+3. REST polling vẫn chỉ giữ 10 step gần nhất để UI nhẹ, nhưng forensic log vẫn còn tối đa 500 step
+
+**Quy tắc mới**:
+> Timeout không được làm mất log. Mọi task fail do timeout vẫn phải giữ đủ dấu vết để audit.
 
 ---
 

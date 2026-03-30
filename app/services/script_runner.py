@@ -1398,6 +1398,15 @@ class ScriptRunner:
         await self._step("tap", f"comment input{retry_label}")
         await self._wait(0.8, 1.5, "keyboard opening")
 
+        input_cleared = await tiktok.clear_comment_input(self._device)
+        if not input_cleared:
+            await self._step("verify_fail", f"comment input not cleared{retry_label}")
+            await tiktok.capture_verification_screenshot(
+                self._device,
+                "comment_input_not_cleared_retry" if is_retry else "comment_input_not_cleared",
+            )
+            return False
+
         helper_issue_before_type = tiktok.has_helper_service_issue(self._device)
         if helper_issue_before_type:
             await self._step("helper_warn", f"helper degraded before typing{retry_label}")
@@ -1420,7 +1429,12 @@ class ScriptRunner:
             )
 
         # [Verify] Check if text was actually typed (excludes placeholder)
-        text_ok = await tiktok._verify_text_entered(self._device, comment_text)
+        strict_verify = is_retry or len(comment_text.strip()) <= 4
+        text_ok = await tiktok._verify_text_entered(
+            self._device,
+            comment_text,
+            strict=strict_verify,
+        )
         await self._comment_checkpoint(
             "text_entered_ok",
             text_ok,
@@ -1442,9 +1456,18 @@ class ScriptRunner:
             # On retry, force type again
             await tiktok.tap_comment_input(self._device)
             await self._wait(0.5, 1, "re-focusing")
+            re_cleared = await tiktok.clear_comment_input(self._device)
+            if not re_cleared:
+                await self._step("verify_fail", "comment input not cleared before retry retype")
+                await tiktok.capture_verification_screenshot(self._device, "comment_input_not_cleared_retry")
+                return False
             await tiktok.type_text(self._device, comment_text)
             await self._wait(0.5, 1, "re-typing")
-            retry_text_ok = await tiktok._verify_text_entered(self._device, comment_text)
+            retry_text_ok = await tiktok._verify_text_entered(
+                self._device,
+                comment_text,
+                strict=True,
+            )
             await self._comment_checkpoint("text_reentered_ok", retry_text_ok, "retry")
             if not retry_text_ok:
                 await self._step("verify_fail", "text still NOT in field after retry retype")

@@ -24,6 +24,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         tiktok.has_helper_service_issue = Mock(return_value=False)
         tiktok.is_live_session = AsyncMock(return_value=False)
         tiktok.tap_comment_input = AsyncMock()
+        tiktok.clear_comment_input = AsyncMock(return_value=True)
         tiktok.type_text = AsyncMock()
         tiktok._verify_text_entered = AsyncMock(return_value=True)
         tiktok.ensure_comment_send_ready = AsyncMock(return_value=False)
@@ -51,6 +52,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         tiktok.tap_comment_icon = AsyncMock(return_value=True)
         tiktok.read_comments = AsyncMock(return_value=[{"text": "existing"}])
         tiktok.has_helper_service_issue = Mock(return_value=False)
+        tiktok.clear_comment_input = AsyncMock(return_value=True)
         tiktok.close_panel = AsyncMock(return_value=True)
         tiktok.capture_verification_screenshot = AsyncMock()
 
@@ -83,6 +85,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         tiktok.tap_comment_icon = AsyncMock(return_value=True)
         tiktok.read_comments = AsyncMock(return_value=[{"text": "existing"}])
         tiktok.has_helper_service_issue = Mock(return_value=False)
+        tiktok.clear_comment_input = AsyncMock(return_value=True)
         tiktok.close_panel = AsyncMock(return_value=True)
         tiktok.capture_verification_screenshot = AsyncMock()
 
@@ -116,6 +119,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         tiktok.has_helper_service_issue = Mock(return_value=False)
         tiktok.is_live_session = AsyncMock(return_value=False)
         tiktok.tap_comment_input = AsyncMock()
+        tiktok.clear_comment_input = AsyncMock(return_value=True)
         tiktok.type_text = AsyncMock()
         tiktok._verify_text_entered = AsyncMock(return_value=True)
         tiktok.ensure_comment_send_ready = AsyncMock(return_value=True)
@@ -139,6 +143,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
     async def test_retry_does_not_send_when_text_still_missing_after_retype(self):
         tiktok = AsyncMock()
         tiktok.tap_comment_input = AsyncMock()
+        tiktok.clear_comment_input = AsyncMock(return_value=True)
         tiktok.type_text = AsyncMock()
         tiktok.has_helper_service_issue = Mock(return_value=False)
         tiktok.is_live_session = AsyncMock(return_value=False)
@@ -164,6 +169,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
     async def test_helper_issue_after_typing_does_not_abort_when_text_is_verified(self):
         tiktok = AsyncMock()
         tiktok.tap_comment_input = AsyncMock()
+        tiktok.clear_comment_input = AsyncMock(return_value=True)
         tiktok.type_text = AsyncMock()
         tiktok.capture_verification_screenshot = AsyncMock()
         tiktok.is_live_session = AsyncMock(return_value=False)
@@ -185,6 +191,26 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(posted)
         tiktok.send_comment.assert_awaited_once()
         tiktok.verify_comment_posted.assert_awaited_once()
+
+    async def test_retry_fails_when_old_input_cannot_be_cleared(self):
+        tiktok = AsyncMock()
+        tiktok.tap_comment_input = AsyncMock()
+        tiktok.clear_comment_input = AsyncMock(return_value=False)
+        tiktok.capture_verification_screenshot = AsyncMock()
+        tiktok.has_helper_service_issue = Mock(return_value=False)
+        tiktok.is_live_session = AsyncMock(return_value=False)
+
+        posted = await self.runner._attempt_comment(
+            tiktok=tiktok,
+            comment_text=":)",
+            comments_done=0,
+            count=1,
+            is_retry=True,
+            panel_already_open=True,
+        )
+
+        self.assertFalse(posted)
+        tiktok.type_text.assert_not_awaited()
 
 class TikTokCommentVerificationTest(unittest.IsolatedAsyncioTestCase):
     def _controller(self) -> TikTokController:

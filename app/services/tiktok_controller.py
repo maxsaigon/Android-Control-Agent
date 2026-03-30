@@ -1506,6 +1506,49 @@ class TikTokController:
         await asyncio.sleep(0.5)
         return True
 
+    async def get_comment_input_text(self, device: str) -> str:
+        """Return the current user-entered text in the bottom comment EditText."""
+        placeholders = {
+            "add comment...", "add a comment...", "thêm bình luận...",
+            "viết bình luận...", "say something...", "add comment",
+        }
+        elements = await self.dump_ui(device)
+        inputs = [el for el in elements if "EditText" in el.cls]
+        if not inputs:
+            return ""
+
+        target = max(inputs, key=lambda e: e.center[1])
+        text_content = (target.text or "").strip()
+        if text_content.lower() in placeholders:
+            return ""
+        return text_content
+
+    async def clear_comment_input(self, device: str, max_deletes: int = 160) -> bool:
+        """Clear existing comment text before typing a new value."""
+        existing = await self.get_comment_input_text(device)
+        if not existing:
+            return True
+
+        logger.info("  🧹 [comment_input] Clearing existing text: '%s'", existing[:40])
+        await self.tap_comment_input(device)
+        await asyncio.sleep(0.2)
+
+        delete_presses = min(max(len(existing) + 12, 16), max_deletes)
+        for _ in range(delete_presses):
+            await self._adb._run_adb(device, "shell", "input", "keyevent", "67")
+        await asyncio.sleep(0.35)
+
+        remaining = await self.get_comment_input_text(device)
+        if remaining:
+            logger.warning(
+                "  ⚠️ [comment_input] Text remained after clear attempt: '%s'",
+                remaining[:40],
+            )
+            return False
+
+        logger.info("  ✅ [comment_input] Input cleared")
+        return True
+
     async def is_comment_panel_open(self, device: str) -> bool:
         """Best-effort detector for an open TikTok comment panel."""
         elements = await self.dump_ui(device)
@@ -2177,6 +2220,8 @@ class TikTokController:
         self,
         device: str,
         expected_text: str | None = None,
+        *,
+        strict: bool = False,
     ) -> bool:
         """Verify that text was actually typed into the focused EditText.
 
@@ -2187,6 +2232,8 @@ class TikTokController:
                         "viết bình luận...", "say something...", "add comment"}
         expected_tokens = self._expected_text_tokens(expected_text or "")
         expected_tokens_folded = {self._fold_text(token) for token in expected_tokens}
+        expected_raw = re.sub(r"\s+", " ", (expected_text or "").strip())
+        expected_folded = self._fold_text(expected_raw)
 
         elements = await self.dump_ui(device)
         for el in elements:
@@ -2199,11 +2246,23 @@ class TikTokController:
             if text_content.lower() in placeholders:
                 continue
 
-            if not expected_tokens:
+            if expected_text is None:
                 logger.info(f"  🔍 [verify] Text in EditText: '{text_content[:40]}'")
                 return True
 
             content_folded = self._fold_text(text_content)
+            if expected_raw and content_folded == expected_folded:
+                logger.info("  🔍 [verify] Exact EditText match: '%s'", text_content[:40])
+                return True
+
+            if expected_text and self._comment_match_strength(expected_text, text_content):
+                logger.info("  🔍 [verify] Strong text match in EditText")
+                return True
+
+            if strict:
+                logger.warning("  ⚠️ [verify] Strict text check failed for EditText")
+                continue
+
             for token in expected_tokens_folded:
                 if token and token in content_folded:
                     logger.info(
@@ -2211,7 +2270,7 @@ class TikTokController:
                         token[:24],
                     )
                     return True
-        if expected_tokens:
+        if expected_text is not None:
             logger.warning("  ⚠️ [verify] Expected text tokens not found in EditText")
         return False
 
