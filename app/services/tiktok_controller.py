@@ -14,8 +14,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
 import re
+import tempfile
 import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -2275,66 +2277,14 @@ class TikTokController:
         return False
 
     async def _find_pink_send_button(self, device: str) -> tuple[int, int] | None:
-        """Find TikTok's pink Send button via raw screencap pixel analysis.
+        """Find TikTok's active Send button via screenshot color analysis.
 
-        The Send button is INVISIBLE to uiautomator dump (it's rendered as
-        a SurfaceView overlay). The only reliable method is scanning the
-        screenshot for the distinctive pink/red circle (TikTok brand color).
-
-        Uses file-based approach: screencap → device file → adb pull → local
-        read, because _run_adb decodes stdout to string (corrupting binary).
-
-        TODO: [ACCESSIBILITY-MIGRATE] Use backend.capture_screenshot() which
-        sends PNG via WebSocket (binary-safe). Eliminates file I/O on device
-        and adb pull overhead.
-
-        Returns (x, y) center of the button, or None if not found.
+        The Send button is invisible to the UI tree, so we detect the bright
+        pink/red circle from a PNG screenshot. Raw `screencap` bytes proved
+        unreliable across devices because channel ordering can differ; using a
+        decoded PNG/JPEG image is much more stable.
         """
-        import struct
-        import tempfile
-        import os
         try:
-            # Save raw screencap to device file
-            await self._adb._run_adb(
-                device, "shell", "screencap", "/sdcard/_pink.dump"
-            )
-
-            # Pull to local temp file (binary-safe)
-            local_path = os.path.join(tempfile.gettempdir(), "_pink.dump")
-            ret, _, stderr = await self._adb._run_adb(
-                device, "pull", "/sdcard/_pink.dump", local_path
-            )
-            if ret != 0:
-                logger.warning(f"  ⚠️ [find_pink] pull failed: {stderr}")
-                return None
-
-            # Read raw binary locally
-            with open(local_path, "rb") as f:
-                raw_bytes = f.read()
-
-            # Cleanup
-            try:
-                os.remove(local_path)
-            except OSError:
-                pass
-            await self._adb._run_adb(
-                device, "shell", "rm", "-f", "/sdcard/_pink.dump"
-            )
-
-            if len(raw_bytes) < 16:
-                logger.warning("  ⚠️ [find_pink] screencap file too small")
-                return None
-
-            # Parse header: width(4 LE), height(4 LE), format(4 LE)
-            w = struct.unpack('<I', raw_bytes[:4])[0]
-            h = struct.unpack('<I', raw_bytes[4:8])[0]
-            pixel_data = raw_bytes[12:]  # skip 12-byte header
-
-            expected = w * h * 4
-            if len(pixel_data) < expected * 0.9:
-                logger.warning(f"  ⚠️ [find_pink] Incomplete data: {len(pixel_data)}/{expected}")
-                return None
-
             input_bounds = None
             try:
                 elements = await self.dump_ui(device)
@@ -2342,63 +2292,160 @@ class TikTokController:
             except Exception:
                 input_bounds = None
 
-            # Scan for pink pixels only in the send-button lane next to the input field.
-            # If EditText is available, constrain the search to that local strip to avoid
-            # matching unrelated pink overlays or keyboard accents.
-            if input_bounds:
-                _, top, right, bottom = input_bounds
-                x_start = max(int(w * 0.72), right - 40)
-                y_start = max(int(h * 0.42), top - 70)
-                y_end = min(int(h * 0.78), bottom + 70)
-            else:
-                x_start = int(w * 0.78)
-                y_start = int(h * 0.45)
-                y_end = int(h * 0.72)
-
-            pink_xs = []
-            pink_ys = []
-            for y in range(y_start, y_end, 2):  # Step by 2 for speed
-                for x in range(x_start, w, 2):
-                    offset = (y * w + x) * 4
-                    if offset + 4 > len(pixel_data):
-                        continue
-                    r = pixel_data[offset]
-                    g = pixel_data[offset + 1]
-                    b = pixel_data[offset + 2]
-                    if r > 230 and g < 120 and b < 140 and (r - g) > 100:
-                        pink_xs.append(x)
-                        pink_ys.append(y)
-
-            if len(pink_xs) < 20:
-                logger.warning(f"  ⚠️ [find_pink] Too few pink pixels ({len(pink_xs)})")
+            image = await self._capture_send_scan_image(device)
+            if image is None:
                 return None
-
-            cx = (min(pink_xs) + max(pink_xs)) // 2
-            cy = (min(pink_ys) + max(pink_ys)) // 2
-            bw = max(pink_xs) - min(pink_xs)
-            bh = max(pink_ys) - min(pink_ys)
-
-            # Sanity check: the Send button is a compact circle near the right edge.
-            if bw < 40 or bw > 180 or bh < 40 or bh > 180:
-                logger.warning(
-                    f"  ❌ [find_pink] Rejecting oversized target {bw}x{bh} at ({cx},{cy})"
-                )
-                return None
-            if cx < int(w * 0.8):
-                logger.warning(
-                    f"  ❌ [find_pink] Rejecting target too far left at ({cx},{cy})"
-                )
-                return None
-
-            logger.info(
-                f"  🎯 [find_pink] Send button at ({cx},{cy}) "
-                f"size={bw}x{bh} pixels={len(pink_xs)}"
-            )
-            return (cx, cy)
-
+            return self._locate_send_button_in_image(image, input_bounds=input_bounds)
         except Exception as e:
             logger.warning(f"  ⚠️ [find_pink] Error: {e}")
             return None
+
+    async def _capture_send_scan_image(self, device: str):
+        """Capture a PNG-like screenshot for send-button detection."""
+        from PIL import Image
+
+        local_path = os.path.join(
+            tempfile.gettempdir(),
+            f"_send_scan_{device.replace(':', '_')}_{random.randint(1000, 9999)}.png",
+        )
+        remote_path = "/sdcard/_send_scan.png"
+
+        try:
+            await self._get_backend(device)
+            if self._backend:
+                try:
+                    await self._backend.capture_screenshot(device, local_path)
+                    with Image.open(local_path) as image:
+                        return image.convert("RGB")
+                except Exception as e:
+                    await self._record_backend_issue(device, e)
+                    logger.warning(
+                        "  ⚠️ [find_pink] Backend screenshot failed, fallback ADB: %s",
+                        e,
+                    )
+
+            ret, _, stderr = await self._adb._run_adb(
+                device, "shell", "screencap", "-p", remote_path
+            )
+            if ret != 0:
+                logger.warning("  ⚠️ [find_pink] screencap failed: %s", stderr)
+                return None
+
+            ret, _, stderr = await self._adb._run_adb(device, "pull", remote_path, local_path)
+            if ret != 0:
+                logger.warning("  ⚠️ [find_pink] pull failed: %s", stderr)
+                return None
+
+            with Image.open(local_path) as image:
+                return image.convert("RGB")
+        finally:
+            try:
+                os.remove(local_path)
+            except OSError:
+                pass
+            try:
+                await self._adb._run_adb(device, "shell", "rm", "-f", remote_path)
+            except Exception:
+                pass
+
+    def _locate_send_button_in_image(
+        self,
+        image,
+        *,
+        input_bounds: tuple[int, int, int, int] | None = None,
+    ) -> tuple[int, int] | None:
+        """Locate the pink send button from a decoded screenshot image."""
+        rgb = image.convert("RGB")
+        w, h = rgb.size
+
+        windows: list[tuple[int, int, int, int, str]] = []
+        if input_bounds:
+            _, top, right, bottom = input_bounds
+            lane_top = max(int(h * 0.42), top - 120)
+            lane_bottom = min(int(h * 0.86), bottom + 140)
+            windows.append((
+                max(int(w * 0.82), right - 140),
+                lane_top,
+                w,
+                lane_bottom,
+                "tight_lane",
+            ))
+            windows.append((
+                max(int(w * 0.78), right - 220),
+                lane_top,
+                w,
+                min(int(h * 0.88), bottom + 220),
+                "expanded_lane",
+            ))
+
+        windows.append((int(w * 0.80), int(h * 0.44), w, int(h * 0.86), "fallback_right"))
+
+        for x_start, y_start, x_end, y_end, label in windows:
+            pink_points: list[tuple[int, int]] = []
+            for y in range(y_start, y_end, 2):
+                for x in range(x_start, x_end, 2):
+                    r, g, b = rgb.getpixel((x, y))
+                    if r > 205 and g < 135 and b < 190 and (r - g) > 55 and (r - b) > 20:
+                        pink_points.append((x, y))
+
+            if len(pink_points) < 20:
+                logger.warning(
+                    "  ⚠️ [find_pink] Too few pink pixels (%s) in %s",
+                    len(pink_points),
+                    label,
+                )
+                continue
+
+            remaining = set(pink_points)
+            components: list[list[tuple[int, int]]] = []
+            while remaining:
+                seed = remaining.pop()
+                stack = [seed]
+                component = [seed]
+                while stack:
+                    px, py = stack.pop()
+                    for dx in (-2, 0, 2):
+                        for dy in (-2, 0, 2):
+                            if dx == 0 and dy == 0:
+                                continue
+                            neighbor = (px + dx, py + dy)
+                            if neighbor in remaining:
+                                remaining.remove(neighbor)
+                                stack.append(neighbor)
+                                component.append(neighbor)
+                components.append(component)
+
+            best: tuple[int, int] | None = None
+            best_score = -1
+            for component in components:
+                xs = [pt[0] for pt in component]
+                ys = [pt[1] for pt in component]
+                cx = (min(xs) + max(xs)) // 2
+                cy = (min(ys) + max(ys)) // 2
+                bw = max(xs) - min(xs)
+                bh = max(ys) - min(ys)
+
+                if bw < 30 or bw > 180 or bh < 30 or bh > 180:
+                    continue
+                if cx < int(w * 0.80):
+                    continue
+
+                score = len(component)
+                if score > best_score:
+                    best = (cx, cy)
+                    best_score = score
+
+            if best:
+                logger.info(
+                    "  🎯 [find_pink] Send button via %s at (%s,%s) component_pixels=%s",
+                    label,
+                    best[0],
+                    best[1],
+                    best_score,
+                )
+                return best
+
+        return None
 
     async def _find_text_send_button(self, device: str) -> tuple[int, int] | None:
         """Find a visible text-based Send/Post button for non-overlay variants."""

@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 import unittest
 from unittest.mock import AsyncMock, Mock
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -294,6 +295,24 @@ class TikTokCommentVerificationTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(ok)
+
+    def test_locate_send_button_in_image_detects_bottom_right_circle(self):
+        controller = self._controller()
+        image = Image.new("RGB", (1080, 2280), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((60, 1880, 980, 2100), radius=60, fill=(248, 248, 248))
+        draw.line((220, 1980, 770, 1980), fill=(220, 70, 90), width=6)
+        draw.ellipse((905, 1940, 1025, 2060), fill=(255, 64, 108))
+
+        pos = controller._locate_send_button_in_image(
+            image,
+            input_bounds=(60, 1880, 980, 2100),
+        )
+
+        self.assertIsNotNone(pos)
+        x, y = pos
+        self.assertGreater(x, 920)
+        self.assertGreater(y, 1940)
 
     async def test_video_fingerprint_changes_with_distinct_feed_content(self):
         controller = self._controller()

@@ -248,6 +248,26 @@ Nhạc nền: bài xyz
 
 ---
 
+### 2.17 🟡 Raw Screencap Có Thể Làm Mù Detector Send Button
+
+**Triệu chứng**: Recorder và screenshot cho thấy nút Send đang sáng màu hồng rất rõ, nhưng `_find_pink_send_button()` vẫn log `Too few pink pixels (0)` và `send_ready_ok = fail`.
+
+**Root cause**:
+1. Dò màu trực tiếp trên raw bytes từ `screencap` không ổn định giữa thiết bị vì channel order/format có thể khác
+2. Khi scan toàn vùng bên phải, detector cũ có thể gom cả underline đỏ trong ô input với nút Send thành một bbox quá lớn rồi reject
+
+**Giải pháp đã áp dụng** ✅:
+1. Chuyển detector sang **PNG screenshot thật**:
+   - ưu tiên `backend.capture_screenshot()`
+   - fallback `adb shell screencap -p` + pull file
+2. Scan theo lane gần ô input nhưng tách **connected components**
+3. Chỉ nhận component tròn/compact ở mép phải, bỏ underline đỏ mảnh trong field
+
+**Quy tắc mới**:
+> Send-button detection phải chạy trên ảnh đã decode (PNG/JPEG), không dựa vào raw screencap bytes.
+
+---
+
 ### 2.3 🟢 Unicode/Vietnamese Text Input — SOLVED
 
 **Vấn đề**: `adb shell input text` chỉ hỗ trợ ASCII. Comment tiếng Việt có dấu (ví dụ: "tuyệt vời!") bị mangled hoặc không gõ được.
