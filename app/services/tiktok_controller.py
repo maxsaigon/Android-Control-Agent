@@ -11,6 +11,7 @@ Key Design:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -546,6 +547,133 @@ class TikTokController:
         folded = self._fold_text(value or "")
         folded = re.sub(r"\s+", " ", folded)
         return folded.strip(" \t\r\n.,!?:;-'\"`()[]{}")
+
+    def _normalize_fingerprint_text(self, value: str) -> str:
+        """Normalize visible feed text for stable video fingerprinting."""
+        folded = self._fold_text(value or "")
+        folded = re.sub(r"\s+", " ", folded)
+        folded = re.sub(r"[^0-9a-z# ]+", " ", folded)
+        folded = re.sub(r"\s+", " ", folded)
+        return folded.strip()
+
+    def _collect_feed_signature_texts(
+        self,
+        elements: list[UIElement],
+        *,
+        max_count: int = 6,
+    ) -> list[str]:
+        """Collect stable visible feed texts that help fingerprint a video."""
+        ignore_tokens = (
+            "home", "shop", "friends", "inbox", "profile",
+            "follow", "like video", "read or add comments", "share video",
+            "add comment", "replying to", "comment history",
+            "newest to oldest", "oldest to newest", "totally awesome",
+            "first comment",
+        )
+
+        signatures: list[str] = []
+        seen = set()
+        for el in elements:
+            if "EditText" in el.cls:
+                continue
+
+            x1, y1, x2, y2 = el.bounds
+            if y1 < 140 or y2 > 2060:
+                continue
+            if x1 > 920:
+                continue
+
+            for raw in (el.text or "", el.content_desc or ""):
+                cleaned = self._normalize_fingerprint_text(raw)
+                if len(cleaned) < 4:
+                    continue
+                if cleaned in seen:
+                    continue
+                if re.fullmatch(r"[\d,.kmb ]+", cleaned):
+                    continue
+                if any(token in cleaned for token in ignore_tokens):
+                    continue
+                seen.add(cleaned)
+                signatures.append(cleaned[:120])
+                if len(signatures) >= max_count:
+                    return signatures
+        return signatures
+
+    def _extract_video_info_from_elements(self, elements: list[UIElement]) -> dict:
+        """Extract visible current-video metadata from a feed screen."""
+        info = {}
+
+        for el in elements:
+            desc = el.content_desc
+            if not desc:
+                continue
+
+            like_m = re.search(r"Like video\.\s*([\d,.KMB]+)", desc)
+            if like_m:
+                info["likes"] = like_m.group(1)
+
+            comment_m = re.search(r"([\d,.KMB]+)\s*comments?", desc)
+            if comment_m:
+                info["comments"] = comment_m.group(1)
+
+            share_m = re.search(r"([\d,.KMB]+)\s*shares?", desc)
+            if share_m:
+                info["shares"] = share_m.group(1)
+
+            if desc.startswith("Sound:"):
+                info["sound"] = desc[7:].strip()
+
+            if "profile" in desc.lower() and not desc.startswith("Profile"):
+                info["author"] = desc.replace(" profile", "").strip()
+
+            follow_m = re.search(r"^Follow\s+(.+)", desc)
+            if follow_m:
+                info["author"] = follow_m.group(1)
+
+        for el in elements:
+            if "#" in el.text and len(el.text) > 3:
+                info["description"] = el.text[:200]
+                break
+
+        return info
+
+    def build_video_fingerprint(
+        self,
+        elements: list[UIElement],
+        *,
+        video_info: dict | None = None,
+    ) -> str:
+        """Build a stable fingerprint for the currently visible feed item."""
+        info = dict(video_info or {})
+        if not info:
+            info = self._extract_video_info_from_elements(elements)
+
+        parts: list[str] = []
+        for key in ("author", "description", "sound", "likes", "comments", "shares"):
+            value = self._normalize_fingerprint_text(str(info.get(key) or ""))
+            if value:
+                parts.append(f"{key}:{value[:160]}")
+
+        for text in self._collect_feed_signature_texts(elements):
+            parts.append(f"text:{text[:160]}")
+
+        unique_parts: list[str] = []
+        seen = set()
+        for part in parts:
+            if part in seen:
+                continue
+            seen.add(part)
+            unique_parts.append(part)
+
+        meaningful_parts = [
+            part for part in unique_parts
+            if part.startswith(("author:", "description:", "sound:", "text:"))
+        ]
+        if len(meaningful_parts) < 2:
+            return ""
+
+        digest = hashlib.sha1("|".join(unique_parts).encode("utf-8")).hexdigest()[:16]
+        return digest
 
     def _expected_text_tokens(self, expected_text: str) -> list[str]:
         """Build stable verification tokens from expected input text."""
@@ -1403,44 +1531,37 @@ class TikTokController:
         Returns dict with: author, likes, comments, shares, sound, hashtags
         """
         elements = await self.dump_ui(device)
-        info = {}
+        return self._extract_video_info_from_elements(elements)
 
-        for el in elements:
-            desc = el.content_desc
-            if not desc:
-                continue
+    async def get_video_fingerprint(
+        self,
+        device: str,
+        *,
+        video_info: dict | None = None,
+    ) -> str:
+        """Return a stable fingerprint for the current feed video."""
+        elements = await self.dump_ui(device)
+        return self.build_video_fingerprint(elements, video_info=video_info)
 
-            # Extract counts from content-desc
-            like_m = re.search(r"Like video\.\s*([\d,.KMB]+)", desc)
-            if like_m:
-                info["likes"] = like_m.group(1)
+    async def wait_for_new_video(
+        self,
+        device: str,
+        previous_fingerprint: str,
+        *,
+        timeout: float = 3.0,
+        poll_interval: float = 0.5,
+    ) -> str | None:
+        """Wait until TikTok feed changes away from a previous fingerprint."""
+        if not previous_fingerprint:
+            return None
 
-            comment_m = re.search(r"([\d,.KMB]+)\s*comments?", desc)
-            if comment_m:
-                info["comments"] = comment_m.group(1)
-
-            share_m = re.search(r"([\d,.KMB]+)\s*shares?", desc)
-            if share_m:
-                info["shares"] = share_m.group(1)
-
-            if desc.startswith("Sound:"):
-                info["sound"] = desc[7:].strip()
-
-            if "profile" in desc.lower() and not desc.startswith("Profile"):
-                info["author"] = desc.replace(" profile", "").strip()
-
-            # Follow button shows username
-            follow_m = re.search(r"^Follow\s+(.+)", desc)
-            if follow_m:
-                info["author"] = follow_m.group(1)
-
-        # Extract hashtags from description text
-        for el in elements:
-            if "#" in el.text and len(el.text) > 3:
-                info["description"] = el.text[:200]
-                break
-
-        return info
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            current = await self.get_video_fingerprint(device)
+            if current and current != previous_fingerprint:
+                return current
+            await asyncio.sleep(poll_interval)
+        return None
 
     async def read_comments(self, device: str, max_count: int = 10) -> list[dict]:
         """Read visible comments from the open comment panel.

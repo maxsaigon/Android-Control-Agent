@@ -695,6 +695,42 @@ class ScriptRunner:
         await self._step("swipe_up", "next content")
         await human_behavior.random_delay("swipe")
 
+    async def _advance_tiktok_feed(
+        self,
+        tiktok,
+        previous_fingerprint: str | None,
+        *,
+        max_swipes: int = 3,
+    ) -> str | None:
+        """Advance TikTok feed and verify that the visible video changed."""
+        baseline = previous_fingerprint or ""
+        for attempt in range(max_swipes):
+            await self._swipe_up()
+            if not baseline:
+                return None
+
+            next_fingerprint = await tiktok.wait_for_new_video(
+                self._device,
+                baseline,
+                timeout=2.8,
+                poll_interval=0.45,
+            )
+            if next_fingerprint and next_fingerprint != baseline:
+                if attempt:
+                    await self._step(
+                        "swipe_recovered",
+                        f"feed advanced after extra swipe {attempt + 1}/{max_swipes}",
+                    )
+                return next_fingerprint
+
+            await self._step(
+                "swipe_retry",
+                f"video fingerprint unchanged after swipe {attempt + 1}/{max_swipes}",
+            )
+
+        await self._step("swipe_stuck", "video fingerprint unchanged after repeated swipes")
+        return baseline or None
+
     async def _scroll_down(self):
         """Scroll down (shorter swipe than full page)."""
         w, h = await self._backend_call("get_screen_size")
@@ -1109,6 +1145,7 @@ class ScriptRunner:
         comments_verified = 0
         comments_failed = 0
         used_comments = set()
+        handled_video_fingerprints = set()
         videos_since_last_comment = 0
 
         for i in range(count * 4):  # Browse many more videos than comments
@@ -1121,6 +1158,12 @@ class ScriptRunner:
 
             # [Script] View current video
             await self._wait(view_time_min, view_time_max, f"watching video {i+1}")
+
+            current_video_fingerprint = ""
+            try:
+                current_video_fingerprint = await tiktok.get_video_fingerprint(self._device)
+            except Exception as e:
+                logger.warning("Failed to fingerprint current TikTok video: %s", e)
 
             # [Script] Only comment if skipped at least 2 videos since last comment
             should_comment = (
@@ -1137,6 +1180,32 @@ class ScriptRunner:
                 )
 
                 try:
+                    if not current_video_fingerprint:
+                        cycle_status = "skipped_unfingerprinted"
+                        await self._step(
+                            "skip_unfingerprinted_video",
+                            "current video fingerprint unavailable; skip to avoid duplicate comment risk",
+                        )
+                        videos_since_last_comment = 0
+                        await self._advance_tiktok_feed(tiktok, None)
+                        continue
+
+                    if current_video_fingerprint in handled_video_fingerprints:
+                        cycle_status = "skipped_duplicate_video"
+                        await self._step(
+                            "skip_duplicate_video",
+                            f"video already handled in this session ({current_video_fingerprint[:8]})",
+                        )
+                        videos_since_last_comment = 0
+                        await self._advance_tiktok_feed(tiktok, current_video_fingerprint)
+                        continue
+
+                    handled_video_fingerprints.add(current_video_fingerprint)
+                    await self._step(
+                        "video_lock",
+                        f"single-attempt lock for video {current_video_fingerprint[:8]}",
+                    )
+
                     # [Step 1] Get video info from feed (before opening panel)
                     video_info = {}
                     try:
@@ -1150,14 +1219,14 @@ class ScriptRunner:
                         cycle_status = "skipped_live"
                         await self._step("skip_live", "LIVE session detected; skip because template targets video comments")
                         videos_since_last_comment = 0
-                        await self._swipe_up()
+                        await self._advance_tiktok_feed(tiktok, current_video_fingerprint)
                         continue
 
                     tapped = await tiktok.tap_comment_icon(self._device)
                     await self._step("tap", f"open comments ({'ui' if tapped else 'failed'})")
                     if not tapped:
                         videos_since_last_comment = 0
-                        await self._swipe_up()
+                        await self._advance_tiktok_feed(tiktok, current_video_fingerprint)
                         cycle_status = "tap_failed"
                         continue
                     await self._wait(1.5, 3, "comments loading")
@@ -1166,7 +1235,7 @@ class ScriptRunner:
                         cycle_status = "skipped_live"
                         await self._step("skip_live", "LIVE chat UI detected after opening comments; skip this session")
                         videos_since_last_comment = 0
-                        await self._swipe_up()
+                        await self._advance_tiktok_feed(tiktok, current_video_fingerprint)
                         continue
 
                     # [Step 3] Read existing comments for AI context
@@ -1275,7 +1344,7 @@ class ScriptRunner:
                 videos_since_last_comment += 1
 
             # [Script] Swipe to next
-            await self._swipe_up()
+            await self._advance_tiktok_feed(tiktok, current_video_fingerprint)
 
         mode_label = "hybrid AI+script" if use_ai else "script-only"
         return ScriptResult(

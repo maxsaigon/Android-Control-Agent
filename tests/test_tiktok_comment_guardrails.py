@@ -46,6 +46,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         tiktok = AsyncMock()
         tiktok.ensure_on_feed = AsyncMock(return_value=True)
         tiktok.is_live_session = AsyncMock(return_value=False)
+        tiktok.get_video_fingerprint = AsyncMock(return_value="fp-1")
         tiktok.get_video_info = AsyncMock(return_value={"author": "tester", "description": "desc"})
         tiktok.tap_comment_icon = AsyncMock(return_value=True)
         tiktok.read_comments = AsyncMock(return_value=[{"text": "existing"}])
@@ -55,6 +56,7 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
 
         self.runner._open_app = AsyncMock()
         self.runner._swipe_up = AsyncMock()
+        self.runner._advance_tiktok_feed = AsyncMock(return_value="fp-next")
         self.runner._get_tiktok_controller = Mock(return_value=tiktok)
         self.runner._attempt_comment = AsyncMock(side_effect=[False, True])
 
@@ -71,6 +73,43 @@ class TikTokCommentGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.verified_actions, 1)
         self.assertEqual(result.failed_actions, 0)
+
+    async def test_session_skips_already_handled_video_fingerprint(self):
+        tiktok = AsyncMock()
+        tiktok.ensure_on_feed = AsyncMock(return_value=True)
+        tiktok.is_live_session = AsyncMock(return_value=False)
+        tiktok.get_video_fingerprint = AsyncMock(return_value="fp-dup")
+        tiktok.get_video_info = AsyncMock(return_value={"author": "tester", "description": "desc"})
+        tiktok.tap_comment_icon = AsyncMock(return_value=True)
+        tiktok.read_comments = AsyncMock(return_value=[{"text": "existing"}])
+        tiktok.has_helper_service_issue = Mock(return_value=False)
+        tiktok.close_panel = AsyncMock(return_value=True)
+        tiktok.capture_verification_screenshot = AsyncMock()
+
+        self.runner._open_app = AsyncMock()
+        self.runner._swipe_up = AsyncMock()
+        self.runner._advance_tiktok_feed = AsyncMock(return_value="fp-dup")
+        self.runner._get_tiktok_controller = Mock(return_value=tiktok)
+        self.runner._attempt_comment = AsyncMock(return_value=True)
+
+        with unittest.mock.patch("app.services.script_runner.random.random", return_value=0.1):
+            result = await self.runner._tiktok_comment(
+                count=2,
+                view_time_min=0,
+                view_time_max=0,
+                like_after_comment=0.0,
+                use_ai=False,
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.verified_actions, 1)
+        self.assertEqual(self.runner._attempt_comment.await_count, 1)
+        self.assertTrue(
+            any(
+                call.args[0] == "skip_duplicate_video"
+                for call in self.runner._step.await_args_list
+            )
+        )
 
     async def test_send_comment_forces_no_blind_fallback(self):
         tiktok = AsyncMock()
@@ -229,6 +268,26 @@ class TikTokCommentVerificationTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(ok)
+
+    async def test_video_fingerprint_changes_with_distinct_feed_content(self):
+        controller = self._controller()
+        first = [
+            self._el(desc="alice profile"),
+            self._el(desc="Sound: Song One"),
+            self._el(text="#coffee vibes", bounds=(120, 1560, 980, 1680)),
+        ]
+        second = [
+            self._el(desc="bob profile"),
+            self._el(desc="Sound: Song Two"),
+            self._el(text="#travel vibes", bounds=(120, 1560, 980, 1680)),
+        ]
+
+        fp1 = controller.build_video_fingerprint(first)
+        fp2 = controller.build_video_fingerprint(second)
+
+        self.assertTrue(fp1)
+        self.assertTrue(fp2)
+        self.assertNotEqual(fp1, fp2)
 
 
 if __name__ == "__main__":
