@@ -13,6 +13,260 @@ logger = logging.getLogger(__name__)
 engine = create_engine(settings.database_url, echo=False)
 
 
+def _table_exists(conn: sqlalchemy.engine.Connection, table: str) -> bool:
+    row = conn.execute(
+        sqlalchemy.text(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = :table"
+        ),
+        {"table": table},
+    ).first()
+    return row is not None
+
+
+def _table_columns(
+    conn: sqlalchemy.engine.Connection,
+    table: str,
+) -> set[str]:
+    if not _table_exists(conn, table):
+        return set()
+    return {
+        row[1]  # index 1 = column name in PRAGMA table_info
+        for row in conn.execute(sqlalchemy.text(f"PRAGMA table_info('{table}')"))
+    }
+
+
+def _add_column_if_missing(
+    conn: sqlalchemy.engine.Connection,
+    table: str,
+    column: str,
+    column_def: str,
+) -> None:
+    existing_cols = _table_columns(conn, table)
+    if column in existing_cols:
+        return
+    try:
+        conn.execute(
+            sqlalchemy.text(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+        )
+        conn.commit()
+        logger.info("migrate_db: added column %s.%s", table, column)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("migrate_db: could not add %s.%s: %s", table, column, exc)
+
+
+def _normalize_enum_column(
+    conn: sqlalchemy.engine.Connection,
+    table: str,
+    column: str,
+    mapping: dict[str, str],
+) -> None:
+    if column not in _table_columns(conn, table):
+        return
+    for old_value, new_value in mapping.items():
+        try:
+            conn.execute(
+                sqlalchemy.text(
+                    f"UPDATE {table} SET {column} = :new_value "
+                    f"WHERE {column} = :old_value"
+                ),
+                {"new_value": new_value, "old_value": old_value},
+            )
+            conn.commit()
+        except Exception as exc:  # pragma: no cover
+            logger.warning(
+                "migrate_db: could not normalize %s.%s (%s -> %s): %s",
+                table,
+                column,
+                old_value,
+                new_value,
+                exc,
+            )
+
+
+def _backfill_nulls(
+    conn: sqlalchemy.engine.Connection,
+    table: str,
+    column: str,
+    sql_value: str,
+) -> None:
+    if column not in _table_columns(conn, table):
+        return
+    try:
+        conn.execute(
+            sqlalchemy.text(
+                f"UPDATE {table} SET {column} = {sql_value} WHERE {column} IS NULL"
+            )
+        )
+        conn.commit()
+    except Exception as exc:  # pragma: no cover
+        logger.warning(
+            "migrate_db: could not backfill %s.%s with %s: %s",
+            table,
+            column,
+            sql_value,
+            exc,
+        )
+
+
+def _index_definitions(
+    conn: sqlalchemy.engine.Connection,
+    table: str,
+) -> list[tuple[str, bool, tuple[str, ...]]]:
+    if not _table_exists(conn, table):
+        return []
+    result: list[tuple[str, bool, tuple[str, ...]]] = []
+    for row in conn.execute(sqlalchemy.text(f"PRAGMA index_list('{table}')")):
+        idx_name = row[1]
+        is_unique = bool(row[2])
+        idx_cols = tuple(
+            col_row[2]
+            for col_row in conn.execute(
+                sqlalchemy.text(f"PRAGMA index_info('{idx_name}')")
+            )
+        )
+        result.append((idx_name, is_unique, idx_cols))
+    return result
+
+
+def _column_copy_expr(
+    existing_columns: set[str],
+    column: str,
+    *,
+    default_sql: str = "NULL",
+) -> str:
+    if column in existing_columns:
+        return f"COALESCE({column}, {default_sql}) AS {column}"
+    return f"{default_sql} AS {column}"
+
+
+def _legacy_videoassignment_indexes(
+    conn: sqlalchemy.engine.Connection,
+) -> list[tuple[str, tuple[str, ...]]]:
+    legacy_signatures = {
+        ("device_id", "platform"),
+        ("video_id", "platform"),
+    }
+    return [
+        (name, cols)
+        for name, is_unique, cols in _index_definitions(conn, "videoassignment")
+        if is_unique and cols in legacy_signatures
+    ]
+
+
+def _rebuild_videoassignment_table(conn: sqlalchemy.engine.Connection) -> None:
+    if not _table_exists(conn, "videoassignment"):
+        return
+
+    existing_columns = _table_columns(conn, "videoassignment")
+    backup_table = "videoassignment__backup_pre_rebuild"
+
+    logger.warning(
+        "migrate_db: rebuilding legacy videoassignment table to preserve data "
+        "and replace outdated unique constraints"
+    )
+
+    conn.execute(sqlalchemy.text(f"DROP TABLE IF EXISTS {backup_table}"))
+    conn.execute(
+        sqlalchemy.text(
+            """
+            CREATE TABLE videoassignment__new (
+                id INTEGER PRIMARY KEY,
+                video_id INTEGER NOT NULL,
+                device_id INTEGER NOT NULL,
+                platform VARCHAR NOT NULL,
+                push_status VARCHAR DEFAULT 'PENDING',
+                upload_status VARCHAR DEFAULT 'PENDING',
+                device_path TEXT,
+                pushed_at DATETIME,
+                uploaded_at DATETIME,
+                task_id INTEGER,
+                error TEXT,
+                last_error TEXT,
+                last_run_at DATETIME,
+                created_at DATETIME
+            )
+            """
+        )
+    )
+    conn.execute(
+        sqlalchemy.text(
+            """
+            INSERT OR IGNORE INTO videoassignment__new (
+                id,
+                video_id,
+                device_id,
+                platform,
+                push_status,
+                upload_status,
+                device_path,
+                pushed_at,
+                uploaded_at,
+                task_id,
+                error,
+                last_error,
+                last_run_at,
+                created_at
+            )
+            SELECT
+                id,
+                video_id,
+                device_id,
+                platform,
+                """
+            + _column_copy_expr(existing_columns, "push_status", default_sql="'PENDING'")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "upload_status", default_sql="'PENDING'")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "device_path")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "pushed_at")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "uploaded_at")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "task_id")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "error")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "last_error")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "last_run_at")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "created_at", default_sql="CURRENT_TIMESTAMP")
+            + """
+            FROM videoassignment
+            ORDER BY id DESC
+            """
+        )
+    )
+    conn.execute(sqlalchemy.text("ALTER TABLE videoassignment RENAME TO videoassignment__backup_pre_rebuild"))
+    conn.execute(sqlalchemy.text("ALTER TABLE videoassignment__new RENAME TO videoassignment"))
+    conn.execute(
+        sqlalchemy.text("DROP INDEX IF EXISTS uq_videoassignment_video_device_platform")
+    )
+    conn.execute(
+        sqlalchemy.text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_videoassignment_video_device_platform
+            ON videoassignment (video_id, device_id, platform)
+            """
+        )
+    )
+    conn.commit()
+    logger.info(
+        "migrate_db: rebuilt videoassignment table; legacy copy kept in %s",
+        backup_table,
+    )
+
+
 def create_db_and_tables():
     """Create all database tables."""
     SQLModel.metadata.create_all(engine)
@@ -31,38 +285,45 @@ def migrate_db():
         # (table_name, column_name, sqlite_type_def)
         ("task", "template_vars_json", "TEXT"),
         ("task", "assignment_id", "INTEGER"),
+        ("video", "description", "TEXT"),
+        ("video", "file_cleaned_at", "DATETIME"),
+        ("video", "ai_title", "TEXT"),
+        ("video", "ai_tags", "TEXT"),
+        ("video", "ai_description", "TEXT"),
+        ("video", "ai_generated_at", "DATETIME"),
+        ("video", "thumbnail", "TEXT"),
+        ("video", "created_at", "DATETIME"),
+        ("videoassignment", "device_path", "TEXT"),
+        ("videoassignment", "pushed_at", "DATETIME"),
+        ("videoassignment", "uploaded_at", "DATETIME"),
+        ("videoassignment", "task_id", "INTEGER"),
+        ("videoassignment", "error", "TEXT"),
         ("videoassignment", "upload_status", "VARCHAR DEFAULT 'pending'"),
         ("videoassignment", "last_error", "TEXT"),
         ("videoassignment", "last_run_at", "DATETIME"),
         ("videoassignment", "push_status", "VARCHAR DEFAULT 'pending'"),
+        ("videoassignment", "created_at", "DATETIME"),
+        ("deviceaccount", "account_name", "TEXT"),
+        ("deviceaccount", "notes", "TEXT"),
+        ("deviceaccount", "created_at", "DATETIME"),
     ]
 
     with engine.connect() as conn:
         for table, col, col_def in _migrations:
-            existing_cols = {
-                row[1]  # index 1 = column name in PRAGMA table_info
-                for row in conn.execute(
-                    sqlalchemy.text(f"PRAGMA table_info('{table}')")
-                )
-            }
-            if col not in existing_cols:
-                try:
-                    conn.execute(
-                        sqlalchemy.text(
-                            f"ALTER TABLE {table} ADD COLUMN {col} {col_def}"
-                        )
-                    )
-                    conn.commit()
-                    logger.info("migrate_db: added column %s.%s", table, col)
-                except Exception as exc:  # pragma: no cover
-                    logger.warning(
-                        "migrate_db: could not add %s.%s: %s", table, col, exc
-                    )
+            _add_column_if_missing(conn, table, col, col_def)
 
         # Normalize legacy enum values written as lowercase strings.
         # SQLAlchemy Enum stores member names (e.g., PENDING), while some old rows
         # may contain member values (e.g., pending), causing lookup errors.
         enum_normalizers = [
+            (
+                "video",
+                "status",
+                {
+                    "available": "AVAILABLE",
+                    "archived": "ARCHIVED",
+                },
+            ),
             (
                 "videoassignment",
                 "upload_status",
@@ -88,25 +349,15 @@ def migrate_db():
             ),
         ]
         for table, column, mapping in enum_normalizers:
-            for old_value, new_value in mapping.items():
-                try:
-                    conn.execute(
-                        sqlalchemy.text(
-                            f"UPDATE {table} SET {column} = :new_value "
-                            f"WHERE {column} = :old_value"
-                        ),
-                        {"new_value": new_value, "old_value": old_value},
-                    )
-                    conn.commit()
-                except Exception as exc:  # pragma: no cover
-                    logger.warning(
-                        "migrate_db: could not normalize %s.%s (%s -> %s): %s",
-                        table,
-                        column,
-                        old_value,
-                        new_value,
-                        exc,
-                    )
+            _normalize_enum_column(conn, table, column, mapping)
+
+        # Backfill critical nulls so ORM reads do not fail on legacy rows.
+        _backfill_nulls(conn, "video", "status", "'AVAILABLE'")
+        _backfill_nulls(conn, "video", "created_at", "CURRENT_TIMESTAMP")
+        _backfill_nulls(conn, "videoassignment", "push_status", "'PENDING'")
+        _backfill_nulls(conn, "videoassignment", "upload_status", "'PENDING'")
+        _backfill_nulls(conn, "videoassignment", "created_at", "CURRENT_TIMESTAMP")
+        _backfill_nulls(conn, "deviceaccount", "created_at", "CURRENT_TIMESTAMP")
 
         # Recover stale assignment statuses left behind by restarted/failed workers.
         # Example: assignment upload_status still RUNNING while linked task is CANCELLED.
@@ -185,69 +436,21 @@ def migrate_db():
                 conn.commit()
                 logger.info("migrate_db: created unique index %s on %s", index_name, table)
             except Exception as exc:  # pragma: no cover
-                logger.warning(
-                    "migrate_db: could not create unique index %s on %s: %s",
-                    index_name,
-                    table,
-                    exc,
-                )
-
-        # Cleanup accidental unique index on (device_id, platform) for VideoAssignment.
-        # This index incorrectly limits each device+platform to a single assignment.
-        try:
-            for row in conn.execute(sqlalchemy.text("PRAGMA index_list('videoassignment')")):
-                idx_name = row[1]
-                is_unique = bool(row[2])
-                if not is_unique:
-                    continue
-                idx_cols = tuple(
-                    col_row[2]
-                    for col_row in conn.execute(
-                        sqlalchemy.text(f"PRAGMA index_info('{idx_name}')")
-                    )
-                )
-                if idx_cols != ("device_id", "platform"):
-                    continue
-                if idx_name.startswith("sqlite_autoindex"):
                     logger.warning(
-                        "migrate_db: detected auto unique index %s on videoassignment(device_id, platform). "
-                        "SQLite cannot drop auto indexes directly; table rebuild is required.",
-                        idx_name,
+                        "migrate_db: could not create unique index %s on %s: %s",
+                        index_name,
+                        table,
+                        exc,
                     )
-                    continue
-                conn.execute(sqlalchemy.text(f"DROP INDEX IF EXISTS {idx_name}"))
-                conn.commit()
-                logger.info("migrate_db: dropped incorrect unique index %s", idx_name)
-        except Exception as exc:  # pragma: no cover
-            logger.warning("migrate_db: index cleanup warning: %s", exc)
 
-        # Replace legacy uniqueness on (video_id, platform) with (video_id, device_id, platform).
-        try:
-            for row in conn.execute(sqlalchemy.text("PRAGMA index_list('videoassignment')")):
-                idx_name = row[1]
-                is_unique = bool(row[2])
-                if not is_unique:
-                    continue
-                idx_cols = tuple(
-                    col_row[2]
-                    for col_row in conn.execute(
-                        sqlalchemy.text(f"PRAGMA index_info('{idx_name}')")
-                    )
-                )
-                if idx_cols != ("video_id", "platform"):
-                    continue
-                if idx_name.startswith("sqlite_autoindex"):
-                    logger.warning(
-                        "migrate_db: detected auto unique index %s on videoassignment(video_id, platform). "
-                        "SQLite cannot drop auto indexes directly; table rebuild would be required if this env still uses the old table definition.",
-                        idx_name,
-                    )
-                    continue
-                conn.execute(sqlalchemy.text(f"DROP INDEX IF EXISTS {idx_name}"))
-                conn.commit()
-                logger.info("migrate_db: dropped legacy unique index %s", idx_name)
-        except Exception as exc:  # pragma: no cover
-            logger.warning("migrate_db: legacy video/platform index cleanup warning: %s", exc)
+        # Replace legacy uniqueness on VideoAssignment via table rebuild so
+        # old deploys keep their data while enabling per-device distribution.
+        legacy_indexes = _legacy_videoassignment_indexes(conn)
+        if legacy_indexes:
+            try:
+                _rebuild_videoassignment_table(conn)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("migrate_db: videoassignment rebuild warning: %s", exc)
 
 
 def get_session():
