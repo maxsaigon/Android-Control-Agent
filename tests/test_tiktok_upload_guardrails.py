@@ -1,7 +1,9 @@
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+import unittest.mock
 
 from PIL import Image, ImageDraw
 
@@ -134,3 +136,68 @@ class TikTokUploadPreviewGuardrailsTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         controller.return_to_gallery_grid.assert_awaited_once_with("cloud:1")
         controller._select_gallery_video_by_visual_match.assert_awaited_once()
+
+    async def test_dump_all_ui_nodes_falls_back_to_accessibility(self):
+        controller = self._controller()
+        controller.dump_ui_xml = AsyncMock(return_value="")
+        fake_nodes = [
+            SimpleNamespace(
+                text="Home",
+                content_desc="",
+                package="com.ss.android.ugc.trill",
+                class_name="android.widget.TextView",
+                clickable=True,
+                bounds=(0, 0, 100, 100),
+            ),
+            SimpleNamespace(
+                text="Add to Home screen",
+                content_desc="",
+                package="jp.co.sharp.android.launcher3",
+                class_name="android.widget.TextView",
+                clickable=False,
+                bounds=(0, 0, 100, 100),
+            ),
+        ]
+
+        with unittest.mock.patch("app.services.backend_manager.backend_manager") as backend_manager:
+            backend_manager.accessibility.ping = AsyncMock(return_value=True)
+            backend_manager.accessibility.get_ui_tree = AsyncMock(return_value=fake_nodes)
+
+            nodes = await controller._dump_all_ui_nodes("cloud:1")
+
+        self.assertEqual(len(nodes), 2)
+        self.assertEqual(nodes[0]["text"], "Home")
+        self.assertEqual(nodes[1]["pkg"], "jp.co.sharp.android.launcher3")
+
+    async def test_dump_ui_falls_back_to_accessibility_tree(self):
+        controller = self._controller()
+        controller._adb._run_adb = AsyncMock(side_effect=[(0, "", ""), (0, "", "")])
+        fake_nodes = [
+            SimpleNamespace(
+                resource_id="id/home",
+                content_desc="Home",
+                text="",
+                class_name="android.widget.TextView",
+                bounds=(0, 0, 100, 100),
+                clickable=True,
+                package="com.ss.android.ugc.trill",
+            ),
+            SimpleNamespace(
+                resource_id="id/other",
+                content_desc="Other",
+                text="",
+                class_name="android.widget.TextView",
+                bounds=(0, 0, 100, 100),
+                clickable=True,
+                package="com.example.other",
+            ),
+        ]
+
+        with unittest.mock.patch("app.services.backend_manager.backend_manager") as backend_manager:
+            backend_manager.accessibility.ping = AsyncMock(return_value=True)
+            backend_manager.accessibility.get_ui_tree = AsyncMock(return_value=fake_nodes)
+
+            elements = await controller.dump_ui("cloud:1")
+
+        self.assertEqual(len(elements), 1)
+        self.assertEqual(elements[0].content_desc, "Home")

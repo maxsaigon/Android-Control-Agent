@@ -321,11 +321,12 @@ class TikTokController:
         but in different data classes.
         """
         async def _dump_via_accessibility() -> list[UIElement]:
-            await self._get_backend(device)
-            if not self._backend:
-                return []
             try:
-                nodes = await self._backend.get_ui_tree(device)
+                from app.services.backend_manager import backend_manager
+
+                if not await backend_manager.accessibility.ping(device):
+                    return []
+                nodes = await backend_manager.accessibility.get_ui_tree(device)
             except Exception as backend_error:
                 await self._record_backend_issue(device, backend_error)
                 logger.warning(f"UI tree fallback failed: {backend_error}")
@@ -439,6 +440,30 @@ class TikTokController:
         """Dump UI nodes from all packages for cross-app popup detection."""
         xml_raw = await self.dump_ui_xml(device)
         if not xml_raw:
+            try:
+                from app.services.backend_manager import backend_manager
+
+                if await backend_manager.accessibility.ping(device):
+                    nodes = await backend_manager.accessibility.get_ui_tree(device)
+                    all_nodes = [
+                        {
+                            "text": (node.text or "").strip(),
+                            "desc": (node.content_desc or "").strip(),
+                            "pkg": node.package or "",
+                            "cls": node.class_name or "",
+                            "clickable": bool(node.clickable),
+                            "bounds": node.bounds,
+                        }
+                        for node in nodes
+                    ]
+                    logger.info(
+                        "UI node fallback via accessibility: found %s nodes",
+                        len(all_nodes),
+                    )
+                    return all_nodes
+            except Exception as backend_error:
+                await self._record_backend_issue(device, backend_error)
+                logger.warning("UI node fallback failed: %s", backend_error)
             return []
 
         try:
