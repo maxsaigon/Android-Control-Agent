@@ -1513,6 +1513,85 @@ class TikTokController:
             return None
         return relative_path.split("/")[-1] or None
 
+    def _parse_duration_label_seconds(self, label: str | None) -> int | None:
+        """Convert a gallery duration label like 01:01 into total seconds."""
+        if not label:
+            return None
+        raw = label.strip()
+        if not self.DURATION_PATTERN.match(raw):
+            return None
+        parts = raw.split(":")
+        if len(parts) != 2:
+            return None
+        try:
+            minutes = int(parts[0])
+            seconds = int(parts[1])
+        except ValueError:
+            return None
+        return (minutes * 60) + seconds
+
+    def _media_duration_seconds(self, media_row: dict | None) -> int | None:
+        """Convert MediaStore duration milliseconds into rounded display seconds."""
+        if not media_row:
+            return None
+        raw = str(media_row.get("duration") or "").strip()
+        if not raw:
+            return None
+        try:
+            duration_ms = int(raw)
+        except ValueError:
+            return None
+        return max(0, int(round(duration_ms / 1000.0)))
+
+    def _rank_gallery_video_candidates(
+        self,
+        candidates: list[dict],
+        *,
+        expected_duration_seconds: int | None = None,
+    ) -> list[dict]:
+        """Rank visible gallery tiles using duration fit first, then thumbnail similarity."""
+        ranked: list[dict] = []
+        for candidate in candidates:
+            item = dict(candidate)
+            tile_similarity = float(item.get("tile_similarity", 0.0) or 0.0)
+            duration_seconds = self._parse_duration_label_seconds(item.get("duration"))
+            duration_delta = None
+            duration_score = None
+            duration_blocked = False
+
+            if expected_duration_seconds is not None and duration_seconds is not None:
+                duration_delta = abs(duration_seconds - expected_duration_seconds)
+                duration_score = max(0.0, 1.0 - (duration_delta / 12.0))
+                duration_blocked = duration_delta > 3
+
+            if duration_score is None:
+                selection_score = tile_similarity
+            else:
+                selection_score = (duration_score * 0.72) + (tile_similarity * 0.28)
+                if duration_blocked:
+                    selection_score -= 0.35
+
+            item["duration_seconds"] = duration_seconds
+            item["duration_delta"] = duration_delta
+            item["duration_score"] = duration_score
+            item["duration_blocked"] = duration_blocked
+            item["selection_score"] = selection_score
+            ranked.append(item)
+
+        return sorted(
+            ranked,
+            key=lambda item: (
+                item.get("duration_blocked", False),
+                -(item.get("selection_score", 0.0)),
+                item.get("duration_delta", 10**9)
+                if item.get("duration_delta") is not None
+                else 10**9,
+                -(item.get("tile_similarity", 0.0)),
+                item["bounds"][1],
+                item["bounds"][0],
+            ),
+        )
+
     def _detect_gallery_album_label(self, elements: list[UIElement]) -> str | None:
         """Detect the current album label shown in the gallery header."""
         ignored = {
@@ -1761,6 +1840,7 @@ class TikTokController:
         device: str,
         *,
         reference_image,
+        expected_duration_seconds: int | None = None,
         max_pages: int = 2,
     ) -> bool:
         """Select the best-matching visible video tile and verify its preview."""
@@ -1785,28 +1865,48 @@ class TikTokController:
                 candidate["tile_similarity"] = self._image_similarity(crop, reference_image)
                 ranked.append(candidate)
 
-            ranked.sort(key=lambda item: item.get("tile_similarity", 0.0), reverse=True)
+            ranked = self._rank_gallery_video_candidates(
+                ranked,
+                expected_duration_seconds=expected_duration_seconds,
+            )
             if ranked:
                 logger.info(
                     "  🧭 [gallery_match] Page %s top tile similarities: %s",
                     page,
                     [
-                        f"{item['duration']}@{item['bounds']}={item['tile_similarity']:.3f}"
+                        f"{item['duration']}@{item['bounds']}="
+                        f"tile={item['tile_similarity']:.3f},"
+                        f"sel={item['selection_score']:.3f},"
+                        f"delta={item['duration_delta']}"
                         for item in ranked[:3]
                     ],
                 )
 
             for candidate in ranked[:4]:
+                if candidate.get("duration_blocked"):
+                    logger.info(
+                        "  ⏭️ [gallery_match] Skip tile %s due to duration delta=%ss "
+                        "(expected=%ss)",
+                        candidate["duration"],
+                        candidate.get("duration_delta"),
+                        expected_duration_seconds,
+                    )
+                    tried_candidates.add(candidate["bounds"])
+                    continue
+
                 tried_candidates.add(candidate["bounds"])
                 x, y = candidate["center"]
                 x += random.randint(-6, 6)
                 y += random.randint(-6, 6)
                 logger.info(
-                    "  🎯 [gallery_match] Trying tile %s at (%s, %s) similarity=%.3f",
+                    "  🎯 [gallery_match] Trying tile %s at (%s, %s) "
+                    "selection=%.3f visual=%.3f delta=%s",
                     candidate["duration"],
                     x,
                     y,
+                    candidate["selection_score"],
                     candidate["tile_similarity"],
+                    candidate.get("duration_delta"),
                 )
                 await self._realistic_tap(device, x, y)
                 await asyncio.sleep(1.1)
@@ -1856,6 +1956,7 @@ class TikTokController:
             filename=filename,
             device_path=device_path,
         )
+        expected_duration_seconds = self._media_duration_seconds(media_row)
         reference_image = self._load_reference_thumbnail(thumbnail_path)
 
         if filename and await self.select_video_by_name(device, filename, allow_scroll=False):
@@ -1876,6 +1977,7 @@ class TikTokController:
             return await self._select_gallery_video_by_visual_match(
                 device,
                 reference_image=reference_image,
+                expected_duration_seconds=expected_duration_seconds,
             )
 
         if filename:

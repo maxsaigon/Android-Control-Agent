@@ -88,7 +88,11 @@ class TikTokUploadPreviewGuardrailsTest(unittest.IsolatedAsyncioTestCase):
     async def test_select_video_for_upload_falls_back_to_visual_match_after_name_fail(self):
         controller = self._controller()
         controller.get_media_store_video = AsyncMock(
-            return_value={"_display_name": "clip.mp4", "relative_path": "DCIM/AndroidControl/"}
+            return_value={
+                "_display_name": "clip.mp4",
+                "relative_path": "DCIM/AndroidControl/",
+                "duration": "60767",
+            }
         )
         controller._load_reference_thumbnail = Mock(return_value=object())
         controller.select_video_by_name = AsyncMock(return_value=False)
@@ -109,13 +113,21 @@ class TikTokUploadPreviewGuardrailsTest(unittest.IsolatedAsyncioTestCase):
             allow_scroll=False,
         )
         controller.ensure_gallery_video_context.assert_awaited_once()
-        controller._select_gallery_video_by_visual_match.assert_awaited_once()
+        controller._select_gallery_video_by_visual_match.assert_awaited_once_with(
+            "cloud:1",
+            reference_image=unittest.mock.ANY,
+            expected_duration_seconds=61,
+        )
 
     async def test_select_video_for_upload_rechecks_preview_after_name_match(self):
         controller = self._controller()
         reference = object()
         controller.get_media_store_video = AsyncMock(
-            return_value={"_display_name": "clip.mp4", "relative_path": "DCIM/AndroidControl/"}
+            return_value={
+                "_display_name": "clip.mp4",
+                "relative_path": "DCIM/AndroidControl/",
+                "duration": "60767",
+            }
         )
         controller._load_reference_thumbnail = Mock(return_value=reference)
         controller.select_video_by_name = AsyncMock(return_value=True)
@@ -135,7 +147,44 @@ class TikTokUploadPreviewGuardrailsTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok)
         controller.return_to_gallery_grid.assert_awaited_once_with("cloud:1")
-        controller._select_gallery_video_by_visual_match.assert_awaited_once()
+        controller._select_gallery_video_by_visual_match.assert_awaited_once_with(
+            "cloud:1",
+            reference_image=reference,
+            expected_duration_seconds=61,
+        )
+
+    def test_rank_gallery_candidates_prefers_duration_match(self):
+        controller = self._controller()
+        candidates = [
+            {
+                "bounds": (722, 393, 1074, 749),
+                "center": (898, 571),
+                "duration": "00:51",
+                "tile_similarity": 0.750,
+            },
+            {
+                "bounds": (6, 393, 358, 749),
+                "center": (182, 571),
+                "duration": "01:01",
+                "tile_similarity": 0.658,
+            },
+            {
+                "bounds": (364, 393, 716, 749),
+                "center": (540, 571),
+                "duration": "01:01",
+                "tile_similarity": 0.614,
+            },
+        ]
+
+        ranked = controller._rank_gallery_video_candidates(
+            candidates,
+            expected_duration_seconds=61,
+        )
+
+        self.assertEqual(ranked[0]["duration"], "01:01")
+        self.assertEqual(ranked[0]["duration_delta"], 0)
+        self.assertTrue(ranked[-1]["duration_blocked"])
+        self.assertEqual(ranked[-1]["duration"], "00:51")
 
     async def test_dump_all_ui_nodes_falls_back_to_accessibility(self):
         controller = self._controller()
