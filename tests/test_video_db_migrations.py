@@ -7,6 +7,7 @@ from app.models import (
     DeviceAccount,
     DeviceStatus,
     PushStatus,
+    Video,
     UploadStatus,
     VideoAssignment,
 )
@@ -278,3 +279,49 @@ def test_delete_assignment_removes_row(monkeypatch, tmp_path):
         error = video_service.delete_assignment(session, 1)
         assert error is None
         assert session.get(VideoAssignment, 1) is None
+
+
+def test_migrate_db_repairs_stale_runtime_storage_paths(monkeypatch, tmp_path):
+    engine = _make_engine(tmp_path)
+    monkeypatch.setattr(database, "engine", engine)
+
+    _create_legacy_video_tables(engine)
+    database.create_db_and_tables()
+    _seed_legacy_video_rows(engine)
+    _seed_devices_and_accounts(engine)
+    database.migrate_db()
+
+    runtime_video_dir = tmp_path / "runtime-data" / "videos"
+    runtime_thumb_dir = runtime_video_dir / "thumbnails"
+    runtime_thumb_dir.mkdir(parents=True, exist_ok=True)
+    video_file = runtime_video_dir / "legacy.mp4"
+    thumb_file = runtime_thumb_dir / "1.jpg"
+    video_file.write_bytes(b"video")
+    thumb_file.write_bytes(b"thumb")
+
+    with engine.connect() as conn:
+        conn.execute(
+            sqlalchemy.text(
+                """
+                UPDATE video
+                SET filepath = :filepath,
+                    thumbnail = :thumbnail
+                WHERE id = 1
+                """
+            ),
+            {
+                "filepath": "/tmp/android-control/data/videos/legacy.mp4",
+                "thumbnail": "/tmp/android-control/data/videos/thumbnails/1.jpg",
+            },
+        )
+        conn.commit()
+
+    monkeypatch.setattr(database.settings, "video_storage_dir", str(runtime_video_dir))
+    database.migrate_db()
+
+    with Session(engine) as session:
+        video = session.get(Video, 1)
+
+    assert video is not None
+    assert video.filepath == str(video_file)
+    assert video.thumbnail == str(thumb_file)

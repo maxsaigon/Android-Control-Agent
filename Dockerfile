@@ -31,6 +31,7 @@ RUN mkdir -p /data /app/screenshots /app/static/downloads
 COPY app/static/downloads/ /app/static/downloads/
 
 ENV PYTHONUNBUFFERED=1
+ENV RUNTIME_DATA_DIR=/app
 
 EXPOSE 8080
 

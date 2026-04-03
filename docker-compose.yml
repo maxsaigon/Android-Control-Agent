@@ -5,6 +5,8 @@ services:
       - "8001:8080"
     env_file:
       - .env
+    environment:
+      - RUNTIME_DATA_DIR=/app
     volumes:
       # Persist SQLite database
       - ./data:/app/data

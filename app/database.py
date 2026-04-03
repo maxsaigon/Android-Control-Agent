@@ -1,6 +1,7 @@
 """Database engine and session management."""
 
 import logging
+from pathlib import Path
 
 import sqlalchemy
 from sqlmodel import SQLModel, Session, create_engine
@@ -267,6 +268,61 @@ def _rebuild_videoassignment_table(conn: sqlalchemy.engine.Connection) -> None:
     )
 
 
+def _repair_video_storage_paths(conn: sqlalchemy.engine.Connection) -> None:
+    """Repair stale absolute video/thumbnail paths after runtime-dir changes.
+
+    Older deploys stored absolute paths under `/tmp/android-control/...`. If the
+    same file still exists in the current persistent storage, rewrite the DB row
+    to the current path so thumbnails/videos survive future restarts.
+    """
+    if "video" not in {
+        row[0]
+        for row in conn.execute(
+            sqlalchemy.text("SELECT name FROM sqlite_master WHERE type = 'table'")
+        )
+    }:
+        return
+
+    video_dir = Path(settings.video_storage_dir)
+    thumb_dir = video_dir / "thumbnails"
+    updated = 0
+
+    rows = conn.execute(
+        sqlalchemy.text("SELECT id, filepath, thumbnail FROM video")
+    ).fetchall()
+    for row in rows:
+        video_id = row[0]
+        filepath = row[1]
+        thumbnail = row[2]
+        values: dict[str, str] = {}
+
+        if filepath:
+            current = Path(filepath)
+            candidate = video_dir / current.name
+            if not current.exists() and candidate.exists():
+                values["filepath"] = str(candidate)
+
+        if thumbnail:
+            current = Path(thumbnail)
+            candidate = thumb_dir / current.name
+            if not current.exists() and candidate.exists():
+                values["thumbnail"] = str(candidate)
+
+        if not values:
+            continue
+
+        set_clause = ", ".join(f"{col} = :{col}" for col in values)
+        conn.execute(
+            sqlalchemy.text(f"UPDATE video SET {set_clause} WHERE id = :video_id"),
+            {**values, "video_id": video_id},
+        )
+        updated += 1
+
+    if updated:
+        conn.commit()
+        logger.info("migrate_db: repaired storage paths for %s video row(s)", updated)
+
+
 def create_db_and_tables():
     """Create all database tables."""
     SQLModel.metadata.create_all(engine)
@@ -451,6 +507,11 @@ def migrate_db():
                 _rebuild_videoassignment_table(conn)
             except Exception as exc:  # pragma: no cover
                 logger.warning("migrate_db: videoassignment rebuild warning: %s", exc)
+
+        try:
+            _repair_video_storage_paths(conn)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("migrate_db: video storage path repair warning: %s", exc)
 
 
 def get_session():

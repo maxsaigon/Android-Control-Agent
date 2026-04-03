@@ -11,10 +11,11 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - app-data:/data
+      - app-data:/app/data
       - ./screenshots:/app/screenshots
     environment:
-      - DATABASE_URL=sqlite:////data/android_control.db
+      - DATABASE_URL=sqlite:////app/data/android_control.db
+      - RUNTIME_DATA_DIR=/app
       - PYTHONUNBUFFERED=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
