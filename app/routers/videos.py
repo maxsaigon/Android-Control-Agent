@@ -11,6 +11,7 @@ from app.database import get_session
 from app.models import (
     Video, VideoAssignment, DeviceAccount, Device, Task, TaskStatus,
     PushStatus, UploadStatus, RunUploadRequest, RunBatchUploadRequest,
+    AssignmentUpdate,
 )
 from app.services.video_service import video_service
 from app.services.ai_metadata_service import ai_metadata_service
@@ -165,6 +166,42 @@ def get_assignment_artifacts(
     if not artifact:
         raise HTTPException(404, "No upload artifacts found for this assignment")
     return artifact
+
+
+@router.patch("/assignments/{assignment_id}")
+def update_assignment(
+    assignment_id: int,
+    body: AssignmentUpdate,
+    session: Session = Depends(get_session),
+):
+    """Update assignment target device/platform."""
+    if body.device_id is None and body.platform is None:
+        raise HTTPException(400, "device_id or platform is required")
+
+    assignment, error = video_service.update_assignment(
+        session,
+        assignment_id,
+        device_id=body.device_id,
+        platform=body.platform,
+    )
+    if error:
+        if "not found" in error.lower():
+            raise HTTPException(404, error)
+        raise HTTPException(409, error)
+    return assignment
+
+
+@router.delete("/assignments/{assignment_id}", status_code=204)
+def delete_assignment(
+    assignment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Delete an assignment."""
+    error = video_service.delete_assignment(session, assignment_id)
+    if error:
+        if "not found" in error.lower():
+            raise HTTPException(404, error)
+        raise HTTPException(409, error)
 
 
 @router.post("/assignments/push-batch")

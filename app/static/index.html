@@ -647,7 +647,7 @@
                             <option value="instagram">📷 Instagram</option>
                             <option value="facebook">📘 Facebook</option>
                         </select>
-                        <select id="assignmentDeviceFilter" class="filter-select" onchange="refreshAssignments()">
+                        <select id="assignmentDeviceFilter" class="filter-select" onchange="renderAssignmentViews()">
                             <option value="">Tất cả device</option>
                         </select>
                         <select id="assignmentPushFilter" class="filter-select" onchange="refreshAssignments()">
@@ -671,6 +671,7 @@
                         </label>
                         <input id="assignmentSearch" class="assignment-search" placeholder="Tìm theo video, device, account..." oninput="renderAssignmentViews()">
                     </div>
+                    <div id="assignmentTargetRail"></div>
                     <div id="videoDistributionFocus"></div>
                     <div class="assignment-bulkbar" id="assignmentBulkBar"></div>
                     <div class="scrollable" id="assignmentMatrix">

@@ -510,6 +510,13 @@ class AssignCreate(SQLModel):
     platform: str
 
 
+class AssignmentUpdate(SQLModel):
+    """Schema for moving an assignment to another device/platform."""
+
+    device_id: Optional[int] = None
+    platform: Optional[str] = None
+
+
 class AutoAssignCreate(SQLModel):
     """Schema for auto-assign request."""
 

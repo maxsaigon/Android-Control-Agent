@@ -2,7 +2,14 @@ import sqlalchemy
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app import database
-from app.models import Device, DeviceAccount, DeviceStatus, VideoAssignment
+from app.models import (
+    Device,
+    DeviceAccount,
+    DeviceStatus,
+    PushStatus,
+    UploadStatus,
+    VideoAssignment,
+)
 from app.services.video_service import video_service
 
 
@@ -220,3 +227,54 @@ def test_migrate_db_rebuilds_legacy_videoassignment_uniqueness(monkeypatch, tmp_
 
     assert len(assignments) == 2
     assert sorted(item.device_id for item in assignments) == [1, 2]
+
+
+def test_update_assignment_moves_target_and_resets_runtime(monkeypatch, tmp_path):
+    engine = _make_engine(tmp_path)
+    monkeypatch.setattr(database, "engine", engine)
+
+    _create_legacy_video_tables(engine)
+    database.create_db_and_tables()
+    _seed_legacy_video_rows(engine)
+    _seed_devices_and_accounts(engine)
+
+    database.migrate_db()
+
+    with Session(engine) as session:
+        updated, error = video_service.update_assignment(
+            session,
+            1,
+            device_id=2,
+            platform="tiktok",
+        )
+        assert error is None
+        assert updated is not None
+        assert updated["device_id"] == 2
+        assert _enum_value(updated["push_status"]) == "pending"
+        assert _enum_value(updated["upload_status"]) == "pending"
+
+        assignment = session.get(VideoAssignment, 1)
+        assert assignment is not None
+        assert assignment.device_id == 2
+        assert assignment.platform == "tiktok"
+        assert assignment.device_path is None
+        assert assignment.task_id is None
+        assert assignment.push_status == PushStatus.PENDING
+        assert assignment.upload_status == UploadStatus.PENDING
+
+
+def test_delete_assignment_removes_row(monkeypatch, tmp_path):
+    engine = _make_engine(tmp_path)
+    monkeypatch.setattr(database, "engine", engine)
+
+    _create_legacy_video_tables(engine)
+    database.create_db_and_tables()
+    _seed_legacy_video_rows(engine)
+    _seed_devices_and_accounts(engine)
+
+    database.migrate_db()
+
+    with Session(engine) as session:
+        error = video_service.delete_assignment(session, 1)
+        assert error is None
+        assert session.get(VideoAssignment, 1) is None

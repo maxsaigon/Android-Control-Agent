@@ -1736,6 +1736,7 @@ let deviceAccounts = [];
 let assignmentList = [];
 let selectedAssignmentIds = new Set();
 let focusedVideoId = null;
+let assignmentModalState = null;
 
 // --- Upload ---
 
@@ -1907,6 +1908,51 @@ function getPlatformSummary(video, platform) {
     };
 }
 
+function getPlatformLabel(platform) {
+    const labels = {
+        tiktok: 'TikTok',
+        youtube: 'YouTube',
+        instagram: 'Instagram',
+        facebook: 'Facebook',
+    };
+    return labels[platform] || platform || 'Platform';
+}
+
+function getActiveAssignmentPlatform(video = null) {
+    const selected = document.getElementById('assignmentPlatformFilter')?.value || '';
+    if (selected) return selected;
+    if (video?.assignments?.length) return video.assignments[0].platform || 'tiktok';
+    return 'tiktok';
+}
+
+function getAssignmentTargets(platform) {
+    const statusRank = { online: 0, busy: 1, offline: 2 };
+    const accountMap = new Map(
+        deviceAccounts
+            .filter(account => !platform || account.platform === platform)
+            .map(account => [account.device_id, account])
+    );
+
+    return [...devices]
+        .map(device => ({
+            device_id: device.id,
+            device_name: device.name,
+            device_status: device.status,
+            device_model: device.device_model,
+            platform: platform || accountMap.get(device.id)?.platform || '',
+            account_name: accountMap.get(device.id)?.account_name || null,
+            account_notes: accountMap.get(device.id)?.notes || null,
+            has_account: accountMap.has(device.id),
+        }))
+        .sort((a, b) => {
+            const accountScore = Number(b.has_account) - Number(a.has_account);
+            if (accountScore) return accountScore;
+            const statusScore = (statusRank[a.device_status] ?? 99) - (statusRank[b.device_status] ?? 99);
+            if (statusScore) return statusScore;
+            return String(a.device_name || '').localeCompare(String(b.device_name || ''));
+        });
+}
+
 function renderArtifactActionButton(item, compact = false) {
     if (!item?.artifact_manifest_url) return '';
     const label = compact ? '🗂️' : '🗂️ Artifact';
@@ -1944,8 +1990,10 @@ function renderLiveTaskState(item) {
 
 function getVisibleAssignments() {
     const search = (document.getElementById('assignmentSearch')?.value || '').trim().toLowerCase();
+    const deviceId = parseInt(document.getElementById('assignmentDeviceFilter')?.value || '', 10);
     return assignmentList.filter(item => {
         if (focusedVideoId && item.video_id !== focusedVideoId) return false;
+        if (deviceId && item.device_id !== deviceId) return false;
         if (!search) return true;
         const haystack = [
             item.video_title,
@@ -1968,14 +2016,15 @@ function renderVideoOpsSummary() {
     const container = document.getElementById('videoOpsSummary');
     if (!container) return;
 
+    const activePlatform = getActiveAssignmentPlatform();
     const assignments = assignmentList;
-    const tiktokAssignments = assignments.filter(item => item.platform === 'tiktok');
-    const readyCount = tiktokAssignments.filter(item => item.ready_to_upload).length;
-    const runningCount = tiktokAssignments.filter(item => ['queued', 'running'].includes(item.upload_status)).length;
-    const uploadedCount = tiktokAssignments.filter(item => item.upload_status === 'uploaded').length;
-    const issueCount = tiktokAssignments.filter(item => item.has_errors).length;
+    const platformAssignments = assignments.filter(item => item.platform === activePlatform);
+    const readyCount = platformAssignments.filter(item => item.ready_to_upload).length;
+    const runningCount = platformAssignments.filter(item => ['queued', 'running'].includes(item.upload_status)).length;
+    const uploadedCount = platformAssignments.filter(item => item.upload_status === 'uploaded').length;
+    const issueCount = platformAssignments.filter(item => item.has_errors).length;
     const focusedVideo = focusedVideoId ? getVideoById(focusedVideoId) : null;
-    const eligibleTikTokTargets = videoList.reduce((sum, video) => sum + getPlatformSummary(video, 'tiktok').eligible_targets, 0);
+    const eligibleTargets = videoList.reduce((sum, video) => sum + getPlatformSummary(video, activePlatform).eligible_targets, 0);
 
     container.innerHTML = `
         <div class="video-stat-card">
@@ -1984,8 +2033,8 @@ function renderVideoOpsSummary() {
             <span class="video-stat-sub">${focusedVideo ? `Đang focus: ${escapeHtml(shortenText(focusedVideo.title || focusedVideo.filename, 26))}` : 'Kho video hiện có'}</span>
         </div>
         <div class="video-stat-card accent">
-            <span class="video-stat-label">TikTok Targets</span>
-            <span class="video-stat-value">${tiktokAssignments.length}/${eligibleTikTokTargets || 0}</span>
+            <span class="video-stat-label">${escapeHtml(getPlatformLabel(activePlatform))} Targets</span>
+            <span class="video-stat-value">${platformAssignments.length}/${eligibleTargets || 0}</span>
             <span class="video-stat-sub">${readyCount} sẵn sàng upload</span>
         </div>
         <div class="video-stat-card success">
@@ -2024,9 +2073,11 @@ function renderDistributionFocus() {
         return;
     }
 
-    const assignments = (video.assignments || []).filter(item => item.platform === 'tiktok');
-    const tiktokAssignment = assignments[0] || null;
-    const summary = getPlatformSummary(video, 'tiktok');
+    const activePlatform = getActiveAssignmentPlatform(video);
+    const platformLabel = getPlatformLabel(activePlatform);
+    const assignments = (video.assignments || []).filter(item => item.platform === activePlatform);
+    const primaryAssignment = assignments[0] || null;
+    const summary = getPlatformSummary(video, activePlatform);
     const metadataCount = [video.title, video.tags, video.description].filter(Boolean).length;
     const coverageLine = `${summary.assigned_targets}/${summary.eligible_targets} targets assigned · ${summary.uploaded_targets} uploaded · ${summary.failed_targets} failed · ${summary.missing_targets} missing`;
     const targetCards = assignments.map(item => `
@@ -2042,6 +2093,8 @@ function renderDistributionFocus() {
             <div class="distribution-target-actions">
                 ${renderPrimaryUploadAction(item) || ''}
                 ${renderArtifactActionButton(item, true) || ''}
+                <button class="btn btn-xs btn-ghost" onclick="openEditAssignmentModal(${item.id})">✏️ Edit</button>
+                <button class="btn btn-xs btn-danger" onclick="deleteAssignment(${item.id})">🗑️</button>
                 <button class="btn btn-xs btn-ghost" onclick="openAssignmentDetail(${item.id})">Detail</button>
             </div>
         </div>
@@ -2052,9 +2105,9 @@ function renderDistributionFocus() {
                 <div class="distribution-target-name">${escapeHtml(target.device_name || `#${target.device_id}`)}</div>
                 <div class="distribution-target-account">${escapeHtml(target.account_name || 'No account')}</div>
             </div>
-            <div class="distribution-target-missing">Chưa có assignment TikTok cho target này</div>
+            <div class="distribution-target-missing">Chưa có assignment ${escapeHtml(platformLabel)} cho target này</div>
             <div class="distribution-target-actions">
-                <button class="btn btn-xs btn-primary" onclick="quickAssignVideoTarget(${video.id}, ${target.device_id}, 'tiktok')">📌 Assign</button>
+                <button class="btn btn-xs btn-primary" onclick="quickAssignVideoTarget(${video.id}, ${target.device_id}, '${activePlatform}')">📌 Assign</button>
             </div>
         </div>
     `).join('');
@@ -2063,13 +2116,13 @@ function renderDistributionFocus() {
         <div class="distribution-focus">
             <div class="distribution-focus-main">
                 <div class="distribution-focus-title">
-                    <span>${platformIcon('tiktok')} TikTok Focus</span>
+                    <span>${platformIcon(activePlatform)} ${escapeHtml(platformLabel)} Focus</span>
                     <button class="btn btn-xs btn-ghost" onclick="clearVideoFocus()">Bỏ focus</button>
                 </div>
                 <div class="distribution-focus-name">${escapeHtml(video.title || video.filename)}</div>
                 <div class="distribution-focus-meta">
                     <span>${metadataCount}/3 metadata fields</span>
-                    <span>${assignments.length ? `Assignment #${assignments[0].id}` : 'Chưa assign TikTok'}</span>
+                    <span>${assignments.length ? `${assignments.length} assignment` : `Chưa assign ${platformLabel}`}</span>
                     <span>${video.thumbnail ? 'Có thumbnail' : 'Chưa có thumbnail'}</span>
                 </div>
                 <div class="distribution-focus-coverage">${escapeHtml(coverageLine)}</div>
@@ -2077,20 +2130,21 @@ function renderDistributionFocus() {
             </div>
             <div class="distribution-focus-actions">
                 <button class="btn btn-sm btn-accent" onclick="openAiSuggestModal(${video.id}, '${escapeJsString(video.title || video.filename)}')">🤖 AI Metadata</button>
-                ${tiktokAssignment
+                ${primaryAssignment
                     ? `
-                        ${renderPrimaryUploadAction(tiktokAssignment) || ''}
-                        ${renderArtifactActionButton(tiktokAssignment) || ''}
-                        <button class="btn btn-sm btn-ghost" onclick="openAssignmentDetail(${tiktokAssignment.id})">🔍 Detail</button>
+                        ${renderPrimaryUploadAction(primaryAssignment) || ''}
+                        ${renderArtifactActionButton(primaryAssignment) || ''}
+                        <button class="btn btn-sm btn-ghost" onclick="openEditAssignmentModal(${primaryAssignment.id})">✏️ Edit</button>
+                        <button class="btn btn-sm btn-ghost" onclick="openAssignmentDetail(${primaryAssignment.id})">🔍 Detail</button>
                     `
-                    : `<button class="btn btn-sm btn-primary" onclick="openAssignModal(${video.id}, '${escapeJsString(video.title || video.filename)}', 'tiktok')">📌 Assign TikTok</button>`
+                    : `<button class="btn btn-sm btn-primary" onclick="openAssignModal(${video.id}, '${escapeJsString(video.title || video.filename)}', '${activePlatform}')">📌 Assign ${escapeHtml(platformLabel)}</button>`
                 }
             </div>
         </div>
         <div class="distribution-target-grid">
             ${targetCards || ''}
             ${missingCards || ''}
-            ${!targetCards && !missingCards ? '<div class="distribution-target-empty">TikTok chưa có target nào khả dụng. Hãy tạo Device Account trước.</div>' : ''}
+            ${!targetCards && !missingCards ? `<div class="distribution-target-empty">${escapeHtml(platformLabel)} chưa có target nào khả dụng. Hãy tạo Device Account trước.</div>` : ''}
         </div>
     `;
 }
@@ -2128,8 +2182,10 @@ function renderVideoGrid(videos) {
     container.innerHTML = videos.map(video => {
         const sizeMB = (video.file_size / 1024 / 1024).toFixed(1);
         const assignments = video.assignments || [];
-        const tiktokAssignment = assignments.find(item => item.platform === 'tiktok');
-        const tiktokSummary = getPlatformSummary(video, 'tiktok');
+        const activePlatform = getActiveAssignmentPlatform(video);
+        const platformAssignment = assignments.find(item => item.platform === activePlatform);
+        const platformSummary = getPlatformSummary(video, activePlatform);
+        const platformLabel = getPlatformLabel(activePlatform);
         const hasAi = video.ai_title || video.ai_tags || video.ai_description;
         const aiIndicator = hasAi ? '<span class="ai-badge" title="AI đã gợi ý">✨</span>' : '';
         const selectedClass = focusedVideoId === video.id ? 'selected' : '';
@@ -2141,9 +2197,9 @@ function renderVideoGrid(videos) {
             `).join('')
             : '<span class="video-platform-empty">Chưa assign platform</span>';
 
-        const tiktokStatus = tiktokSummary.assigned_targets
-            ? `<span class="platform-summary-line">TikTok ${tiktokSummary.uploaded_targets}/${tiktokSummary.assigned_targets} uploaded · ${tiktokSummary.missing_targets} missing</span>`
-            : '<span class="video-platform-empty">TikTok chưa assign</span>';
+        const platformStatus = platformSummary.assigned_targets
+            ? `<span class="platform-summary-line">${escapeHtml(platformLabel)} ${platformSummary.uploaded_targets}/${platformSummary.assigned_targets} uploaded · ${platformSummary.missing_targets} missing</span>`
+            : `<span class="video-platform-empty">${escapeHtml(platformLabel)} chưa assign</span>`;
 
         return `
             <div class="video-card ${selectedClass}">
@@ -2159,14 +2215,14 @@ function renderVideoGrid(videos) {
                     </div>
                     <div class="video-meta">${escapeHtml(shortenText(video.tags || video.filename, 44))}</div>
                     <div class="video-platforms">${platformBadges}</div>
-                    <div class="video-tiktok-state">${tiktokStatus}</div>
+                    <div class="video-tiktok-state">${platformStatus}</div>
                 </div>
                 <div class="video-actions">
                     <button class="btn btn-xs btn-ghost" onclick="focusVideoAssignments(${video.id})">🧭 Focus</button>
                     <button class="btn btn-xs btn-accent" onclick="openAiSuggestModal(${video.id}, '${escapeJsString(video.title || video.filename)}')">🤖 AI</button>
-                    ${tiktokAssignment
-                        ? `${renderPrimaryUploadAction(tiktokAssignment, true) || `<button class="btn btn-xs btn-primary" onclick="openAssignmentDetail(${tiktokAssignment.id})">🔍 Detail</button>`}`
-                        : `<button class="btn btn-xs btn-primary" onclick="openAssignModal(${video.id}, '${escapeJsString(video.title || video.filename)}', 'tiktok')">📌 TikTok</button>`
+                    ${platformAssignment
+                        ? `${renderPrimaryUploadAction(platformAssignment, true) || `<button class="btn btn-xs btn-primary" onclick="openAssignmentDetail(${platformAssignment.id})">🔍 Detail</button>`}`
+                        : `<button class="btn btn-xs btn-primary" onclick="openAssignModal(${video.id}, '${escapeJsString(video.title || video.filename)}', '${activePlatform}')">📌 ${escapeHtml(platformLabel)}</button>`
                     }
                     <button class="btn btn-xs btn-ghost" onclick="deleteVideo(${video.id}, this)">🗑️</button>
                 </div>
@@ -2215,6 +2271,7 @@ async function quickAssignVideoTarget(videoId, deviceId, platform) {
             toast(`❌ ${data.detail || 'Assign target thất bại'}`, 'error');
             return;
         }
+        focusedVideoId = videoId;
         toast(`✅ Assigned target ${platform}`, 'success');
         await Promise.all([refreshVideos(), refreshAssignments()]);
     } catch (e) {
@@ -2222,84 +2279,252 @@ async function quickAssignVideoTarget(videoId, deviceId, platform) {
     }
 }
 
-let _assignVideoId = null;
+function closeAssignModal() {
+    assignmentModalState = null;
+    document.getElementById('assignModal')?.remove();
+}
 
-function openAssignModal(videoId, videoTitle, initialPlatform = 'tiktok') {
-    _assignVideoId = videoId;
+function openAssignModal(videoId, videoTitle, initialPlatform = null) {
+    const video = getVideoById(videoId);
+    assignmentModalState = {
+        mode: 'create',
+        videoId,
+        videoTitle,
+        platform: initialPlatform || getActiveAssignmentPlatform(video),
+        selectedDeviceId: null,
+        assignmentId: null,
+    };
+    openAssignmentPlannerModal();
+}
 
+function openEditAssignmentModal(assignmentId) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) {
+        toast('Không tìm thấy assignment để sửa', 'error');
+        return;
+    }
+
+    assignmentModalState = {
+        mode: 'edit',
+        assignmentId,
+        videoId: assignment.video_id,
+        videoTitle: assignment.video_title || assignment.video_filename || `Video #${assignment.video_id}`,
+        platform: assignment.platform,
+        selectedDeviceId: assignment.device_id,
+    };
+    openAssignmentPlannerModal();
+}
+
+function openAssignmentPlannerModal() {
     if (!devices.length) {
         toast('⚠️ Chưa có device nào. Hãy thêm device trước.', 'error');
         return;
     }
 
-    const deviceOptions = devices.map(device => {
-        const account = deviceAccounts.find(item => item.device_id === device.id && item.platform === initialPlatform);
-        const suffix = account?.account_name ? ` · ${account.account_name}` : '';
-        return `<option value="${device.id}">${escapeHtml(device.name)}${escapeHtml(suffix)}</option>`;
-    }).join('');
-
     const modal = document.createElement('div');
     modal.id = 'assignModal';
     modal.className = 'modal-overlay open';
     modal.style.cssText = 'z-index:9999';
-
     modal.innerHTML = `
-        <div class="modal-content" onclick="event.stopPropagation()" style="max-width:420px">
+        <div class="modal-content assignment-planner-modal" onclick="event.stopPropagation()">
             <div class="modal-header">
-                <h3>📌 Assign: ${escapeHtml(videoTitle)}</h3>
-                <button class="modal-close" onclick="document.getElementById('assignModal').remove()">×</button>
+                <h3>${assignmentModalState.mode === 'edit' ? '✏️ Edit Assignment' : '📌 Assign Video'}: ${escapeHtml(assignmentModalState.videoTitle)}</h3>
+                <button class="modal-close" onclick="closeAssignModal()">×</button>
             </div>
             <div class="modal-body">
-                <div class="form-group">
-                    <label>📱 Device</label>
-                    <select id="assignDeviceSel">${deviceOptions}</select>
+                <div class="assignment-planner-topbar">
+                    <div class="form-group">
+                        <label>🌐 Platform</label>
+                        <select id="assignPlatformSel" onchange="onAssignmentPlannerPlatformChange()">
+                            <option value="tiktok" ${assignmentModalState.platform === 'tiktok' ? 'selected' : ''}>🎵 TikTok</option>
+                            <option value="youtube" ${assignmentModalState.platform === 'youtube' ? 'selected' : ''}>▶️ YouTube</option>
+                            <option value="instagram" ${assignmentModalState.platform === 'instagram' ? 'selected' : ''}>📷 Instagram</option>
+                            <option value="facebook" ${assignmentModalState.platform === 'facebook' ? 'selected' : ''}>📘 Facebook</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>🔎 Search target</label>
+                        <input id="assignTargetSearch" type="text" class="assignment-search" placeholder="Device, account, model..." oninput="renderAssignmentPlannerTargets()">
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label>🌐 Platform</label>
-                    <select id="assignPlatformSel">
-                        <option value="tiktok" ${initialPlatform === 'tiktok' ? 'selected' : ''}>🎵 TikTok</option>
-                        <option value="youtube" ${initialPlatform === 'youtube' ? 'selected' : ''}>▶️ YouTube</option>
-                        <option value="instagram" ${initialPlatform === 'instagram' ? 'selected' : ''}>📷 Instagram</option>
-                        <option value="facebook" ${initialPlatform === 'facebook' ? 'selected' : ''}>📘 Facebook</option>
-                    </select>
-                </div>
+                <div class="assignment-planner-summary" id="assignmentPlannerSummary"></div>
+                <div class="assignment-planner-grid" id="assignmentPlannerGrid"></div>
                 <div class="info-box">
-                    <h4>TikTok-first flow</h4>
-                    <div>Assign xong bạn có thể push và run upload ngay từ Distribution Board, không cần tạo task ở Dashboard.</div>
+                    <h4>Assignment Planner</h4>
+                    <div>Ưu tiên target đã map account cho platform hiện tại. Khi đổi device/platform, trạng thái push/upload cũ sẽ được reset để tránh dùng nhầm target runtime.</div>
                 </div>
-                <button class="btn btn-primary btn-block" onclick="doAssignVideo()">✅ Assign Video</button>
+                <div class="assignment-planner-actions">
+                    ${assignmentModalState.mode === 'edit' ? `<button class="btn btn-danger" onclick="deleteAssignment(${assignmentModalState.assignmentId}, true)">🗑️ Delete Assignment</button>` : ''}
+                    <button class="btn btn-primary" onclick="submitAssignmentPlanner()">${assignmentModalState.mode === 'edit' ? '✅ Save Target' : '✅ Assign Video'}</button>
+                </div>
             </div>
         </div>`;
-    modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+    modal.onclick = (e) => { if (e.target === modal) closeAssignModal(); };
     document.body.appendChild(modal);
+    renderAssignmentPlannerTargets();
 }
 
-async function doAssignVideo() {
-    const deviceId = parseInt(document.getElementById('assignDeviceSel').value);
-    const platform = document.getElementById('assignPlatformSel').value;
-    if (!deviceId) {
-        toast('Chọn device', 'error');
+function onAssignmentPlannerPlatformChange() {
+    if (!assignmentModalState) return;
+    assignmentModalState.platform = document.getElementById('assignPlatformSel')?.value || 'tiktok';
+    if (assignmentModalState.mode === 'create') {
+        assignmentModalState.selectedDeviceId = null;
+    }
+    renderAssignmentPlannerTargets();
+}
+
+function selectAssignmentPlannerTarget(deviceId) {
+    if (!assignmentModalState) return;
+    assignmentModalState.selectedDeviceId = deviceId;
+    renderAssignmentPlannerTargets();
+}
+
+function renderAssignmentPlannerTargets() {
+    const grid = document.getElementById('assignmentPlannerGrid');
+    const summary = document.getElementById('assignmentPlannerSummary');
+    if (!grid || !summary || !assignmentModalState) return;
+
+    const platform = document.getElementById('assignPlatformSel')?.value || assignmentModalState.platform || 'tiktok';
+    assignmentModalState.platform = platform;
+    const search = (document.getElementById('assignTargetSearch')?.value || '').trim().toLowerCase();
+    const video = getVideoById(assignmentModalState.videoId);
+    const samePlatformAssignments = (video?.assignments || []).filter(item => item.platform === platform);
+    const takenByDevice = new Map(
+        samePlatformAssignments
+            .filter(item => item.id !== assignmentModalState.assignmentId)
+            .map(item => [item.device_id, item])
+    );
+    const targets = getAssignmentTargets(platform).filter(target => {
+        if (!search) return true;
+        const haystack = [
+            target.device_name,
+            target.account_name,
+            target.device_model,
+            target.account_notes,
+        ].join(' ').toLowerCase();
+        return haystack.includes(search);
+    });
+
+    const selectedTarget = targets.find(target => target.device_id === assignmentModalState.selectedDeviceId);
+    const mappedCount = targets.filter(target => target.has_account).length;
+    summary.innerHTML = `
+        <div class="assignment-planner-stat">
+            <strong>${targets.length}</strong>
+            <span>targets</span>
+        </div>
+        <div class="assignment-planner-stat">
+            <strong>${mappedCount}</strong>
+            <span>mapped account</span>
+        </div>
+        <div class="assignment-planner-stat wide">
+            <strong>${selectedTarget ? escapeHtml(selectedTarget.device_name || `#${selectedTarget.device_id}`) : 'Chưa chọn target'}</strong>
+            <span>${escapeHtml(selectedTarget?.account_name || 'Chọn device/account phù hợp để assign')}</span>
+        </div>
+    `;
+
+    if (!targets.length) {
+        grid.innerHTML = '<div class="distribution-target-empty">Không có target phù hợp với bộ lọc hiện tại.</div>';
+        return;
+    }
+
+    grid.innerHTML = targets.map(target => {
+        const duplicateAssignment = takenByDevice.get(target.device_id);
+        const disabled = Boolean(duplicateAssignment);
+        const selected = assignmentModalState.selectedDeviceId === target.device_id;
+        const current = assignmentModalState.mode === 'edit'
+            && target.device_id === getAssignmentById(assignmentModalState.assignmentId)?.device_id
+            && platform === getAssignmentById(assignmentModalState.assignmentId)?.platform;
+
+        return `
+            <button
+                class="assignment-planner-card ${selected ? 'selected' : ''} ${disabled ? 'disabled' : ''}"
+                onclick="${disabled ? '' : `selectAssignmentPlannerTarget(${target.device_id})`}"
+                ${disabled ? 'disabled' : ''}
+            >
+                <div class="assignment-planner-card-top">
+                    <div>
+                        <div class="assignment-planner-card-title">${escapeHtml(target.device_name || `#${target.device_id}`)}</div>
+                        <div class="assignment-planner-card-meta">${escapeHtml(target.account_name || 'No mapped account')}</div>
+                    </div>
+                    <div class="assignment-planner-card-status ${escapeHtml(String(target.device_status || 'unknown'))}">${escapeHtml(String(target.device_status || 'unknown'))}</div>
+                </div>
+                <div class="assignment-planner-card-badges">
+                    <span class="assignment-mini-chip">${escapeHtml(getPlatformLabel(platform))}</span>
+                    ${target.device_model ? `<span class="assignment-mini-chip">${escapeHtml(target.device_model)}</span>` : ''}
+                    ${target.has_account ? '<span class="assignment-mini-chip">mapped</span>' : '<span class="assignment-mini-chip warn">unmapped</span>'}
+                    ${current ? '<span class="assignment-mini-chip accent">current</span>' : ''}
+                    ${duplicateAssignment ? `<span class="assignment-mini-chip danger">used by #${duplicateAssignment.id}</span>` : ''}
+                </div>
+            </button>
+        `;
+    }).join('');
+}
+
+async function submitAssignmentPlanner() {
+    if (!assignmentModalState?.selectedDeviceId) {
+        toast('Chọn target trước khi lưu assignment', 'error');
+        return;
+    }
+
+    const payload = {
+        device_id: assignmentModalState.selectedDeviceId,
+        platform: assignmentModalState.platform,
+    };
+
+    try {
+        const isEdit = assignmentModalState.mode === 'edit';
+        const url = isEdit
+            ? `${API}/api/videos/assignments/${assignmentModalState.assignmentId}`
+            : `${API}/api/videos/${assignmentModalState.videoId}/assign`;
+        const res = await fetch(url, {
+            method: isEdit ? 'PATCH' : 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            toast(`❌ ${data.detail || 'Lưu assignment thất bại'}`, 'error');
+            return;
+        }
+
+        focusedVideoId = assignmentModalState.videoId;
+        toast(
+            isEdit
+                ? `✅ Đã cập nhật target → ${getPlatformLabel(assignmentModalState.platform)}`
+                : `✅ Assigned thành công → ${getPlatformLabel(assignmentModalState.platform)}`,
+            'success'
+        );
+        closeAssignModal();
+        await Promise.all([refreshVideos(), refreshAssignments()]);
+    } catch (e) {
+        toast(`Lỗi: ${e.message}`, 'error');
+    }
+}
+
+async function deleteAssignment(assignmentId, fromModal = false) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) {
+        toast('Không tìm thấy assignment để xóa', 'error');
+        return;
+    }
+    const targetLabel = `${assignment.device_name || `#${assignment.device_id}`} · ${getPlatformLabel(assignment.platform)}`;
+    if (!window.confirm(`Xóa assignment #${assignment.id} khỏi ${targetLabel}?`)) {
         return;
     }
 
     try {
-        const res = await fetch(`${API}/api/videos/${_assignVideoId}/assign`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ device_id: deviceId, platform }),
-        });
-        const data = await res.json();
+        const res = await fetch(`${API}/api/videos/assignments/${assignmentId}`, { method: 'DELETE' });
         if (!res.ok) {
-            toast(`❌ ${data.detail}`, 'error');
+            const data = await res.json();
+            toast(`❌ ${data.detail || 'Xóa assignment thất bại'}`, 'error');
             return;
         }
-
-        focusedVideoId = _assignVideoId;
-        toast(`✅ Assigned thành công → ${platform}`, 'success');
-        document.getElementById('assignModal')?.remove();
+        if (fromModal) closeAssignModal();
+        document.getElementById('assignmentDetailModal')?.classList.remove('open');
+        toast('🗑️ Đã xóa assignment', 'success');
         await Promise.all([refreshVideos(), refreshAssignments()]);
     } catch (e) {
-        toast(`Lỗi: ${e.message}`, 'error');
+        toast(`Xóa assignment lỗi: ${e.message}`, 'error');
     }
 }
 
@@ -2449,16 +2674,78 @@ function renderAssignmentViews() {
     syncSelectedAssignments();
     renderDistributionFocus();
     renderVideoOpsSummary();
+    renderAssignmentTargetRail();
     renderAssignmentBulkBar();
     renderAssignmentMatrix(getVisibleAssignments());
+}
+
+function renderAssignmentTargetRail() {
+    const container = document.getElementById('assignmentTargetRail');
+    if (!container) return;
+
+    const activePlatform = getActiveAssignmentPlatform();
+    const currentDeviceId = document.getElementById('assignmentDeviceFilter')?.value || '';
+    const search = (document.getElementById('assignmentSearch')?.value || '').trim().toLowerCase();
+    const scopedAssignments = assignmentList.filter(item => {
+        if (focusedVideoId && item.video_id !== focusedVideoId) return false;
+        if (!search) return true;
+        const haystack = [
+            item.video_title,
+            item.video_filename,
+            item.device_name,
+            item.account_name,
+            item.device_path,
+            item.latest_error,
+        ].join(' ').toLowerCase();
+        return haystack.includes(search);
+    });
+    const countByDevice = new Map();
+    scopedAssignments.forEach(item => {
+        countByDevice.set(item.device_id, (countByDevice.get(item.device_id) || 0) + 1);
+    });
+
+    const targets = getAssignmentTargets(activePlatform);
+    if (!targets.length) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="assignment-target-rail">
+            <button class="assignment-target-chip ${currentDeviceId ? '' : 'active'}" onclick="selectAssignmentTargetFilter('')">
+                <span class="assignment-target-chip-title">All Targets</span>
+                <span class="assignment-target-chip-meta">${scopedAssignments.length} assignment</span>
+            </button>
+            ${targets.map(target => `
+                <button class="assignment-target-chip ${String(target.device_id) === currentDeviceId ? 'active' : ''}" onclick="selectAssignmentTargetFilter('${target.device_id}')">
+                    <span class="assignment-target-chip-title">${escapeHtml(target.device_name || `#${target.device_id}`)}</span>
+                    <span class="assignment-target-chip-meta">
+                        ${escapeHtml(target.account_name || 'No account')} · ${countByDevice.get(target.device_id) || 0}
+                    </span>
+                </button>
+            `).join('')}
+        </div>
+    `;
+}
+
+function selectAssignmentTargetFilter(deviceId) {
+    const selectEl = document.getElementById('assignmentDeviceFilter');
+    if (!selectEl) return;
+    selectEl.value = deviceId;
+    renderAssignmentViews();
 }
 
 function populateAssignmentDeviceFilter() {
     const selectEl = document.getElementById('assignmentDeviceFilter');
     if (!selectEl) return;
     const current = selectEl.value;
+    const platform = document.getElementById('assignmentPlatformFilter')?.value || '';
     selectEl.innerHTML = '<option value="">Tất cả device</option>' +
-        devices.map(device => `<option value="${device.id}">${escapeHtml(device.name)}</option>`).join('');
+        devices.map(device => {
+            const account = deviceAccounts.find(item => item.device_id === device.id && (!platform || item.platform === platform));
+            const suffix = account?.account_name ? ` · ${account.account_name}` : '';
+            return `<option value="${device.id}">${escapeHtml(`${device.name}${suffix}`)}</option>`;
+        }).join('');
     if ([...selectEl.options].some(opt => opt.value === current)) {
         selectEl.value = current;
     }
@@ -2467,13 +2754,11 @@ function populateAssignmentDeviceFilter() {
 function buildAssignmentQuery() {
     const params = new URLSearchParams();
     const platform = document.getElementById('assignmentPlatformFilter')?.value || '';
-    const deviceId = document.getElementById('assignmentDeviceFilter')?.value || '';
     const pushStatus = document.getElementById('assignmentPushFilter')?.value || '';
     const uploadStatus = document.getElementById('assignmentUploadFilter')?.value || '';
     const actionableOnly = document.getElementById('assignmentActionableOnly')?.checked;
 
     if (platform) params.set('platform', platform);
-    if (deviceId) params.set('device_id', deviceId);
     if (pushStatus) params.set('push_status', pushStatus);
     if (uploadStatus) params.set('upload_status', uploadStatus);
     if (actionableOnly) params.set('actionable_only', 'true');
@@ -2491,6 +2776,7 @@ async function refreshAssignments() {
         const res = await fetch(`${API}/api/videos/assignments${buildAssignmentQuery()}`);
         assignmentList = await res.json();
         renderAssignmentViews();
+        renderAssignmentPlannerTargets();
     } catch (e) { /* retry */ }
 }
 
@@ -2664,6 +2950,10 @@ function renderAssignmentMatrix(assignments) {
                 <td>
                     <div class="assignment-primary">${escapeHtml(item.device_name || `#${item.device_id}`)}</div>
                     <div class="assignment-secondary">${escapeHtml(item.account_name || 'Chưa map account')}</div>
+                    <div class="assignment-chip-row">
+                        <span class="assignment-mini-chip">${escapeHtml(getPlatformLabel(item.platform))}</span>
+                        <span class="assignment-mini-chip">${escapeHtml(item.device_status || 'unknown')}</span>
+                    </div>
                 </td>
                 <td>
                     <div class="assignment-primary">${platformIcon(item.platform)} ${escapeHtml(item.platform)}</div>
@@ -2677,6 +2967,8 @@ function renderAssignmentMatrix(assignments) {
                     ${liveHtml}
                 </td>
                 <td class="assignment-actions-cell">
+                    <button class="btn btn-xs btn-ghost" onclick="openEditAssignmentModal(${item.id})">✏️ Edit</button>
+                    <button class="btn btn-xs btn-danger" onclick="deleteAssignment(${item.id})">🗑️</button>
                     <button class="btn btn-xs btn-ghost" onclick="openAssignmentDetail(${item.id})">🔍 Detail</button>
                     ${renderPrimaryUploadAction(item) || ''}
                     ${artifactLink || ''}
@@ -2800,6 +3092,8 @@ async function openAssignmentDetail(assignmentId) {
             </div>
         </div>
         <div class="assignment-detail-actions">
+            <button class="btn btn-sm btn-ghost" onclick="openEditAssignmentModal(${assignment.id})">✏️ Edit Target</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteAssignment(${assignment.id})">🗑️ Delete</button>
             ${renderPrimaryUploadAction(assignment) || ''}
             ${renderArtifactActionButton(assignment) || ''}
             ${assignment.task_id ? `<button class="btn btn-sm btn-ghost" onclick="openTaskDetail(${assignment.task_id})">🧾 Open Task Detail</button>` : ''}
@@ -2981,6 +3275,10 @@ async function refreshDeviceAccounts() {
         const res = await fetch(`${API}/api/device-accounts`);
         deviceAccounts = await res.json();
         renderAccountList(deviceAccounts);
+        if (currentPage === 'videos') {
+            renderAssignmentViews();
+            renderAssignmentPlannerTargets();
+        }
     } catch (e) { /* retry */ }
 }
 

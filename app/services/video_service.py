@@ -19,6 +19,7 @@ from app.models import (
     Task,
     TaskStatus,
     PushStatus,
+    UploadStatus,
     Video,
     VideoAssignment,
     VideoStatus,
@@ -629,6 +630,120 @@ class VideoService:
             len(candidates),
         )
         return [_assignment_to_dict(a) for a in created]
+
+    def update_assignment(
+        self,
+        session: Session,
+        assignment_id: int,
+        *,
+        device_id: Optional[int] = None,
+        platform: Optional[str] = None,
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Move an assignment to a different device/platform target."""
+        assignment = session.get(VideoAssignment, assignment_id)
+        if not assignment:
+            return None, "Assignment not found"
+
+        task = session.get(Task, assignment.task_id) if assignment.task_id else None
+        if task and task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+            return None, (
+                f"Assignment #{assignment_id} đang có task {task.status.value}. "
+                "Hãy chờ hoàn tất hoặc cancel trước khi sửa target."
+            )
+        if assignment.upload_status in {UploadStatus.QUEUED, UploadStatus.RUNNING}:
+            return None, (
+                f"Assignment #{assignment_id} đang ở trạng thái {assignment.upload_status.value}. "
+                "Không thể sửa target lúc này."
+            )
+
+        target_device_id = int(device_id) if device_id is not None else assignment.device_id
+        target_platform = str(platform).lower() if platform else assignment.platform
+        device = session.get(Device, target_device_id)
+        if not device:
+            return None, "Device not found"
+
+        existing = session.exec(
+            select(VideoAssignment).where(
+                VideoAssignment.video_id == assignment.video_id,
+                VideoAssignment.device_id == target_device_id,
+                VideoAssignment.platform == target_platform,
+                VideoAssignment.id != assignment_id,
+            )
+        ).first()
+        if existing:
+            return None, (
+                f"Video đã được assign cho device '{device.name}' "
+                f"trên platform '{target_platform}' (assignment #{existing.id})"
+            )
+
+        target_changed = (
+            assignment.device_id != target_device_id
+            or assignment.platform != target_platform
+        )
+        assignment.device_id = target_device_id
+        assignment.platform = target_platform
+
+        if target_changed:
+            # Runtime state belongs to the old target and must be rebuilt.
+            assignment.push_status = PushStatus.PENDING
+            assignment.upload_status = UploadStatus.PENDING
+            assignment.device_path = None
+            assignment.pushed_at = None
+            assignment.uploaded_at = None
+            assignment.task_id = None
+            assignment.error = None
+            assignment.last_error = None
+            assignment.last_run_at = None
+
+        session.add(assignment)
+        session.commit()
+        session.refresh(assignment)
+
+        account = session.exec(
+            select(DeviceAccount).where(
+                DeviceAccount.device_id == assignment.device_id,
+                DeviceAccount.platform == assignment.platform,
+            )
+        ).first()
+        logger.info(
+            "Updated assignment %s -> device=%s platform=%s target_changed=%s",
+            assignment_id,
+            assignment.device_id,
+            assignment.platform,
+            target_changed,
+        )
+        return _assignment_to_dict(
+            assignment,
+            device=device,
+            account=account,
+        ), None
+
+    def delete_assignment(
+        self,
+        session: Session,
+        assignment_id: int,
+    ) -> Optional[str]:
+        """Delete an assignment unless it is actively processing."""
+        assignment = session.get(VideoAssignment, assignment_id)
+        if not assignment:
+            return "Assignment not found"
+
+        task = session.get(Task, assignment.task_id) if assignment.task_id else None
+        if task and task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+            return (
+                f"Assignment #{assignment_id} đang có task {task.status.value}. "
+                "Hãy chờ hoàn tất hoặc cancel trước khi xóa."
+            )
+        if assignment.upload_status in {UploadStatus.QUEUED, UploadStatus.RUNNING}:
+            return (
+                f"Assignment #{assignment_id} đang ở trạng thái {assignment.upload_status.value}. "
+                "Không thể xóa lúc này."
+            )
+
+        session.delete(assignment)
+        session.commit()
+        logger.info("Deleted assignment %s", assignment_id)
+        return None
 
     # ------------------------------------------------------------------
     # ADB Push
