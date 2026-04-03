@@ -1649,6 +1649,7 @@ class ScriptRunner:
 
         use_title = title or ""
         use_desc = description or ""
+        thumbnail_path = ""
 
         with Session(engine) as session:
             video = None
@@ -1673,6 +1674,7 @@ class ScriptRunner:
                 use_title = video.ai_title or video.title or ""
             if not use_desc:
                 use_desc = video.ai_description or video.description or ""
+            thumbnail_path = video.thumbnail or ""
                 
             # Add hashtags
             tags = video.ai_tags or video.tags
@@ -1796,14 +1798,15 @@ class ScriptRunner:
                     from pathlib import PurePosixPath
                     device_filename = PurePosixPath(assignment.device_path).name
 
-            if device_filename:
-                selected = await tiktok.select_video_by_name(self._device, device_filename)
-                if not selected:
-                    # Fallback: log warning and try first video
-                    await self._step("warn", f"Could not find '{device_filename}' by name, falling back to first video")
-                    selected = await tiktok.select_first_video(self._device)
-            else:
-                selected = await tiktok.select_first_video(self._device)
+            async def _select_gallery_video() -> bool:
+                return await tiktok.select_video_for_upload(
+                    self._device,
+                    filename=device_filename,
+                    device_path=assignment.device_path if assignment else None,
+                    thumbnail_path=thumbnail_path,
+                )
+
+            selected = await _select_gallery_video()
 
             if not selected:
                 result = ScriptResult(False, "Failed to select a gallery video", self._step_num)
@@ -1811,8 +1814,55 @@ class ScriptRunner:
 
             await self._step("tap", "Select video from gallery")
             await self._capture_upload_debug(
-                tiktok, "video_selected", "Selected first gallery video"
+                tiktok, "video_selected", "Selected target gallery video"
             )
+
+            if await tiktok.detect_invalid_gallery_preview(self._device):
+                await self._step(
+                    "warn",
+                    "Broken gallery preview detected; backing out to reselect",
+                )
+                await self._capture_upload_debug(
+                    tiktok,
+                    "preview_invalid",
+                    "Detected broken preview before tapping Next",
+                )
+                if not await tiktok.recover_invalid_gallery_preview(self._device):
+                    result = ScriptResult(
+                        False,
+                        "Broken gallery preview and failed to return to gallery",
+                        self._step_num,
+                    )
+                    return result
+                await self._capture_upload_debug(
+                    tiktok,
+                    "gallery_recovered",
+                    "Returned to gallery after broken preview",
+                )
+
+                selected = await _select_gallery_video()
+                if not selected:
+                    result = ScriptResult(
+                        False,
+                        "Failed to reselect a gallery video after broken preview",
+                        self._step_num,
+                    )
+                    return result
+
+                await self._step("tap", "Reselect video from gallery")
+                await self._capture_upload_debug(
+                    tiktok,
+                    "video_reselected",
+                    "Reselected target video after broken preview recovery",
+                )
+
+                if await tiktok.detect_invalid_gallery_preview(self._device):
+                    result = ScriptResult(
+                        False,
+                        "Gallery preview invalid after reselect",
+                        self._step_num,
+                    )
+                    return result
 
             # [Script 5] Tap Next (Gallery/Preview -> Editor or Post)
             if not await tiktok.tap_next(self._device):

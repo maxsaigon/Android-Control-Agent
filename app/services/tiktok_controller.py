@@ -930,6 +930,83 @@ class TikTokController:
         )
         return None
 
+    def _looks_like_selected_gallery_preview(self, nodes: list[dict]) -> bool:
+        """Return True when gallery is showing the single-item preview UI."""
+        labels_lower = {
+            self._fold_text((node.get("text") or node.get("desc") or "").strip())
+            for node in nodes
+            if (node.get("text") or node.get("desc"))
+        }
+        return {"select", "next", "autocut"} <= labels_lower
+
+    def _looks_like_invalid_gallery_preview_image(self, image) -> bool:
+        """Detect the broken black preview used by TikTok for missing media."""
+        rgb = image.convert("RGB")
+        w, h = rgb.size
+
+        preview = rgb.crop((0, int(h * 0.10), w, int(h * 0.75)))
+        preview_total = preview.width * preview.height
+        if preview_total <= 0:
+            return False
+        preview_pixels = preview.load()
+        preview_dark_count = 0
+        for py in range(preview.height):
+            for px in range(preview.width):
+                r, g, b = preview_pixels[px, py]
+                if r < 25 and g < 25 and b < 25:
+                    preview_dark_count += 1
+        preview_dark = preview_dark_count / preview_total
+        if preview_dark < 0.92:
+            return False
+
+        center = rgb.crop(
+            (int(w * 0.30), int(h * 0.32), int(w * 0.70), int(h * 0.58))
+        )
+        center_total = center.width * center.height
+        if center_total <= 0:
+            return False
+        center_pixels = center.load()
+        center_dark_count = 0
+        center_gray_count = 0
+        for py in range(center.height):
+            for px in range(center.width):
+                r, g, b = center_pixels[px, py]
+                if r < 40 and g < 40 and b < 40:
+                    center_dark_count += 1
+                if abs(r - g) < 15 and abs(g - b) < 15 and 50 < r < 180:
+                    center_gray_count += 1
+        center_dark = center_dark_count / center_total
+        center_gray = center_gray_count / center_total
+        return center_dark > 0.78 and center_gray > 0.08
+
+    async def detect_invalid_gallery_preview(self, device: str) -> bool:
+        """Detect TikTok's broken preview before tapping Next again."""
+        if await self.detect_upload_state(device) != "gallery_picker":
+            return False
+
+        nodes = await self._dump_all_ui_nodes(device)
+        if not self._looks_like_selected_gallery_preview(nodes):
+            return False
+
+        image = await self._capture_analysis_image(device, prefix="gallery_preview")
+        if image is None:
+            return False
+
+        matched = self._looks_like_invalid_gallery_preview_image(image)
+        if matched:
+            logger.warning(
+                "  ⚠️ [gallery_preview] Broken preview detected; media looks missing"
+            )
+        return matched
+
+    async def recover_invalid_gallery_preview(self, device: str) -> bool:
+        """Back out of a broken preview and return to the gallery grid."""
+        ok = await self.return_to_gallery_grid(device)
+        if not ok:
+            logger.warning("  ⚠️ [gallery_preview] Could not recover to gallery grid")
+            return False
+        return not await self.detect_invalid_gallery_preview(device)
+
     async def detect_post_publish_state(self, device: str) -> str:
         """Detect post-submit completion, follow-up popups, or blocking overlays."""
         foreground = await self.get_foreground_app(device)
@@ -1238,6 +1315,35 @@ class TikTokController:
         await asyncio.sleep(1.0)
         return await self.smart_tap(device, "upload_gallery", verify_foreground=False)
 
+    def _collect_gallery_video_tiles(self, elements: list[UIElement]) -> list[dict]:
+        """Collect visible gallery video tiles ordered top-to-bottom, left-to-right."""
+        seen_bounds = set()
+        tiles: list[dict] = []
+
+        for el in elements:
+            label = el.text.strip() if el.text else ""
+            if not self.DURATION_PATTERN.match(label):
+                continue
+
+            container = self._find_smallest_clickable_container(
+                elements, el, require_long_clickable=True
+            ) or self._find_smallest_clickable_container(elements, el)
+            if not container:
+                continue
+
+            if container.bounds in seen_bounds:
+                continue
+            seen_bounds.add(container.bounds)
+            tiles.append(
+                {
+                    "bounds": container.bounds,
+                    "center": container.center,
+                    "duration": label,
+                }
+            )
+
+        return sorted(tiles, key=lambda item: (item["bounds"][1], item["bounds"][0]))
+
     async def select_first_video(self, device: str) -> bool:
         """Select the first real video tile in the gallery grid.
 
@@ -1247,24 +1353,16 @@ class TikTokController:
         await asyncio.sleep(1.0)
         elements = await self.dump_ui(device)
 
-        video_tiles: list[tuple[int, int, UIElement, str]] = []
-        for el in elements:
-            label = el.text.strip() if el.text else ""
-            if not self.DURATION_PATTERN.match(label):
-                continue
-
-            container = self._find_smallest_clickable_container(
-                elements, el, require_long_clickable=True
-            ) or self._find_smallest_clickable_container(elements, el)
-            if container:
-                video_tiles.append((container.bounds[1], container.bounds[0], container, label))
+        video_tiles = self._collect_gallery_video_tiles(elements)
 
         if video_tiles:
-            _, _, tile, duration = sorted(video_tiles, key=lambda item: (item[0], item[1]))[0]
-            x, y = tile.center
+            tile = video_tiles[0]
+            x, y = tile["center"]
             x += random.randint(-8, 8)
             y += random.randint(-8, 8)
-            logger.info(f"  🎯 [gallery_video] Selecting {duration} tile at ({x}, {y})")
+            logger.info(
+                f"  🎯 [gallery_video] Selecting {tile['duration']} tile at ({x}, {y})"
+            )
             await self._realistic_tap(device, x, y)
             await asyncio.sleep(1.0)
             return True
@@ -1277,7 +1375,499 @@ class TikTokController:
         await asyncio.sleep(1.0)
         return True
 
-    async def select_video_by_name(self, device: str, filename: str) -> bool:
+    async def _query_media_store_videos(self, device: str) -> list[dict]:
+        """Query MediaStore videos visible to Android and normalize the rows."""
+        projection = (
+            "_id:_display_name:relative_path:date_added:date_modified:"
+            "_size:duration:width:height"
+        )
+        ret, stdout, stderr = await self._adb._run_adb(
+            device,
+            "shell",
+            "content",
+            "query",
+            "--uri",
+            "content://media/external/video/media",
+            "--projection",
+            projection,
+        )
+        if ret != 0:
+            logger.warning("  ⚠️ [mediastore] content query failed: %s", stderr or stdout)
+            return []
+
+        rows: list[dict] = []
+        for line in (stdout or "").splitlines():
+            line = line.strip()
+            if not line.startswith("Row:"):
+                continue
+            payload = line.split(" ", 2)[2] if " " in line else ""
+            row: dict[str, str] = {}
+            for part in payload.split(", "):
+                if "=" not in part:
+                    continue
+                key, value = part.split("=", 1)
+                row[key.strip()] = value.strip()
+            if row:
+                rows.append(row)
+        return rows
+
+    async def get_media_store_video(
+        self,
+        device: str,
+        *,
+        filename: str | None = None,
+        device_path: str | None = None,
+    ) -> dict | None:
+        """Return the MediaStore row that matches the pushed upload video."""
+        rows = await self._query_media_store_videos(device)
+        if not rows:
+            return None
+
+        relative_path = None
+        if device_path:
+            pure = Path(device_path)
+            filename = filename or pure.name
+            parent = str(pure.parent).replace("\\", "/").strip("/")
+            if parent:
+                relative_path = f"{parent}/"
+
+        candidates = rows
+        if filename:
+            folded_name = self._fold_text(filename)
+            candidates = [
+                row
+                for row in candidates
+                if self._fold_text(row.get("_display_name", "")) == folded_name
+            ]
+        if relative_path:
+            folded_rel = self._fold_text(relative_path)
+            narrowed = [
+                row
+                for row in candidates
+                if self._fold_text(row.get("relative_path", "")) == folded_rel
+            ]
+            if narrowed:
+                candidates = narrowed
+
+        if not candidates:
+            logger.warning(
+                "  ⚠️ [mediastore] Could not find %s in MediaStore (path=%s)",
+                filename,
+                relative_path or "",
+            )
+            return None
+
+        def _numeric(row: dict, key: str) -> int:
+            raw = (row.get(key) or "").strip()
+            try:
+                return int(raw)
+            except ValueError:
+                return 0
+
+        best = max(
+            candidates,
+            key=lambda row: (_numeric(row, "date_added"), _numeric(row, "date_modified")),
+        )
+        logger.info(
+            "  📼 [mediastore] Target row: %s",
+            {
+                "display_name": best.get("_display_name"),
+                "relative_path": best.get("relative_path"),
+                "date_added": best.get("date_added"),
+                "duration": best.get("duration"),
+            },
+        )
+        return best
+
+    def _gallery_album_name_from_media(self, media_row: dict | None) -> str | None:
+        """Extract the gallery album/folder label from MediaStore relative_path."""
+        if not media_row:
+            return None
+        relative_path = (media_row.get("relative_path") or "").strip().strip("/")
+        if not relative_path:
+            return None
+        return relative_path.split("/")[-1] or None
+
+    def _detect_gallery_album_label(self, elements: list[UIElement]) -> str | None:
+        """Detect the current album label shown in the gallery header."""
+        ignored = {
+            "all",
+            "videos",
+            "photos",
+            "ai gallery",
+            "text",
+            "select multiple",
+            "next",
+            "autocut",
+            "select",
+        }
+        candidates: list[tuple[int, str]] = []
+        for el in elements:
+            if not el.text:
+                continue
+            label = el.text.strip()
+            if not label:
+                continue
+            folded = self._fold_text(label)
+            if folded in ignored:
+                continue
+            x, y = el.center
+            if y > 280:
+                continue
+            if not (220 <= x <= 860):
+                continue
+            candidates.append((y, label))
+
+        if not candidates:
+            return None
+        return sorted(candidates, key=lambda item: item[0])[0][1]
+
+    async def _tap_text_match(
+        self,
+        device: str,
+        patterns: tuple[str, ...],
+        *,
+        prefer_top: bool = True,
+        contains: bool = False,
+        use_realistic_tap: bool = False,
+    ) -> bool:
+        """Tap a visible text/desc match using its clickable container."""
+        elements = await self.dump_ui(device)
+        folded_patterns = tuple(self._fold_text(pattern) for pattern in patterns if pattern)
+        candidates: list[UIElement] = []
+
+        for el in elements:
+            for raw in (el.text or "", el.content_desc or ""):
+                folded = self._fold_text(raw.strip())
+                if not folded:
+                    continue
+                matched = any(
+                    pattern in folded if contains else pattern == folded
+                    for pattern in folded_patterns
+                )
+                if not matched:
+                    continue
+                tappable = (
+                    el if el.clickable else self._find_smallest_clickable_container(elements, el)
+                )
+                if tappable:
+                    candidates.append(tappable)
+                break
+
+        if not candidates:
+            return False
+
+        ordered = sorted(
+            candidates,
+            key=lambda el: (
+                el.center[1] if prefer_top else -el.center[1],
+                el.center[0],
+                self._bounds_area(el.bounds),
+            ),
+        )
+        target = ordered[0]
+        x, y = target.center
+        x += random.randint(-4, 4)
+        y += random.randint(-3, 3)
+        if use_realistic_tap:
+            await self._realistic_tap(device, x, y)
+        else:
+            await self._tap(device, x, y)
+        await asyncio.sleep(0.8)
+        return True
+
+    async def ensure_gallery_video_context(
+        self,
+        device: str,
+        *,
+        album_name: str | None = None,
+    ) -> None:
+        """Bias the TikTok picker toward the intended video gallery context."""
+        await self._tap_text_match(device, ("Videos",), prefer_top=True)
+        if not album_name:
+            return
+
+        elements = await self.dump_ui(device)
+        current_album = self._detect_gallery_album_label(elements)
+        if not current_album:
+            return
+        if self._fold_text(current_album) == self._fold_text(album_name):
+            return
+
+        if not await self._tap_text_match(
+            device,
+            (current_album,),
+            prefer_top=True,
+        ):
+            return
+
+        if await self._tap_text_match(
+            device,
+            (album_name,),
+            prefer_top=True,
+            contains=True,
+        ):
+            logger.info("  📁 [gallery] Switched album to %s", album_name)
+            return
+
+        logger.warning("  ⚠️ [gallery] Album '%s' not visible after picker open", album_name)
+        await self.return_to_gallery_grid(device)
+
+    def _load_reference_thumbnail(self, thumbnail_path: str | None):
+        """Load the expected video thumbnail image if available."""
+        if not thumbnail_path:
+            return None
+        from PIL import Image
+
+        path = Path(thumbnail_path)
+        if not path.exists():
+            logger.warning("  ⚠️ [gallery_match] Thumbnail missing: %s", thumbnail_path)
+            return None
+        try:
+            with Image.open(path) as image:
+                return image.convert("RGB")
+        except Exception as e:
+            logger.warning("  ⚠️ [gallery_match] Failed to open thumbnail %s: %s", thumbnail_path, e)
+            return None
+
+    def _image_similarity(self, left, right) -> float:
+        """Return a soft visual similarity score between two images."""
+        from PIL import ImageOps
+
+        fitted_left = ImageOps.fit(left.convert("RGB"), (32, 32))
+        fitted_right = ImageOps.fit(right.convert("RGB"), (32, 32))
+
+        total_pixels = fitted_left.width * fitted_left.height
+        total_channels = total_pixels * 3
+        total_diff = 0
+        left_pixels = fitted_left.load()
+        right_pixels = fitted_right.load()
+        for py in range(fitted_left.height):
+            for px in range(fitted_left.width):
+                lr, lg, lb = left_pixels[px, py]
+                rr, rg, rb = right_pixels[px, py]
+                total_diff += abs(lr - rr) + abs(lg - rg) + abs(lb - rb)
+        grid_similarity = 1.0 - (total_diff / max(total_channels * 255, 1))
+
+        gray_left = ImageOps.fit(left.convert("L"), (16, 16))
+        gray_right = ImageOps.fit(right.convert("L"), (16, 16))
+        gray_total = gray_left.width * gray_left.height
+        left_gray_pixels = gray_left.load()
+        right_gray_pixels = gray_right.load()
+
+        left_sum = 0
+        right_sum = 0
+        for py in range(gray_left.height):
+            for px in range(gray_left.width):
+                left_sum += left_gray_pixels[px, py]
+                right_sum += right_gray_pixels[px, py]
+        left_avg = left_sum / max(gray_total, 1)
+        right_avg = right_sum / max(gray_total, 1)
+
+        hash_diff = 0
+        for py in range(gray_left.height):
+            for px in range(gray_left.width):
+                if (left_gray_pixels[px, py] >= left_avg) != (
+                    right_gray_pixels[px, py] >= right_avg
+                ):
+                    hash_diff += 1
+        hash_similarity = 1.0 - (hash_diff / max(gray_total, 1))
+
+        return max(0.0, min(1.0, (grid_similarity * 0.65) + (hash_similarity * 0.35)))
+
+    def _crop_gallery_preview_image(self, image):
+        """Crop the large preview area shown after tapping a gallery tile."""
+        w, h = image.size
+        return image.crop((0, int(h * 0.10), w, int(h * 0.75)))
+
+    async def verify_selected_gallery_preview(
+        self,
+        device: str,
+        *,
+        reference_image=None,
+        min_similarity: float = 0.42,
+    ) -> tuple[bool, float | None]:
+        """Verify the currently selected gallery preview against the reference image."""
+        nodes = await self._dump_all_ui_nodes(device)
+        if not self._looks_like_selected_gallery_preview(nodes):
+            return False, None
+        if await self.detect_invalid_gallery_preview(device):
+            return False, 0.0
+        if reference_image is None:
+            return True, None
+
+        image = await self._capture_analysis_image(device, prefix="gallery_preview_verify")
+        if image is None:
+            return False, None
+
+        preview = self._crop_gallery_preview_image(image)
+        similarity = self._image_similarity(preview, reference_image)
+        logger.info("  🔎 [gallery_preview] Similarity %.3f", similarity)
+        return similarity >= min_similarity, similarity
+
+    async def return_to_gallery_grid(self, device: str) -> bool:
+        """Leave the single-item preview and return to the gallery grid."""
+        for _ in range(2):
+            await self._get_backend(device)
+            if self._backend:
+                try:
+                    await self._backend.key_event(device, "BACK")
+                except Exception as e:
+                    await self._record_backend_issue(device, e)
+                    logger.warning(
+                        "  ⚠️ [gallery_grid] Backend BACK failed, fallback ADB: %s",
+                        e,
+                    )
+                    self._backend = None
+                    await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
+            else:
+                await self._adb._run_adb(device, "shell", "input", "keyevent", "4")
+
+            await asyncio.sleep(1.0)
+            if await self.detect_upload_state(device) != "gallery_picker":
+                continue
+            nodes = await self._dump_all_ui_nodes(device)
+            if not self._looks_like_selected_gallery_preview(nodes):
+                return True
+        return False
+
+    async def _select_gallery_video_by_visual_match(
+        self,
+        device: str,
+        *,
+        reference_image,
+        max_pages: int = 2,
+    ) -> bool:
+        """Select the best-matching visible video tile and verify its preview."""
+        tried_candidates: set[tuple[int, int, int, int]] = set()
+        w, h = await self._get_screen_size(device)
+
+        for page in range(max_pages):
+            elements = await self.dump_ui(device)
+            candidates = self._collect_gallery_video_tiles(elements)
+            if not candidates:
+                logger.warning("  ⚠️ [gallery_match] No visible video tiles on page %s", page)
+            image = await self._capture_analysis_image(device, prefix=f"gallery_page_{page}")
+            if image is None:
+                return False
+
+            ranked: list[dict] = []
+            for candidate in candidates:
+                bounds = candidate["bounds"]
+                if bounds in tried_candidates:
+                    continue
+                crop = image.crop(bounds)
+                candidate["tile_similarity"] = self._image_similarity(crop, reference_image)
+                ranked.append(candidate)
+
+            ranked.sort(key=lambda item: item.get("tile_similarity", 0.0), reverse=True)
+            if ranked:
+                logger.info(
+                    "  🧭 [gallery_match] Page %s top tile similarities: %s",
+                    page,
+                    [
+                        f"{item['duration']}@{item['bounds']}={item['tile_similarity']:.3f}"
+                        for item in ranked[:3]
+                    ],
+                )
+
+            for candidate in ranked[:4]:
+                tried_candidates.add(candidate["bounds"])
+                x, y = candidate["center"]
+                x += random.randint(-6, 6)
+                y += random.randint(-6, 6)
+                logger.info(
+                    "  🎯 [gallery_match] Trying tile %s at (%s, %s) similarity=%.3f",
+                    candidate["duration"],
+                    x,
+                    y,
+                    candidate["tile_similarity"],
+                )
+                await self._realistic_tap(device, x, y)
+                await asyncio.sleep(1.1)
+
+                preview_ok, preview_similarity = await self.verify_selected_gallery_preview(
+                    device,
+                    reference_image=reference_image,
+                )
+                if preview_ok:
+                    logger.info(
+                        "  ✅ [gallery_match] Preview verified with similarity %.3f",
+                        preview_similarity if preview_similarity is not None else -1.0,
+                    )
+                    return True
+
+                if not await self.return_to_gallery_grid(device):
+                    logger.warning("  ⚠️ [gallery_match] Could not return to gallery grid")
+                    return False
+
+            if page >= max_pages - 1:
+                break
+
+            await self._swipe(
+                device,
+                w // 2,
+                int(h * 0.76),
+                w // 2,
+                int(h * 0.34),
+                duration_ms=420,
+            )
+            await asyncio.sleep(0.8)
+
+        logger.warning("  ⚠️ [gallery_match] No confident visual gallery match found")
+        return False
+
+    async def select_video_for_upload(
+        self,
+        device: str,
+        *,
+        filename: str | None = None,
+        device_path: str | None = None,
+        thumbnail_path: str | None = None,
+    ) -> bool:
+        """Select the intended upload video using MediaStore + visual verification."""
+        media_row = await self.get_media_store_video(
+            device,
+            filename=filename,
+            device_path=device_path,
+        )
+        reference_image = self._load_reference_thumbnail(thumbnail_path)
+
+        if filename and await self.select_video_by_name(device, filename, allow_scroll=False):
+            preview_ok, _ = await self.verify_selected_gallery_preview(
+                device,
+                reference_image=reference_image,
+            )
+            if preview_ok:
+                return True
+            await self.return_to_gallery_grid(device)
+
+        await self.ensure_gallery_video_context(
+            device,
+            album_name=self._gallery_album_name_from_media(media_row),
+        )
+
+        if reference_image is not None:
+            return await self._select_gallery_video_by_visual_match(
+                device,
+                reference_image=reference_image,
+            )
+
+        if filename:
+            logger.warning(
+                "  ⚠️ [gallery_match] No thumbnail available; using name-based gallery search only"
+            )
+            return await self.select_video_by_name(device, filename, allow_scroll=True)
+
+        return False
+
+    async def select_video_by_name(
+        self,
+        device: str,
+        filename: str,
+        *,
+        allow_scroll: bool = True,
+    ) -> bool:
         """Select a specific video tile in the gallery by matching filename.
 
         Strategy:
@@ -1297,7 +1887,7 @@ class TikTokController:
         stem = filename.rsplit(".", 1)[0] if "." in filename else filename
         tokens = {filename.lower(), stem.lower()}
 
-        for attempt in range(2):  # Try current view, then after one scroll
+        for attempt in range(2 if allow_scroll else 1):  # Try current view, then after one scroll
             elements = await self.dump_ui(device)
             for el in elements:
                 desc = (el.content_desc or "").lower()
@@ -2300,15 +2890,15 @@ class TikTokController:
             logger.warning(f"  ⚠️ [find_pink] Error: {e}")
             return None
 
-    async def _capture_send_scan_image(self, device: str):
-        """Capture a PNG-like screenshot for send-button detection."""
+    async def _capture_analysis_image(self, device: str, *, prefix: str):
+        """Capture a decoded screenshot image for lightweight visual heuristics."""
         from PIL import Image
 
         local_path = os.path.join(
             tempfile.gettempdir(),
-            f"_send_scan_{device.replace(':', '_')}_{random.randint(1000, 9999)}.png",
+            f"_{prefix}_{device.replace(':', '_')}_{random.randint(1000, 9999)}.png",
         )
-        remote_path = "/sdcard/_send_scan.png"
+        remote_path = f"/sdcard/_{prefix}.png"
 
         try:
             await self._get_backend(device)
@@ -2347,6 +2937,10 @@ class TikTokController:
                 await self._adb._run_adb(device, "shell", "rm", "-f", remote_path)
             except Exception:
                 pass
+
+    async def _capture_send_scan_image(self, device: str):
+        """Capture a PNG-like screenshot for send-button detection."""
+        return await self._capture_analysis_image(device, prefix="send_scan")
 
     def _locate_send_button_in_image(
         self,
