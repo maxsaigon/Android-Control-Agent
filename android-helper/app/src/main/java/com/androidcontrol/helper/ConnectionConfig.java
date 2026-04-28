@@ -23,6 +23,7 @@ public class ConnectionConfig {
     private static final String KEY_PASSWORD = "password";
     private static final String KEY_DEVICE_NAME = "device_name";
     private static final String KEY_DEVICE_TOKEN = "device_token";
+    private static final String KEY_LAN_TOKEN = "lan_token";
 
     public static final String MODE_LAN = "lan";
     public static final String MODE_CLOUD = "cloud";
@@ -81,12 +82,28 @@ public class ConnectionConfig {
         prefs.edit().putString(KEY_DEVICE_TOKEN, token).apply();
     }
 
+    /**
+     * Get or generate a random 8-char token for LAN mode authentication.
+     */
+    public String getLanToken() {
+        String token = prefs.getString(KEY_LAN_TOKEN, "");
+        if (token.isEmpty()) {
+            token = java.util.UUID.randomUUID().toString().substring(0, 8);
+            prefs.edit().putString(KEY_LAN_TOKEN, token).apply();
+        }
+        return token;
+    }
+
     public boolean isCloudMode() {
         return MODE_CLOUD.equals(getMode());
     }
 
     /**
-     * Check if cloud config has enough info to attempt registration + connection.
+     * Check if cloud config has enough info to attempt a full re-registration
+     * (server URL + username + password + device name all present).
+     *
+     * For ongoing operation after first registration, use isReadyToConnect()
+     * which only requires a cached device token.
      */
     public boolean isConfigured() {
         return !getServerUrl().isEmpty()
@@ -100,6 +117,26 @@ public class ConnectionConfig {
      */
     public boolean hasToken() {
         return !getDeviceToken().isEmpty();
+    }
+
+    /**
+     * Clear password from persistent storage immediately after registration.
+     *
+     * Call this right after a successful /api/device/register so the
+     * plaintext credential is not stored at rest.
+     */
+    public void clearPassword() {
+        prefs.edit().remove(KEY_PASSWORD).apply();
+    }
+
+    /**
+     * True if the helper has enough config to connect to the cloud server.
+     *
+     * - Token path: server URL + cached token (no credentials needed).
+     * - Registration path: all credential fields present.
+     */
+    public boolean isReadyToConnect() {
+        return !getServerUrl().isEmpty() && hasToken();
     }
 
     /**

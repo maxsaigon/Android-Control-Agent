@@ -52,9 +52,14 @@ class AccessibilityBackend(DeviceBackend):
         self._screen_cache: dict[str, tuple[int, int]] = {}
 
     def _device_to_ws_url(self, device: str) -> str:
-        """Convert device target (ip:port) to WebSocket URL."""
-        ip = device.split(":")[0]
-        return f"ws://{ip}:{self._ws_port}"
+        """Convert device target (ip:port?token=...) to WebSocket URL."""
+        if "?" in device:
+            base, qs = device.split("?", 1)
+            ip = base.split(":")[0]
+            return f"ws://{ip}:{self._ws_port}/?{qs}"
+        else:
+            ip = device.split(":")[0]
+            return f"ws://{ip}:{self._ws_port}"
 
     @staticmethod
     def _is_ws_open(ws) -> bool:

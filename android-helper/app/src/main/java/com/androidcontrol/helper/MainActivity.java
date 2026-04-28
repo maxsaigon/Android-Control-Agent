@@ -130,10 +130,11 @@ public class MainActivity extends Activity {
 
         TextView ipText = new TextView(this);
         String ip = getDeviceIP();
-        ipText.setText("WebSocket: ws://" + ip + ":38301");
+        ipText.setText("WebSocket: ws://" + ip + ":38301/?token=" + config.getLanToken());
         ipText.setTextSize(14);
         ipText.setTextColor(Color.parseColor("#e94560"));
         ipText.setGravity(Gravity.CENTER);
+        ipText.setTextIsSelectable(true);
         lanInfoLayout.addView(ipText);
 
         root.addView(lanInfoLayout);
@@ -192,7 +193,8 @@ public class MainActivity extends Activity {
         passwordInput.setHintTextColor(Color.parseColor("#666666"));
         passwordInput.setBackgroundColor(Color.parseColor("#16213e"));
         passwordInput.setPadding(16, 12, 16, 12);
-        passwordInput.setText(config.getPassword());
+        // Password is NOT preloaded — it is cleared from storage after registration
+        // to avoid persisting plaintext credentials.
         passwordInput.setSingleLine(true);
         passwordInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT |
                 android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -364,12 +366,15 @@ public class MainActivity extends Activity {
                 Log.i(TAG, "✅ Registered! device_id=" + deviceId +
                         ", token=" + token.substring(0, Math.min(16, token.length())) + "...");
 
-                // Save token and start connection
+                // Save token and clear password — credentials no longer needed
                 config.setDeviceToken(token);
+                config.clearPassword(); // F3 fix: don't persist dashboard password at rest
 
                 mainHandler.post(() -> {
                     statusText.setText("✅ Registered! Connecting...");
                     statusText.setTextColor(Color.parseColor("#00ff88"));
+                    // Clear password field in UI as well
+                    passwordInput.setText("");
                     restartService();
                 });
 
@@ -440,7 +445,8 @@ public class MainActivity extends Activity {
             }
         } else {
             sb.append("🏠 Mode: LAN\n");
-            sb.append("🔌 ws://" + getDeviceIP() + ":38301");
+            sb.append("🔌 ws://" + getDeviceIP() + ":38301\n");
+            sb.append("🔑 Token: " + config.getLanToken());
         }
 
         sb.append("\n🏷️ ").append(HelperBuildInfo.shortLabel());

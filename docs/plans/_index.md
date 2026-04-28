@@ -16,6 +16,11 @@
 | 6 | [ai-video-metadata.md](ai-video-metadata.md) | 🔄 IN PROGRESS | AI auto-suggest Title/Tags/Description cho video — GPT-4o-mini Vision + keyframe analysis |
 | 7 | [dashboard-tiktok-first-redesign.md](dashboard-tiktok-first-redesign.md) | 🔄 IN PROGRESS | Dashboard TikTok-first, template metadata, live run composer, parity với runtime thật |
 | 8 | [tiktok-comment-hardening.md](tiktok-comment-hardening.md) | 🔄 IN PROGRESS | Helper APK release/version pipeline, comment send telemetry, regression gates cho `/set` + TikTok comment |
+| 9 | [open-issues-tracker.md](open-issues-tracker.md) | 🔄 IN PROGRESS | Single source of truth cho các vấn đề còn mở trên production: TikTok comment runtime, helper stability, verification, schema drift, dashboard E2E |
+| 10 | [tiktok-video-performance-tracking.md](tiktok-video-performance-tracking.md) | 🔄 IN PROGRESS | Phase A (schema/API) + Phase B (UI skeleton) complete. Theo dõi views và tương tác của video TikTok theo từng assignment |
+| 11 | [tiktok-metrics-locator-matching-checklist.md](tiktok-metrics-locator-matching-checklist.md) | 🔄 IN PROGRESS | Regression + device checklist cho locator-based matching trong TikTok metrics sync |
+| 12 | [android-helper-stability-hardening.md](android-helper-stability-hardening.md) | 🔄 IN PROGRESS | Plan + task tracker cho Android Helper APK stability, cloud reconnect safety, credential handling, LAN auth, protocol hardening |
+| 13 | [workflow-karpathy-alignment.md](workflow-karpathy-alignment.md) | ✅ COMPLETE | Rà soát workflow/skill docs và đưa assumptions, non-goals, surgical scope, verification của karpathy-guidelines vào quy trình chuẩn |
 
 ## Completed Features (No Separate Plan Files)
 

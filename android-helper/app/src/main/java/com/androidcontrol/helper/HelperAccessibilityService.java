@@ -3,9 +3,11 @@ package com.androidcontrol.helper;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.graphics.Path;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
@@ -335,10 +337,70 @@ public class HelperAccessibilityService extends AccessibilityService {
         return cs != null ? cs.toString() : "";
     }
 
-    // --- Callback interface ---
+    // --- Callback interfaces ---
 
     public interface GestureCallback {
         void onSuccess(String result);
         void onError(String error);
+    }
+
+    public interface ScreenshotCallback {
+        void onScreenshot(String base64Png);
+        void onError(String error);
+    }
+
+    // --- Screenshot (API 28+) ---
+
+    /**
+     * Capture screenshot via AccessibilityService.takeScreenshot (API 28+).
+     * Returns base64-encoded PNG via callback.  On older APIs the callback
+     * receives an error message instead.
+     */
+    public void takeScreenshot(ScreenshotCallback callback) {
+        if (Build.VERSION.SDK_INT < 28) {
+            callback.onError("takeScreenshot requires API 28+");
+            return;
+        }
+        try {
+            takeScreenshot(
+                android.view.Display.DEFAULT_DISPLAY,
+                command -> command.run(),  // executor — run inline on calling thread
+                new TakeScreenshotCallback() {
+                    @Override
+                    public void onSuccess(ScreenshotResult result) {
+                        try {
+                            android.hardware.HardwareBuffer hwBuffer = result.getHardwareBuffer();
+                            Bitmap bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, result.getColorSpace());
+                            if (bitmap == null) {
+                                callback.onError("Failed to decode hardware buffer");
+                                hwBuffer.close();
+                                return;
+                            }
+                            // Copy to software bitmap so we can compress it
+                            Bitmap soft = bitmap.copy(Bitmap.Config.ARGB_8888, false);
+                            bitmap.recycle();
+                            hwBuffer.close();
+
+                            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                            soft.compress(Bitmap.CompressFormat.PNG, 100, baos);
+                            soft.recycle();
+                            String b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+                            callback.onScreenshot(b64);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Screenshot encode error", e);
+                            callback.onError("Encode error: " + e.getMessage());
+                        }
+                    }
+
+                    @Override
+                    public void onFailure(int errorCode) {
+                        callback.onError("takeScreenshot failed, errorCode=" + errorCode);
+                    }
+                }
+            );
+        } catch (Exception e) {
+            Log.e(TAG, "takeScreenshot exception", e);
+            callback.onError("Exception: " + e.getMessage());
+        }
     }
 }

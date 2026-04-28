@@ -5,13 +5,20 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
 import org.java_websocket.WebSocket;
+import org.java_websocket.drafts.Draft;
+import org.java_websocket.exceptions.InvalidDataException;
+import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.handshake.ServerHandshakeBuilder;
 import org.java_websocket.server.WebSocketServer;
 
 import java.net.InetSocketAddress;
@@ -43,6 +50,7 @@ public class WebSocketService extends Service {
 
     private HelperWebSocketServer wsServer;
     private CloudWebSocketClient cloudClient;
+    private ConnectivityManager.NetworkCallback networkCallback;
     private ConnectionConfig config;
     private String currentMode = ConnectionConfig.MODE_LAN;
 
@@ -53,6 +61,31 @@ public class WebSocketService extends Service {
         config = new ConnectionConfig(this);
         Log.i(TAG, "Helper service booting: " + HelperBuildInfo.releaseLabel() +
                 " | " + HelperBuildInfo.debugLabel());
+        registerNetworkCallback();
+    }
+
+    private void registerNetworkCallback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                networkCallback = new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(Network network) {
+                        Log.i(TAG, "🌐 Network available");
+                    }
+
+                    @Override
+                    public void onLost(Network network) {
+                        Log.w(TAG, "🌐 Network lost");
+                        if (cloudClient != null && cloudClient.isOpen()) {
+                            Log.i(TAG, "Closing cloud client aggressively due to network loss");
+                            cloudClient.closeConnection(1006, "Network lost");
+                        }
+                    }
+                };
+                cm.registerDefaultNetworkCallback(networkCallback);
+            }
+        }
     }
 
     @Override
@@ -69,8 +102,13 @@ public class WebSocketService extends Service {
         }
         currentMode = mode;
 
-        if (ConnectionConfig.MODE_CLOUD.equals(mode) && config.isConfigured()) {
+        if (ConnectionConfig.MODE_CLOUD.equals(mode) && config.isReadyToConnect()) {
             startCloudMode();
+        } else if (ConnectionConfig.MODE_CLOUD.equals(mode) && config.isConfigured()) {
+            // No cached token yet — need to register first via MainActivity
+            Log.w(TAG, "⚠️ Cloud mode set but no token cached — waiting for user to register");
+            startForeground(NOTIFICATION_ID, buildNotification(
+                    "Cloud Mode — waiting for registration..."));
         } else {
             startLanMode();
         }
@@ -84,9 +122,9 @@ public class WebSocketService extends Service {
         if (wsServer != null) return;
 
         startForeground(NOTIFICATION_ID, buildNotification(
-                "LAN Mode — " + HelperBuildInfo.shortLabel() + " — port " + WS_PORT));
+                "LAN Mode \u2014 " + HelperBuildInfo.shortLabel() + " \u2014 port " + WS_PORT));
 
-        wsServer = new HelperWebSocketServer(new InetSocketAddress(WS_PORT));
+        wsServer = new HelperWebSocketServer(new InetSocketAddress(WS_PORT), config.getLanToken());
         wsServer.setReuseAddr(true);
         wsServer.start();
         Log.i(TAG, "🏠 LAN mode: WebSocket server started on port " + WS_PORT);
@@ -115,7 +153,11 @@ public class WebSocketService extends Service {
 
                 @Override
                 public void onDisconnected(String reason) {
-                    updateNotification("Cloud Mode — disconnected ❌");
+                    String msg = "Cloud Mode — disconnected ❌";
+                    if (reason != null && !reason.trim().isEmpty()) {
+                        msg += " (" + reason + ")";
+                    }
+                    updateNotification(msg);
                     Log.w(TAG, "☁️ Cloud disconnected: " + reason);
                 }
 
@@ -151,6 +193,12 @@ public class WebSocketService extends Service {
 
     @Override
     public void onDestroy() {
+        if (networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                cm.unregisterNetworkCallback(networkCallback);
+            }
+        }
         stopAll();
         super.onDestroy();
         Log.i(TAG, "WebSocket service destroyed");
@@ -218,12 +266,26 @@ public class WebSocketService extends Service {
 
     /**
      * WebSocket server that handles client connections and routes commands.
-     * (Same as before — LAN mode only)
+     * Requires token auth in handshake.
      */
     private static class HelperWebSocketServer extends WebSocketServer {
 
-        public HelperWebSocketServer(InetSocketAddress address) {
+        private final String expectedToken;
+
+        public HelperWebSocketServer(InetSocketAddress address, String token) {
             super(address);
+            this.expectedToken = token;
+        }
+
+        @Override
+        public ServerHandshakeBuilder onWebsocketHandshakeReceivedAsServer(WebSocket conn, Draft draft, ClientHandshake request) throws InvalidDataException {
+            ServerHandshakeBuilder builder = super.onWebsocketHandshakeReceivedAsServer(conn, draft, request);
+            String path = request.getResourceDescriptor();
+            if (path == null || !path.contains("token=" + expectedToken)) {
+                Log.w(TAG, "Rejecting LAN connection: invalid or missing token (path=" + path + ")");
+                throw new InvalidDataException(CloseFrame.POLICY_VALIDATION, "Invalid token");
+            }
+            return builder;
         }
 
         @Override

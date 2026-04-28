@@ -37,10 +37,12 @@ public class CommandHandler {
     }
 
     public static void handle(String message, ResponseCallback callback) {
+        String id = ""; // captured as early as possible for error correlation
+        String action = "";
         try {
             JsonObject cmd = JsonParser.parseString(message).getAsJsonObject();
-            String id = cmd.has("id") ? cmd.get("id").getAsString() : "";
-            String action = cmd.has("action") ? cmd.get("action").getAsString() : "";
+            id = cmd.has("id") ? cmd.get("id").getAsString() : "";
+            action = cmd.has("action") ? cmd.get("action").getAsString() : "";
             JsonObject params = cmd.has("params") ? cmd.getAsJsonObject("params") : new JsonObject();
 
             HelperAccessibilityService service = HelperAccessibilityService.getInstance();
@@ -102,12 +104,18 @@ public class CommandHandler {
                     handleListPackages(service, id, params, callback);
                     break;
 
+                case "screenshot":
+                    handleScreenshot(service, id, callback);
+                    break;
+
                 default:
                     sendError(callback, id, "Unknown action: " + action);
             }
         } catch (Exception e) {
-            Log.e(TAG, "Command parse error", e);
-            sendError(callback, "", "Parse error: " + e.getMessage());
+            // id is already extracted above if parsing succeeded.
+            // Send error with the correct id so the caller is not left waiting.
+            Log.e(TAG, "Command handling error (id=" + id + ", action=" + action + ")", e);
+            sendError(callback, id, "Handler error: " + e.getMessage());
         }
     }
 
@@ -116,30 +124,38 @@ public class CommandHandler {
     private static void handleTap(HelperAccessibilityService service, String id,
                                    JsonObject params, ResponseCallback callback) {
         if (service == null) { sendError(callback, id, "Service not running"); return; }
-        int x = params.get("x").getAsInt();
-        int y = params.get("y").getAsInt();
-        service.tap(x, y, new HelperAccessibilityService.GestureCallback() {
-            @Override
-            public void onSuccess(String result) { sendOk(callback, id, result); }
-            @Override
-            public void onError(String error) { sendError(callback, id, error); }
-        });
+        try {
+            int x = requireInt(params, "x");
+            int y = requireInt(params, "y");
+            service.tap(x, y, new HelperAccessibilityService.GestureCallback() {
+                @Override
+                public void onSuccess(String result) { sendOk(callback, id, result); }
+                @Override
+                public void onError(String error) { sendError(callback, id, error); }
+            });
+        } catch (IllegalArgumentException e) {
+            sendError(callback, id, e.getMessage());
+        }
     }
 
     private static void handleSwipe(HelperAccessibilityService service, String id,
                                      JsonObject params, ResponseCallback callback) {
         if (service == null) { sendError(callback, id, "Service not running"); return; }
-        int x1 = params.get("x1").getAsInt();
-        int y1 = params.get("y1").getAsInt();
-        int x2 = params.get("x2").getAsInt();
-        int y2 = params.get("y2").getAsInt();
-        int duration = params.has("duration") ? params.get("duration").getAsInt() : 300;
-        service.swipe(x1, y1, x2, y2, duration, new HelperAccessibilityService.GestureCallback() {
-            @Override
-            public void onSuccess(String result) { sendOk(callback, id, result); }
-            @Override
-            public void onError(String error) { sendError(callback, id, error); }
-        });
+        try {
+            int x1 = requireInt(params, "x1");
+            int y1 = requireInt(params, "y1");
+            int x2 = requireInt(params, "x2");
+            int y2 = requireInt(params, "y2");
+            int duration = params.has("duration") ? params.get("duration").getAsInt() : 300;
+            service.swipe(x1, y1, x2, y2, duration, new HelperAccessibilityService.GestureCallback() {
+                @Override
+                public void onSuccess(String result) { sendOk(callback, id, result); }
+                @Override
+                public void onError(String error) { sendError(callback, id, error); }
+            });
+        } catch (IllegalArgumentException e) {
+            sendError(callback, id, e.getMessage());
+        }
     }
 
     private static void handleLongPress(HelperAccessibilityService service, String id,
@@ -159,15 +175,19 @@ public class CommandHandler {
     private static void handleTypeText(HelperAccessibilityService service, String id,
                                         JsonObject params, ResponseCallback callback) {
         if (service == null) { sendError(callback, id, "Service not running"); return; }
-        String text = params.get("text").getAsString();
-        mainHandler.post(() -> {
-            boolean ok = service.typeText(text);
-            if (ok) {
-                sendOk(callback, id, "Typed: " + text);
-            } else {
-                sendError(callback, id, "Failed to type — no focused EditText");
-            }
-        });
+        try {
+            String text = requireString(params, "text");
+            mainHandler.post(() -> {
+                boolean ok = service.typeText(text);
+                if (ok) {
+                    sendOk(callback, id, "Typed: " + text);
+                } else {
+                    sendError(callback, id, "Failed to type \u2014 no focused EditText");
+                }
+            });
+        } catch (IllegalArgumentException e) {
+            sendError(callback, id, e.getMessage());
+        }
     }
 
     private static void handleClickNode(HelperAccessibilityService service, String id,
@@ -250,8 +270,8 @@ public class CommandHandler {
     private static void handleLaunchApp(HelperAccessibilityService service, String id,
                                          JsonObject params, ResponseCallback callback) {
         if (service == null) { sendError(callback, id, "Service not running"); return; }
-        String packageName = params.get("package").getAsString();
         try {
+            String packageName = requireString(params, "package");
             Context ctx = service.getApplicationContext();
             Intent intent = ctx.getPackageManager().getLaunchIntentForPackage(packageName);
             if (intent != null) {
@@ -261,6 +281,8 @@ public class CommandHandler {
             } else {
                 sendError(callback, id, "No launch intent for: " + packageName);
             }
+        } catch (IllegalArgumentException e) {
+            sendError(callback, id, e.getMessage());
         } catch (Exception e) {
             sendError(callback, id, "Launch failed: " + e.getMessage());
         }
@@ -270,10 +292,12 @@ public class CommandHandler {
                                          JsonObject params, ResponseCallback callback) {
         // AccessibilityService cannot force-stop apps directly.
         // We'll try via shell if available, otherwise report limitation.
-        String packageName = params.get("package").getAsString();
         try {
+            String packageName = requireString(params, "package");
             Runtime.getRuntime().exec(new String[]{"am", "force-stop", packageName});
             sendOk(callback, id, "Force-stopped: " + packageName);
+        } catch (IllegalArgumentException e) {
+            sendError(callback, id, e.getMessage());
         } catch (Exception e) {
             sendError(callback, id, "Cannot force-stop without root/shell: " + e.getMessage());
         }
@@ -296,6 +320,58 @@ public class CommandHandler {
         }
 
         sendOkJson(callback, id, packages);
+    }
+
+    // --- Screenshot handler (F6 fix) ---
+
+    private static void handleScreenshot(HelperAccessibilityService service, String id,
+                                          ResponseCallback callback) {
+        if (service == null) { sendError(callback, id, "Service not running"); return; }
+        if (android.os.Build.VERSION.SDK_INT < 28) {
+            sendError(callback, id, "screenshot requires API 28+ (Android 9)");
+            return;
+        }
+        service.takeScreenshot(new HelperAccessibilityService.ScreenshotCallback() {
+            @Override
+            public void onScreenshot(String base64Png) {
+                JsonObject result = new JsonObject();
+                result.addProperty("data", base64Png);
+                result.addProperty("format", "png");
+                sendOkJson(callback, id, result);
+            }
+
+            @Override
+            public void onError(String error) {
+                sendError(callback, id, "screenshot error: " + error);
+            }
+        });
+    }
+
+    // --- Param validation helpers ---
+
+    /**
+     * Require a non-empty string param.  Throws IllegalArgumentException
+     * (caught in each handler) so the original command id is preserved.
+     */
+    private static String requireString(JsonObject params, String key) {
+        if (!params.has(key) || params.get(key).isJsonNull()) {
+            throw new IllegalArgumentException("Missing required param: " + key);
+        }
+        String value = params.get(key).getAsString();
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException("Param '" + key + "' must not be empty");
+        }
+        return value;
+    }
+
+    /**
+     * Require an int param.  Throws IllegalArgumentException on missing/invalid.
+     */
+    private static int requireInt(JsonObject params, String key) {
+        if (!params.has(key) || params.get(key).isJsonNull()) {
+            throw new IllegalArgumentException("Missing required param: " + key);
+        }
+        return params.get(key).getAsInt();
     }
 
     // --- Response helpers ---

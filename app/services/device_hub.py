@@ -30,7 +30,13 @@ CMD_TIMEOUT = 15
 
 
 class DeviceConnection:
-    """Represents a connected remote device."""
+    """Represents a connected remote device.
+
+    Each connection gets a unique session_id so that reconnect races
+    (old connection exit after new connection registered) are handled
+    safely: unregister only removes the connection whose session_id
+    matches the one that is closing.
+    """
 
     def __init__(self, device_token: str, device_id: int,
                  user_id: int, ws: WebSocket):
@@ -38,6 +44,8 @@ class DeviceConnection:
         self.device_id = device_id
         self.user_id = user_id
         self.ws = ws
+        # Unique ID per session — used to guard unregister on reconnect
+        self.session_id: str = str(uuid.uuid4())[:12]
         self.connected_at = datetime.now(timezone.utc)
         self.last_ping = datetime.now(timezone.utc)
         self.metadata: dict = {}
@@ -48,7 +56,8 @@ class DeviceConnection:
         cmd_id = str(uuid.uuid4())[:8]
         command = {"id": cmd_id, "action": action, "params": params or {}}
 
-        future = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
         self._pending[cmd_id] = future
 
         try:
@@ -66,10 +75,23 @@ class DeviceConnection:
         """Handle an incoming response from the device."""
         cmd_id = data.get("id", "")
         if cmd_id in self._pending:
-            self._pending[cmd_id].set_result(data)
+            future = self._pending[cmd_id]
+            if not future.done():
+                future.set_result(data)
         else:
             # Unsolicited event (status update, heartbeat, etc.)
             logger.debug(f"Device {self.device_id} event: {data}")
+
+    def fail_all_pending(self, reason: str = "Connection closed"):
+        """Fail all in-flight command futures when the connection closes.
+
+        Prevents callers from blocking until CMD_TIMEOUT when device
+        disconnects mid-command.
+        """
+        for cmd_id, future in list(self._pending.items()):
+            if not future.done():
+                future.set_exception(ConnectionError(reason))
+        self._pending.clear()
 
     def update_metadata(self, metadata: dict | None):
         """Merge helper/device metadata reported by the remote helper."""
@@ -86,13 +108,13 @@ class DeviceHub:
 
     Usage:
         # When device connects via WebSocket
-        await hub.register(token, device_id, user_id, websocket)
+        conn = hub.register(token, device_id, user_id, websocket)
 
         # To send command to a device
         result = await hub.send_command(device_id, "tap", {"x": 100, "y": 200})
 
-        # When device disconnects
-        hub.unregister(device_id)
+        # When device disconnects (pass session_id to guard against race)
+        hub.unregister(device_id, session_id=conn.session_id)
     """
 
     def __init__(self):
@@ -101,24 +123,63 @@ class DeviceHub:
 
     def register(self, device_token: str, device_id: int,
                  user_id: int, ws: WebSocket) -> DeviceConnection:
-        """Register a new device connection."""
-        # Close existing connection if any (device reconnected)
-        if device_id in self._connections:
-            logger.info(f"📱 Device {device_id} reconnecting, closing old connection")
-            self._connections.pop(device_id)
+        """Register a new device connection.
+
+        If a previous connection exists for the same device_id, its
+        pending futures are immediately failed so callers don't wait
+        for CMD_TIMEOUT.  The old WebSocket is NOT closed here — the
+        caller (device_connect endpoint) owns the old WS lifecycle.
+        """
+        old_conn = self._connections.get(device_id)
+        if old_conn:
+            logger.info(
+                f"📱 Device {device_id} reconnecting (old_session={old_conn.session_id}), "
+                "failing pending commands on old connection"
+            )
+            old_conn.fail_all_pending("Device reconnected — old session superseded")
 
         conn = DeviceConnection(device_token, device_id, user_id, ws)
         self._connections[device_id] = conn
         self._token_map[device_token] = device_id
-        logger.info(f"📱 Device {device_id} connected via cloud (user={user_id})")
+        logger.info(
+            f"📱 Device {device_id} connected via cloud "
+            f"(user={user_id}, session={conn.session_id})"
+        )
         return conn
 
-    def unregister(self, device_id: int):
-        """Remove a device connection."""
-        conn = self._connections.pop(device_id, None)
-        if conn:
-            self._token_map.pop(conn.device_token, None)
-            logger.info(f"📱 Device {device_id} disconnected from cloud")
+    def unregister(self, device_id: int, session_id: str | None = None) -> bool:
+        """Remove a device connection.
+
+        If session_id is provided, the connection is only removed when
+        its session_id matches — this prevents a reconnect race where
+        the OLD connection's finally-block removes the NEW connection.
+
+        Example race (without guard):
+            t=0  Device A reconnects → new conn registered
+            t=1  Old WS reader loop exits → unregister(device_id)
+            t=2  New conn incorrectly removed ❌
+
+        With session_id guard, unregister at t=1 is a no-op because
+        session_id of the old conn no longer matches the active conn.
+        """
+        current = self._connections.get(device_id)
+        if current is None:
+            return False
+
+        if session_id is not None and current.session_id != session_id:
+            logger.debug(
+                f"📱 Device {device_id}: unregister skipped "
+                f"(session {session_id} != active {current.session_id})"
+            )
+            return False
+
+        # Fail any remaining pending commands before removing
+        current.fail_all_pending("Connection closed")
+
+        self._connections.pop(device_id, None)
+        self._token_map.pop(current.device_token, None)
+        logger.info(f"📱 Device {device_id} disconnected from cloud")
+        return True
 
     def is_connected(self, device_id: int) -> bool:
         """Check if a device is connected via cloud."""
@@ -149,8 +210,10 @@ class DeviceHub:
             "devices": {
                 did: {
                     "user_id": conn.user_id,
+                    "session_id": conn.session_id,
                     "connected_at": conn.connected_at.isoformat(),
                     "last_ping": conn.last_ping.isoformat(),
+                    "pending_commands": len(conn._pending),
                     "metadata": conn.metadata,
                 }
                 for did, conn in self._connections.items()

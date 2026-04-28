@@ -39,6 +39,7 @@ public class CloudWebSocketClient extends WebSocketClient {
     private Timer heartbeatTimer;
     private boolean shouldReconnect = true;
     private int reconnectAttempt = 0;
+    private long lastHeartbeatAckMs = 0;
     private static final int MAX_RECONNECT_DELAY_MS = 60_000; // 60s max
 
     private ConnectionListener listener;
@@ -65,6 +66,7 @@ public class CloudWebSocketClient extends WebSocketClient {
         Log.i(TAG, "☁️ Helper build: " + HelperBuildInfo.releaseLabel() +
                 " | " + HelperBuildInfo.debugLabel());
         reconnectAttempt = 0;
+        lastHeartbeatAckMs = System.currentTimeMillis();
         sendHello();
         startHeartbeat();
         if (listener != null) {
@@ -87,6 +89,7 @@ public class CloudWebSocketClient extends WebSocketClient {
             // Handle heartbeat ack
             if (data.has("type") && "heartbeat_ack".equals(data.get("type").getAsString())) {
                 Log.d(TAG, "💓 Heartbeat ack received");
+                lastHeartbeatAckMs = System.currentTimeMillis();
                 return;
             }
 
@@ -113,6 +116,11 @@ public class CloudWebSocketClient extends WebSocketClient {
                 ", remote=" + remote + ")");
         stopHeartbeat();
 
+        if (code == org.java_websocket.framing.CloseFrame.POLICY_VALIDATION) {
+            Log.e(TAG, "Server rejected connection (token revoked/invalid). Stopping reconnect.");
+            shouldReconnect = false;
+        }
+
         if (listener != null) {
             mainHandler.post(() -> listener.onDisconnected(reason));
         }
@@ -137,6 +145,12 @@ public class CloudWebSocketClient extends WebSocketClient {
             @Override
             public void run() {
                 if (isOpen()) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastHeartbeatAckMs > HEARTBEAT_INTERVAL_MS * 2.5) {
+                        Log.w(TAG, "No heartbeat_ack for " + (now - lastHeartbeatAckMs) + "ms! Connection stale, forcing reconnect.");
+                        closeConnection(1006, "Heartbeat timeout");
+                        return;
+                    }
                     try {
                         JsonObject hb = new JsonObject();
                         hb.addProperty("type", "heartbeat");

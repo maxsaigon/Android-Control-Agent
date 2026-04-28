@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 
 from app.database import engine
 from app.models import Device, DeviceStatus, DeviceToken, User
+from app.routers.auth import _verify_password
 
 logger = logging.getLogger(__name__)
 
@@ -126,14 +127,19 @@ async def device_connect(websocket: WebSocket, token: str):
     except Exception as e:
         logger.error(f"📱 Device {device_id} connection error: {e}")
     finally:
-        # Clean up
-        device_hub.unregister(device_id)
-        with Session(engine) as session:
-            device = session.get(Device, device_id)
-            if device:
-                device.status = DeviceStatus.OFFLINE
-                session.add(device)
-                session.commit()
+        # Guard unregister with session_id so a reconnect race does not
+        # remove the newly registered connection.
+        removed_active_connection = device_hub.unregister(
+            device_id,
+            session_id=conn.session_id,
+        )
+        if removed_active_connection:
+            with Session(engine) as session:
+                device = session.get(Device, device_id)
+                if device:
+                    device.status = DeviceStatus.OFFLINE
+                    session.add(device)
+                    session.commit()
 
 
 # --- REST API for device registration + token management ---
@@ -173,12 +179,13 @@ def register_device(req: RegisterRequest):
     from fastapi import HTTPException
 
     with Session(engine) as session:
-        # 1. Validate credentials
+        # 1. Validate credentials — use bcrypt-aware verifier (same as dashboard login)
         user = session.exec(
             select(User).where(User.username == req.username)
         ).first()
-        if not user or user.password != req.password:
+        if not user or not _verify_password(req.password, user.password):
             raise HTTPException(401, "Invalid username or password")
+        logger.info(f"🔑 Device registration auth OK for user: {user.username}")
 
         # 2. Find or create device
         device = session.exec(
@@ -301,7 +308,13 @@ def list_device_tokens(device_id: int = None):
 
 @token_router.delete("/{token_id}")
 def revoke_device_token(token_id: int):
-    """Revoke (deactivate) a device token."""
+    """Revoke (deactivate) a device token and disconnect active WebSocket.
+
+    After revocation the device's active cloud connection (if any) is
+    failed immediately so it cannot receive further commands.
+    """
+    from app.services.device_hub import device_hub
+
     with Session(engine) as session:
         token = session.get(DeviceToken, token_id)
         if not token:
@@ -310,7 +323,18 @@ def revoke_device_token(token_id: int):
         token.is_active = False
         session.add(token)
         session.commit()
-        return {"status": "revoked", "token_id": token_id}
+
+    # Fail pending commands for this device and close connection in the hub.
+    # The WebSocket reader loop will detect the disconnect and mark offline.
+    device_id = token.device_id
+    conn = device_hub.get_connection(device_id)
+    if conn and conn.device_token == token.token:
+        conn.fail_all_pending("Token revoked")
+        logger.info(f"🔒 Token {token_id} revoked — device {device_id} hub connection closed")
+    else:
+        logger.info(f"🔒 Token {token_id} revoked (device {device_id} was not connected)")
+
+    return {"status": "revoked", "token_id": token_id, "device_id": device_id}
 
 
 @token_router.get("/hub-status")
