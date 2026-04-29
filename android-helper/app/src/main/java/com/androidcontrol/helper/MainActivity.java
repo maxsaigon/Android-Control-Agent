@@ -56,10 +56,10 @@ public class MainActivity extends Activity {
     private TextView versionText;
     private LinearLayout lanInfoLayout;
     private LinearLayout cloudConfigLayout;
-    private EditText serverUrlInput;
     private EditText usernameInput;
-    private EditText passwordInput;
     private EditText deviceNameInput;
+    private Button connectBtn;
+    private Runnable pollRunnable;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -144,23 +144,6 @@ public class MainActivity extends Activity {
         cloudConfigLayout.setOrientation(LinearLayout.VERTICAL);
         cloudConfigLayout.setPadding(0, 16, 0, 16);
 
-        // Server URL
-        TextView urlLabel = new TextView(this);
-        urlLabel.setText("Server URL");
-        urlLabel.setTextColor(Color.parseColor("#cccccc"));
-        urlLabel.setTextSize(12);
-        cloudConfigLayout.addView(urlLabel);
-
-        serverUrlInput = new EditText(this);
-        serverUrlInput.setHint("e.g. m.buonme.com");
-        serverUrlInput.setTextColor(Color.WHITE);
-        serverUrlInput.setHintTextColor(Color.parseColor("#666666"));
-        serverUrlInput.setBackgroundColor(Color.parseColor("#16213e"));
-        serverUrlInput.setPadding(16, 12, 16, 12);
-        serverUrlInput.setText(config.getServerUrl());
-        serverUrlInput.setSingleLine(true);
-        cloudConfigLayout.addView(serverUrlInput);
-
         // Username
         TextView usernameLabel = new TextView(this);
         usernameLabel.setText("Username");
@@ -179,27 +162,6 @@ public class MainActivity extends Activity {
         usernameInput.setSingleLine(true);
         cloudConfigLayout.addView(usernameInput);
 
-        // Password
-        TextView passwordLabel = new TextView(this);
-        passwordLabel.setText("Password");
-        passwordLabel.setTextColor(Color.parseColor("#cccccc"));
-        passwordLabel.setTextSize(12);
-        passwordLabel.setPadding(0, 16, 0, 0);
-        cloudConfigLayout.addView(passwordLabel);
-
-        passwordInput = new EditText(this);
-        passwordInput.setHint("e.g. admin");
-        passwordInput.setTextColor(Color.WHITE);
-        passwordInput.setHintTextColor(Color.parseColor("#666666"));
-        passwordInput.setBackgroundColor(Color.parseColor("#16213e"));
-        passwordInput.setPadding(16, 12, 16, 12);
-        // Password is NOT preloaded — it is cleared from storage after registration
-        // to avoid persisting plaintext credentials.
-        passwordInput.setSingleLine(true);
-        passwordInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT |
-                android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        cloudConfigLayout.addView(passwordInput);
-
         // Device Name
         TextView deviceNameLabel = new TextView(this);
         deviceNameLabel.setText("Device Name");
@@ -214,15 +176,17 @@ public class MainActivity extends Activity {
         deviceNameInput.setHintTextColor(Color.parseColor("#666666"));
         deviceNameInput.setBackgroundColor(Color.parseColor("#16213e"));
         deviceNameInput.setPadding(16, 12, 16, 12);
-        deviceNameInput.setText(config.getDeviceName());
+        String savedName = config.getDeviceName();
+        if (savedName.isEmpty()) savedName = android.os.Build.MODEL;
+        deviceNameInput.setText(savedName);
         deviceNameInput.setSingleLine(true);
         cloudConfigLayout.addView(deviceNameInput);
 
         root.addView(cloudConfigLayout);
 
         // ─── Save & Connect Button ───
-        Button connectBtn = new Button(this);
-        connectBtn.setText("💾  Save & Connect");
+        connectBtn = new Button(this);
+        connectBtn.setText("Request Access");
         connectBtn.setBackgroundColor(Color.parseColor("#e94560"));
         connectBtn.setTextColor(Color.WHITE);
         connectBtn.setOnClickListener(v -> saveAndConnect());
@@ -279,18 +243,32 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         updateStatus();
+        
+        if (config.isCloudMode()) {
+            if (!config.getLinkRequestId().isEmpty() && !config.hasToken()) {
+                startPollingStatus();
+            } else if (config.hasToken()) {
+                connectBtn.setVisibility(View.GONE);
+                usernameInput.setVisibility(View.GONE);
+                deviceNameInput.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopPollingStatus();
     }
 
     private void saveAndConnect() {
         boolean isCloud = cloudConfigLayout.getVisibility() == View.VISIBLE;
 
         if (isCloud) {
-            String url = serverUrlInput.getText().toString().trim();
             String username = usernameInput.getText().toString().trim();
-            String password = passwordInput.getText().toString().trim();
             String deviceName = deviceNameInput.getText().toString().trim();
 
-            if (url.isEmpty() || username.isEmpty() || password.isEmpty() || deviceName.isEmpty()) {
+            if (username.isEmpty() || deviceName.isEmpty()) {
                 statusText.setText("❌ Please fill in all fields");
                 statusText.setTextColor(Color.parseColor("#ff4444"));
                 return;
@@ -298,16 +276,45 @@ public class MainActivity extends Activity {
 
             // Save config
             config.setMode(ConnectionConfig.MODE_CLOUD);
-            config.setServerUrl(url);
             config.setUsername(username);
-            config.setPassword(password);
             config.setDeviceName(deviceName);
+            
+            // clear old token if any
+            config.setDeviceToken("");
+            config.clearLinkRequestId();
 
-            statusText.setText("🔄 Registering device...");
+            statusText.setText("🔄 Requesting access...");
             statusText.setTextColor(Color.parseColor("#ffaa00"));
+            connectBtn.setEnabled(false);
 
-            // Register device in background thread, then connect
-            executor.execute(() -> registerAndConnect(url, username, password, deviceName));
+            DeviceLinkClient.requestLink(config, username, deviceName, new DeviceLinkClient.LinkCallback() {
+                @Override
+                public void onPending(String requestId) {
+                    config.setLinkRequestId(requestId);
+                    statusText.setText("⏳ Waiting for admin approval...");
+                    startPollingStatus();
+                }
+
+                @Override
+                public void onApproved(String token) {
+                    // Not expected here usually but handled
+                    handleApproved(token);
+                }
+
+                @Override
+                public void onRejected(String reason) {
+                    statusText.setText("❌ Rejected: " + reason);
+                    statusText.setTextColor(Color.parseColor("#ff4444"));
+                    connectBtn.setEnabled(true);
+                }
+
+                @Override
+                public void onError(String error) {
+                    statusText.setText("❌ Error: " + error);
+                    statusText.setTextColor(Color.parseColor("#ff4444"));
+                    connectBtn.setEnabled(true);
+                }
+            });
         } else {
             config.setMode(ConnectionConfig.MODE_LAN);
             restartService();
@@ -315,102 +322,72 @@ public class MainActivity extends Activity {
             statusText.setTextColor(Color.parseColor("#00ff88"));
         }
     }
-
-    /**
-     * Call /api/device/register to get a token, then start WebSocket connection.
-     * Runs on background thread.
-     */
-    private void registerAndConnect(String serverUrl, String username,
-                                     String password, String deviceName) {
-        try {
-            // Build register URL
-            String registerUrl = config.getRegisterUrl();
-            Log.i(TAG, "📝 Registering at: " + registerUrl);
-
-            // Make HTTP POST request
-            URL url = new URL(registerUrl);
-            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            conn.setDoOutput(true);
-            conn.setConnectTimeout(10000);
-            conn.setReadTimeout(10000);
-
-            // Build JSON body
-            JsonObject body = new JsonObject();
-            body.addProperty("username", username);
-            body.addProperty("password", password);
-            body.addProperty("device_name", deviceName);
-
-            try (OutputStream os = conn.getOutputStream()) {
-                os.write(body.toString().getBytes(StandardCharsets.UTF_8));
-            }
-
-            int responseCode = conn.getResponseCode();
-
-            if (responseCode == 200 || responseCode == 201) {
-                // Success — read token from response
-                BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(conn.getInputStream()));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
+    
+    private void startPollingStatus() {
+        if (pollRunnable != null) return;
+        pollRunnable = new Runnable() {
+            @Override
+            public void run() {
+                String reqId = config.getLinkRequestId();
+                if (reqId.isEmpty() || config.hasToken()) {
+                    stopPollingStatus();
+                    return;
                 }
-                reader.close();
+                
+                DeviceLinkClient.pollStatus(config, reqId, new DeviceLinkClient.LinkCallback() {
+                    @Override
+                    public void onPending(String requestId) {
+                        statusText.setText("⏳ Waiting for admin approval...");
+                    }
 
-                JsonObject response = gson.fromJson(sb.toString(), JsonObject.class);
-                String token = response.get("token").getAsString();
-                int deviceId = response.get("device_id").getAsInt();
+                    @Override
+                    public void onApproved(String token) {
+                        handleApproved(token);
+                    }
 
-                Log.i(TAG, "✅ Registered! device_id=" + deviceId +
-                        ", token=" + token.substring(0, Math.min(16, token.length())) + "...");
+                    @Override
+                    public void onRejected(String reason) {
+                        statusText.setText("❌ Rejected: " + reason);
+                        statusText.setTextColor(Color.parseColor("#ff4444"));
+                        connectBtn.setEnabled(true);
+                        connectBtn.setText("Retry Request");
+                        config.clearLinkRequestId();
+                        stopPollingStatus();
+                    }
 
-                // Save token and clear password — credentials no longer needed
-                config.setDeviceToken(token);
-                config.clearPassword(); // F3 fix: don't persist dashboard password at rest
-
-                mainHandler.post(() -> {
-                    statusText.setText("✅ Registered! Connecting...");
-                    statusText.setTextColor(Color.parseColor("#00ff88"));
-                    // Clear password field in UI as well
-                    passwordInput.setText("");
-                    restartService();
+                    @Override
+                    public void onError(String error) {
+                        // Keep polling silently
+                    }
                 });
-
-            } else if (responseCode == 401) {
-                mainHandler.post(() -> {
-                    statusText.setText("❌ Invalid username or password");
-                    statusText.setTextColor(Color.parseColor("#ff4444"));
-                });
-            } else {
-                // Read error body
-                BufferedReader reader = new BufferedReader(
-                        new InputStreamReader(conn.getErrorStream()));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    sb.append(line);
+                
+                if (pollRunnable != null) {
+                    mainHandler.postDelayed(this, 3000);
                 }
-                reader.close();
-
-                final String errorMsg = sb.toString();
-                Log.e(TAG, "Register failed: " + responseCode + " " + errorMsg);
-                mainHandler.post(() -> {
-                    statusText.setText("❌ Registration failed (" + responseCode + ")");
-                    statusText.setTextColor(Color.parseColor("#ff4444"));
-                });
             }
-
-            conn.disconnect();
-
-        } catch (Exception e) {
-            Log.e(TAG, "Registration error", e);
-            mainHandler.post(() -> {
-                statusText.setText("❌ Connection error: " + e.getMessage());
-                statusText.setTextColor(Color.parseColor("#ff4444"));
-            });
+        };
+        mainHandler.post(pollRunnable);
+    }
+    
+    private void stopPollingStatus() {
+        if (pollRunnable != null) {
+            mainHandler.removeCallbacks(pollRunnable);
+            pollRunnable = null;
         }
+    }
+    
+    private void handleApproved(String token) {
+        stopPollingStatus();
+        config.setDeviceToken(token);
+        config.clearLinkRequestId();
+        
+        statusText.setText("✅ Approved! Connecting...");
+        statusText.setTextColor(Color.parseColor("#00ff88"));
+        connectBtn.setVisibility(View.GONE);
+        usernameInput.setVisibility(View.GONE);
+        deviceNameInput.setVisibility(View.GONE);
+        
+        restartService();
     }
 
     private void restartService() {
@@ -439,9 +416,8 @@ public class MainActivity extends Activity {
 
         if (config.isCloudMode()) {
             sb.append("☁️ Mode: CLOUD\n");
-            sb.append("📡 " + config.getServerUrl());
             if (!config.getDeviceName().isEmpty()) {
-                sb.append("\n📱 " + config.getDeviceName());
+                sb.append("📱 ").append(config.getDeviceName());
             }
         } else {
             sb.append("🏠 Mode: LAN\n");

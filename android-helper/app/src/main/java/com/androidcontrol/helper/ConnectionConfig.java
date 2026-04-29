@@ -24,6 +24,7 @@ public class ConnectionConfig {
     private static final String KEY_DEVICE_NAME = "device_name";
     private static final String KEY_DEVICE_TOKEN = "device_token";
     private static final String KEY_LAN_TOKEN = "lan_token";
+    private static final String KEY_LINK_REQUEST_ID = "link_request_id";
 
     public static final String MODE_LAN = "lan";
     public static final String MODE_CLOUD = "cloud";
@@ -43,7 +44,11 @@ public class ConnectionConfig {
     }
 
     public String getServerUrl() {
-        return prefs.getString(KEY_SERVER_URL, "");
+        String url = prefs.getString(KEY_SERVER_URL, "");
+        if (url.isEmpty()) {
+            return "m.buonme.com";
+        }
+        return url;
     }
 
     public void setServerUrl(String url) {
@@ -80,6 +85,18 @@ public class ConnectionConfig {
 
     public void setDeviceToken(String token) {
         prefs.edit().putString(KEY_DEVICE_TOKEN, token).apply();
+    }
+
+    public String getLinkRequestId() {
+        return prefs.getString(KEY_LINK_REQUEST_ID, "");
+    }
+
+    public void setLinkRequestId(String id) {
+        prefs.edit().putString(KEY_LINK_REQUEST_ID, id).apply();
+    }
+
+    public void clearLinkRequestId() {
+        prefs.edit().remove(KEY_LINK_REQUEST_ID).apply();
     }
 
     /**

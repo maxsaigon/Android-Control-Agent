@@ -175,6 +175,9 @@ async function refreshDevices() {
         devices = await res.json();
         renderDevices();
         updateDeviceSelect();
+        
+        // Also refresh pending links
+        await refreshPendingDevices();
 
     } catch (e) {
         document.getElementById('serverStatus').innerHTML =
@@ -364,6 +367,81 @@ async function doDeleteDevice(id) {
         refreshDevices();
         refreshStats();
     } catch (e) { toast('Failed', 'error'); }
+}
+
+async function refreshPendingDevices() {
+    try {
+        const res = await fetch(`${API}/api/device/link/requests`);
+        if (!res.ok) return;
+        const pending = await res.json();
+        
+        const countEl = document.getElementById('pendingCount');
+        const listEl = document.getElementById('pendingDevicesList');
+        const panelEl = document.getElementById('pendingDevicesPanel');
+        if (!countEl || !listEl || !panelEl) return;
+        
+        countEl.textContent = pending.length;
+        if (pending.length === 0) {
+            panelEl.style.display = 'none';
+            listEl.innerHTML = '<div class="empty-state">Không có yêu cầu nào</div>';
+            return;
+        }
+        panelEl.style.display = 'block';
+        
+        listEl.innerHTML = '<div class="device-grid" style="grid-template-columns: repeat(auto-fill, minmax(320px, 1fr))">' + pending.map(req => {
+            const timeAgo = Math.round((new Date() - new Date(req.created_at)) / 60000);
+            return `
+                <div class="device-card" style="border-color: var(--blue)">
+                    <div class="device-header">
+                        <span class="device-name">${escapeHtml(req.device_name)}</span>
+                        <span class="device-status status-busy">⏳ Pending</span>
+                    </div>
+                    <div class="device-info">
+                        <span>👤 User: ${escapeHtml(req.username)}</span>
+                        <span>📱 ${escapeHtml(req.device_model || 'Unknown')}</span>
+                        ${req.android_version ? `<span>🤖 Android ${escapeHtml(req.android_version)}</span>` : ''}
+                        <span>🕐 ${timeAgo}m ago</span>
+                    </div>
+                    <div class="device-actions" style="margin-top: 12px">
+                        <button class="btn btn-sm btn-primary" style="flex:1" onclick="acceptDeviceLink('${req.request_id}')">✅ Accept</button>
+                        <button class="btn btn-sm btn-danger" style="flex:1" onclick="rejectDeviceLink('${req.request_id}')">❌ Reject</button>
+                    </div>
+                </div>
+            `;
+        }).join('') + '</div>';
+    } catch (e) {
+        // ignore
+    }
+}
+
+async function acceptDeviceLink(requestId) {
+    try {
+        const res = await fetch(`${API}/api/device/link/requests/${requestId}/accept`, { method: 'POST' });
+        if (res.ok) {
+            toast('✅ Accepted device', 'success');
+            refreshDevices();
+        } else {
+            const err = await res.json();
+            toast(`❌ Failed: ${err.detail || 'Unknown'}`, 'error');
+        }
+    } catch(e) {
+        toast('Failed', 'error');
+    }
+}
+
+async function rejectDeviceLink(requestId) {
+    try {
+        const res = await fetch(`${API}/api/device/link/requests/${requestId}/reject`, { method: 'POST' });
+        if (res.ok) {
+            toast('❌ Rejected device', 'success');
+            refreshDevices();
+        } else {
+            const err = await res.json();
+            toast(`❌ Failed: ${err.detail || 'Unknown'}`, 'error');
+        }
+    } catch(e) {
+        toast('Failed', 'error');
+    }
 }
 
 async function addDevice(event) {
@@ -1737,6 +1815,47 @@ let assignmentList = [];
 let selectedAssignmentIds = new Set();
 let focusedVideoId = null;
 let assignmentModalState = null;
+let metricsSummaryCache = null;
+
+// --- Metrics Helpers ---
+
+function formatMetricNumber(num) {
+    if (num === null || num === undefined) return '—';
+    if (num >= 1_000_000) return (num / 1_000_000).toFixed(1) + 'M';
+    if (num >= 1_000) return (num / 1_000).toFixed(1) + 'K';
+    return String(num);
+}
+
+function renderMetricsBadge(status) {
+    const labels = {
+        pending: '⏳ Pending',
+        syncing: '🔄 Syncing',
+        synced: '✅ Synced',
+        needs_review: '⚠️ Review',
+        sync_failed: '❌ Failed',
+        disabled: '🚫 Disabled',
+    };
+    return `<span class="metrics-status-badge ${status || 'pending'}">${labels[status] || status || 'pending'}</span>`;
+}
+
+function renderMetricsInline(item) {
+    if (!item.has_metrics) return '';
+    return `<span class="metrics-inline">
+        ${item.latest_views !== null ? `<span class="metric-chip" title="Views">👁 ${formatMetricNumber(item.latest_views)}</span>` : ''}
+        ${item.latest_likes !== null ? `<span class="metric-chip" title="Likes">❤ ${formatMetricNumber(item.latest_likes)}</span>` : ''}
+        ${item.latest_comments !== null ? `<span class="metric-chip" title="Comments">💬 ${formatMetricNumber(item.latest_comments)}</span>` : ''}
+        ${item.latest_shares !== null ? `<span class="metric-chip" title="Shares">↗ ${formatMetricNumber(item.latest_shares)}</span>` : ''}
+    </span>`;
+}
+
+async function refreshMetricsSummary() {
+    try {
+        const res = await fetch(`${API}/api/videos/metrics-summary`);
+        metricsSummaryCache = await res.json();
+    } catch (_) {
+        metricsSummaryCache = null;
+    }
+}
 
 // --- Upload ---
 
@@ -1991,9 +2110,11 @@ function renderLiveTaskState(item) {
 function getVisibleAssignments() {
     const search = (document.getElementById('assignmentSearch')?.value || '').trim().toLowerCase();
     const deviceId = parseInt(document.getElementById('assignmentDeviceFilter')?.value || '', 10);
+    const metricsFilter = document.getElementById('assignmentMetricsFilter')?.value || '';
     return assignmentList.filter(item => {
         if (focusedVideoId && item.video_id !== focusedVideoId) return false;
         if (deviceId && item.device_id !== deviceId) return false;
+        if (metricsFilter && (item.metrics_status || 'pending') !== metricsFilter) return false;
         if (!search) return true;
         const haystack = [
             item.video_title,
@@ -2026,6 +2147,31 @@ function renderVideoOpsSummary() {
     const focusedVideo = focusedVideoId ? getVideoById(focusedVideoId) : null;
     const eligibleTargets = videoList.reduce((sum, video) => sum + getPlatformSummary(video, activePlatform).eligible_targets, 0);
 
+    // Metrics summary from cached API response
+    const ms = metricsSummaryCache || {};
+    const metricsCards = activePlatform === 'tiktok' ? `
+        <div class="video-stat-card metrics-card">
+            <span class="video-stat-label">📊 Tracked</span>
+            <span class="video-stat-value">${ms.total_tracked || 0}</span>
+            <span class="video-stat-sub">${ms.synced_count || 0} synced</span>
+        </div>
+        <div class="video-stat-card metrics-card accent">
+            <span class="video-stat-label">👁 Total Views</span>
+            <span class="video-stat-value">${formatMetricNumber(ms.total_views || 0)}</span>
+            <span class="video-stat-sub">❤ ${formatMetricNumber(ms.total_likes || 0)} · 💬 ${formatMetricNumber(ms.total_comments || 0)}</span>
+        </div>
+        <div class="video-stat-card metrics-card">
+            <span class="video-stat-label">⏳ Pending Sync</span>
+            <span class="video-stat-value">${ms.pending_count || 0}</span>
+            <span class="video-stat-sub">Chưa sync metrics</span>
+        </div>
+        <div class="video-stat-card metrics-card warn">
+            <span class="video-stat-label">⚠️ Needs Review</span>
+            <span class="video-stat-value">${ms.review_count || 0}</span>
+            <span class="video-stat-sub">Sync lỗi, cần kiểm tra</span>
+        </div>
+    ` : '';
+
     container.innerHTML = `
         <div class="video-stat-card">
             <span class="video-stat-label">Videos</span>
@@ -2047,6 +2193,7 @@ function renderVideoOpsSummary() {
             <span class="video-stat-value">${issueCount}</span>
             <span class="video-stat-sub">Lỗi push/upload gần nhất</span>
         </div>
+        ${metricsCards}
     `;
 }
 
@@ -2089,13 +2236,16 @@ function renderDistributionFocus() {
             <div class="distribution-target-badges">
                 ${renderPushBadge(item.push_status)}
                 ${renderUploadBadge(item.upload_status)}
+                ${item.upload_status === 'uploaded' ? renderMetricsBadge(item.metrics_status) : ''}
             </div>
+            ${item.has_metrics ? `<div class="distribution-target-metrics">${renderMetricsInline(item)}</div>` : ''}
             <div class="distribution-target-actions">
                 ${renderPrimaryUploadAction(item) || ''}
                 ${renderArtifactActionButton(item, true) || ''}
                 <button class="btn btn-xs btn-ghost" onclick="openEditAssignmentModal(${item.id})">✏️ Edit</button>
                 <button class="btn btn-xs btn-danger" onclick="deleteAssignment(${item.id})">🗑️</button>
                 <button class="btn btn-xs btn-ghost" onclick="openAssignmentDetail(${item.id})">Detail</button>
+                ${item.upload_status === 'uploaded' ? `<button class="btn btn-xs btn-accent" onclick="openManualMetricsModal(${item.id})">📝</button>` : ''}
             </div>
         </div>
     `).join('');
@@ -2159,8 +2309,11 @@ async function refreshVideos() {
         const url = platform
             ? `${API}/api/videos?platform=${platform}`
             : `${API}/api/videos`;
-        const res = await fetch(url);
-        videoList = await res.json();
+        const [videosRes] = await Promise.all([
+            fetch(url),
+            refreshMetricsSummary(),
+        ]);
+        videoList = await videosRes.json();
         renderVideoGrid(videoList);
         renderVideoOpsSummary();
         renderDistributionFocus();
@@ -2787,6 +2940,7 @@ function clearAssignmentFilters() {
     const upload = document.getElementById('assignmentUploadFilter');
     const search = document.getElementById('assignmentSearch');
     const actionable = document.getElementById('assignmentActionableOnly');
+    const metrics = document.getElementById('assignmentMetricsFilter');
 
     if (platform) platform.value = 'tiktok';
     if (device) device.value = '';
@@ -2794,6 +2948,7 @@ function clearAssignmentFilters() {
     if (upload) upload.value = '';
     if (search) search.value = '';
     if (actionable) actionable.checked = false;
+    if (metrics) metrics.value = '';
     focusedVideoId = null;
     selectedAssignmentIds.clear();
     refreshAssignments();
@@ -2938,6 +3093,18 @@ function renderAssignmentMatrix(assignments) {
             ? `<div class="assignment-hint-line">${escapeHtml(item.error_hint_label)}</div>`
             : '';
         const liveHtml = renderLiveTaskState(item);
+
+        // Performance column content
+        const metricsHtml = item.has_metrics
+            ? `<div class="assignment-metrics-line">${renderMetricsInline(item)}</div>`
+            : '';
+        const metricsStatusHtml = item.upload_status === 'uploaded'
+            ? renderMetricsBadge(item.metrics_status)
+            : '<span class="metrics-status-badge na">—</span>';
+        const syncedAt = item.metrics_last_synced_at
+            ? `<div class="assignment-secondary">${formatDateTime(item.metrics_last_synced_at)}</div>`
+            : '';
+
         return `
             <tr class="${selected ? 'selected' : ''}">
                 <td><input type="checkbox" ${selected ? 'checked' : ''} onchange="toggleAssignmentSelection(${item.id}, this.checked)"></td>
@@ -2961,6 +3128,11 @@ function renderAssignmentMatrix(assignments) {
                 </td>
                 <td>${renderPushBadge(item.push_status)}</td>
                 <td>${renderUploadBadge(item.upload_status)}</td>
+                <td>
+                    ${metricsStatusHtml}
+                    ${metricsHtml}
+                    ${syncedAt}
+                </td>
                 <td>
                     <div class="assignment-primary">${formatDateTime(lastEvent)}</div>
                     <div class="assignment-secondary">${item.task_status ? `task ${item.task_status}` : 'chưa tạo task'}</div>
@@ -2989,6 +3161,7 @@ function renderAssignmentMatrix(assignments) {
                         <th>Platform / Path</th>
                         <th>Push</th>
                         <th>Upload</th>
+                        <th>Performance</th>
                         <th>Last Event</th>
                         <th>Action</th>
                     </tr>
@@ -3085,6 +3258,17 @@ async function openAssignmentDetail(assignmentId) {
             <div class="assignment-detail-card">
                 <h4>Artifacts</h4>
                 ${artifactLinks}
+            </div>
+            <div class="assignment-detail-card metrics-detail-card">
+                <h4>📊 Performance</h4>
+                <div class="assignment-detail-badges">${renderMetricsBadge(assignment.metrics_status)}</div>
+                <div class="assignment-detail-line"><strong>Views:</strong> ${formatMetricNumber(assignment.latest_views)}</div>
+                <div class="assignment-detail-line"><strong>Likes:</strong> ${formatMetricNumber(assignment.latest_likes)}</div>
+                <div class="assignment-detail-line"><strong>Comments:</strong> ${formatMetricNumber(assignment.latest_comments)}</div>
+                <div class="assignment-detail-line"><strong>Shares:</strong> ${formatMetricNumber(assignment.latest_shares)}</div>
+                <div class="assignment-detail-line"><strong>Last synced:</strong> ${formatDateTime(assignment.metrics_last_synced_at)}</div>
+                ${assignment.metrics_error ? `<div class="assignment-error-line">${escapeHtml(shortenText(assignment.metrics_error, 120))}</div>` : ''}
+                ${assignment.upload_status === 'uploaded' ? `<button class="btn btn-xs btn-accent" onclick="openManualMetricsModal(${assignment.id})">📝 Manual Input</button>` : ''}
             </div>
             <div class="assignment-detail-card">
                 <h4>Recent Task Steps</h4>
@@ -3354,4 +3538,92 @@ function _populateAccountDeviceSelect() {
         devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
     if (cur) sel.value = cur;
     populateAssignmentDeviceFilter();
+}
+
+// ===== MANUAL METRICS MODAL =====
+
+function openManualMetricsModal(assignmentId) {
+    const assignment = getAssignmentById(assignmentId);
+    if (!assignment) {
+        toast('Không tìm thấy assignment', 'error');
+        return;
+    }
+
+    const modal = document.createElement('div');
+    modal.id = 'manualMetricsModal';
+    modal.className = 'modal-overlay open';
+    modal.style.cssText = 'z-index:10001';
+    modal.innerHTML = `
+        <div class="modal-content" onclick="event.stopPropagation()" style="max-width:420px">
+            <div class="modal-header">
+                <h3>📝 Manual Metrics Input</h3>
+                <button class="modal-close" onclick="closeManualMetricsModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="info-box">
+                    <strong>${escapeHtml(assignment.video_title || assignment.video_filename || `#${assignment.video_id}`)}</strong>
+                    <div>${escapeHtml(assignment.device_name || '')} · ${escapeHtml(assignment.account_name || '')}</div>
+                </div>
+                <div class="form-group">
+                    <label>👁 Views</label>
+                    <input type="number" id="manualMetricsViews" min="0" value="${assignment.latest_views ?? ''}">
+                </div>
+                <div class="form-group">
+                    <label>❤ Likes</label>
+                    <input type="number" id="manualMetricsLikes" min="0" value="${assignment.latest_likes ?? ''}">
+                </div>
+                <div class="form-group">
+                    <label>💬 Comments</label>
+                    <input type="number" id="manualMetricsComments" min="0" value="${assignment.latest_comments ?? ''}">
+                </div>
+                <div class="form-group">
+                    <label>↗ Shares</label>
+                    <input type="number" id="manualMetricsShares" min="0" value="${assignment.latest_shares ?? ''}">
+                </div>
+                <button class="btn btn-primary" onclick="submitManualMetrics(${assignmentId})" style="width:100%;margin-top:12px">💾 Save Metrics</button>
+            </div>
+        </div>
+    `;
+    modal.onclick = (e) => { if (e.target === modal) closeManualMetricsModal(); };
+    document.body.appendChild(modal);
+}
+
+function closeManualMetricsModal() {
+    document.getElementById('manualMetricsModal')?.remove();
+}
+
+async function submitManualMetrics(assignmentId) {
+    const views = document.getElementById('manualMetricsViews')?.value;
+    const likes = document.getElementById('manualMetricsLikes')?.value;
+    const comments = document.getElementById('manualMetricsComments')?.value;
+    const shares = document.getElementById('manualMetricsShares')?.value;
+
+    const payload = {};
+    if (views !== '' && views !== undefined) payload.views = parseInt(views);
+    if (likes !== '' && likes !== undefined) payload.likes = parseInt(likes);
+    if (comments !== '' && comments !== undefined) payload.comments = parseInt(comments);
+    if (shares !== '' && shares !== undefined) payload.shares = parseInt(shares);
+
+    if (!Object.keys(payload).length) {
+        toast('Nhập ít nhất 1 giá trị', 'error');
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/api/videos/assignments/${assignmentId}/metrics`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            toast(`❌ ${data.detail || 'Save metrics thất bại'}`, 'error');
+            return;
+        }
+        toast('✅ Đã lưu metrics', 'success');
+        closeManualMetricsModal();
+        await Promise.all([refreshAssignments(), refreshVideos()]);
+    } catch (e) {
+        toast(`Lỗi: ${e.message}`, 'error');
+    }
 }

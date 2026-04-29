@@ -21,6 +21,7 @@
 | 11 | [tiktok-metrics-locator-matching-checklist.md](tiktok-metrics-locator-matching-checklist.md) | 🔄 IN PROGRESS | Regression + device checklist cho locator-based matching trong TikTok metrics sync |
 | 12 | [android-helper-stability-hardening.md](android-helper-stability-hardening.md) | 🔄 IN PROGRESS | Plan + task tracker cho Android Helper APK stability, cloud reconnect safety, credential handling, LAN auth, protocol hardening |
 | 13 | [workflow-karpathy-alignment.md](workflow-karpathy-alignment.md) | ✅ COMPLETE | Rà soát workflow/skill docs và đưa assumptions, non-goals, surgical scope, verification của karpathy-guidelines vào quy trình chuẩn |
+| 14 | [android-device-approval-linking.md](android-device-approval-linking.md) | 🔄 IN PROGRESS | Username-only Android linking: device requests access, WebApp/admin accepts or rejects, then server issues device token |
 
 ## Completed Features (No Separate Plan Files)
 

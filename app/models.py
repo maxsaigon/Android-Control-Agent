@@ -126,7 +126,77 @@ class User(SQLModel, table=True):
     )
 
 
+class DeviceLinkStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class DeviceLinkRequest(SQLModel, table=True):
+    """Pending device approval requests."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    request_id: str = Field(index=True, unique=True)
+    username: str = Field(index=True)
+    user_id: Optional[int] = Field(default=None, index=True)
+    device_name: str
+    device_model: Optional[str] = None
+    android_version: Optional[str] = None
+    sdk_int: Optional[int] = None
+    manufacturer: Optional[str] = None
+    helper_version_name: Optional[str] = None
+    helper_version_code: Optional[int] = None
+    helper_build_sha: Optional[str] = None
+    status: DeviceLinkStatus = DeviceLinkStatus.PENDING
+    claimed_device_id: Optional[int] = None
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    expires_at: datetime = Field(index=True)
+    reviewed_at: Optional[datetime] = None
+    reviewed_by_user_id: Optional[int] = None
+    reject_reason: Optional[str] = None
+    client_fingerprint: Optional[str] = None
+
+
 # --- Pydantic schemas for API request/response ---
+
+
+class HelperInfo(SQLModel):
+    version_name: Optional[str] = None
+    version_code: Optional[int] = None
+    build_sha: Optional[str] = None
+
+
+class DeviceLinkRequestCreate(SQLModel):
+    username: str
+    device_name: str
+    device_model: Optional[str] = None
+    android_version: Optional[str] = None
+    sdk_int: Optional[int] = None
+    manufacturer: Optional[str] = None
+    helper: Optional[HelperInfo] = None
+
+
+class DeviceLinkRequestRead(SQLModel):
+    request_id: str
+    username: str
+    device_name: str
+    device_model: Optional[str]
+    android_version: Optional[str]
+    status: DeviceLinkStatus
+    created_at: datetime
+    expires_at: datetime
+
+
+class DeviceLinkStatusRead(SQLModel):
+    status: DeviceLinkStatus
+    device_id: Optional[int] = None
+    device_name: Optional[str] = None
+    device_token: Optional[str] = None
+    ws_url: Optional[str] = None
+    message: Optional[str] = None
 
 
 class DeviceCreate(SQLModel):
@@ -342,6 +412,15 @@ class UploadStatus(str, Enum):
     VERIFY_FAILED = "verify_failed"
 
 
+class MetricsStatus(str, Enum):
+    PENDING = "pending"
+    SYNCING = "syncing"
+    SYNCED = "synced"
+    NEEDS_REVIEW = "needs_review"
+    SYNC_FAILED = "sync_failed"
+    DISABLED = "disabled"
+
+
 class Video(SQLModel, table=True):
     """Represents a video file stored on the server."""
 
@@ -414,7 +493,39 @@ class VideoAssignment(SQLModel, table=True):
     error: Optional[str] = None  # Legacy field
     last_error: Optional[str] = None  # Latest error from upload attempt
     last_run_at: Optional[datetime] = None  # When last upload was attempted
+    # --- Metrics tracking (Phase A) ---
+    metrics_status: MetricsStatus = MetricsStatus.PENDING
+    metrics_last_synced_at: Optional[datetime] = None
+    metrics_error: Optional[str] = None
+    post_locator: Optional[str] = None  # JSON: {caption_fingerprint, upload_timestamp, grid_position_hint, account_name}
+    latest_views: Optional[int] = None
+    latest_likes: Optional[int] = None
+    latest_comments: Optional[int] = None
+    latest_shares: Optional[int] = None
+    metrics_task_id: Optional[int] = None  # Link to metrics sync Task (separate from upload task_id)
     created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+class VideoAssignmentMetricSnapshot(SQLModel, table=True):
+    """Historical record of a single metrics sync for an assignment.
+
+    Each row = one sync attempt (successful or partial).
+    Latest state lives on VideoAssignment; this table provides trend/history.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assignment_id: int = Field(foreign_key="videoassignment.id", index=True)
+    views: Optional[int] = None
+    likes: Optional[int] = None
+    comments: Optional[int] = None
+    shares: Optional[int] = None
+    source: str = "post_detail"  # grid | post_detail | manual
+    raw_payload: Optional[str] = None  # JSON dump of all data read
+    artifact_dir: Optional[str] = None  # Path to debug artifacts
+    error: Optional[str] = None  # Error message if sync was partial/failed
+    collected_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
 
@@ -562,3 +673,12 @@ class RunBatchUploadRequest(SQLModel):
     assignment_ids: List[int]
     auto_push: bool = True
     force: bool = False
+
+
+class MetricsManualInput(SQLModel):
+    """Schema for manual metrics input endpoint."""
+
+    views: Optional[int] = Field(default=None, ge=0)
+    likes: Optional[int] = Field(default=None, ge=0)
+    comments: Optional[int] = Field(default=None, ge=0)
+    shares: Optional[int] = Field(default=None, ge=0)

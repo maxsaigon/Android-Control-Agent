@@ -269,6 +269,23 @@
 
         <!-- ============ DEVICES SECTION ============ -->
         <section class="page-section" id="sectionDevices">
+            <div class="panel" style="margin-bottom: 20px;" id="pendingDevicesPanel">
+                <div class="panel-header">
+                    <div>
+                        <h2>⏳ Yêu cầu kết nối</h2>
+                        <p class="panel-subtitle">Android Helper requests waiting for approval.</p>
+                    </div>
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <span class="count-badge" id="pendingCount">0</span>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div id="pendingDevicesList">
+                        <div class="empty-state">Không có yêu cầu nào</div>
+                    </div>
+                </div>
+            </div>
+
             <div class="content-grid">
                 <!-- Left: Device List -->
                 <div class="content-col">
@@ -669,6 +686,15 @@
                             <input type="checkbox" id="assignmentActionableOnly" onchange="refreshAssignments()">
                             <span>Chỉ hiện item cần action</span>
                         </label>
+                        <select id="assignmentMetricsFilter" class="filter-select" onchange="renderAssignmentViews()">
+                            <option value="">Metrics status</option>
+                            <option value="pending">⏳ Pending</option>
+                            <option value="syncing">🔄 Syncing</option>
+                            <option value="synced">✅ Synced</option>
+                            <option value="needs_review">⚠️ Needs Review</option>
+                            <option value="sync_failed">❌ Failed</option>
+                            <option value="disabled">🚫 Disabled</option>
+                        </select>
                         <input id="assignmentSearch" class="assignment-search" placeholder="Tìm theo video, device, account..." oninput="renderAssignmentViews()">
                     </div>
                     <div id="assignmentTargetRail"></div>

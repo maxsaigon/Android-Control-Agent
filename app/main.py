@@ -140,6 +140,8 @@ app.include_router(schedules.router)
 app.include_router(device_ws.router)         # Cloud device WebSocket
 app.include_router(device_ws.token_router)    # Device token management
 app.include_router(device_ws.register_router) # Device registration (login-based)
+from app.routers import device_link
+app.include_router(device_link.router)        # Device link approval flow
 app.include_router(videos_router)             # Video management
 app.include_router(accounts_router)           # Device-account mappings
 

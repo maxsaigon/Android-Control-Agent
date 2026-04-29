@@ -28,6 +28,8 @@ PUBLIC_PREFIXES = (
     "/static/",
     "/ws/device/",  # Android APK WebSocket — uses token auth
     "/download/",   # APK downloads
+    "/api/device/link/request",
+    "/api/device/link/status/",
 )
 
 
