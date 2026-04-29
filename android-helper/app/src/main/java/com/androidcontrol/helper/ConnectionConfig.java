@@ -36,7 +36,7 @@ public class ConnectionConfig {
     }
 
     public String getMode() {
-        return prefs.getString(KEY_MODE, MODE_LAN);
+        return prefs.getString(KEY_MODE, MODE_CLOUD);
     }
 
     public void setMode(String mode) {

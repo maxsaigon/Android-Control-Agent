@@ -46,7 +46,10 @@ def _is_public(path: str) -> bool:
 def _is_browser_request(request: Request) -> bool:
     """Heuristic: is this a browser navigating (not an API call)?"""
     accept = request.headers.get("accept", "")
-    return "text/html" in accept
+    path = request.url.path
+    if path.startswith("/api/"):
+        return False
+    return "text/html" in accept or accept == "*/*" or path in {"/", "/dashboard", "/login"}
 
 
 class AuthMiddleware(BaseHTTPMiddleware):

@@ -382,7 +382,7 @@ async function refreshPendingDevices() {
         
         countEl.textContent = pending.length;
         if (pending.length === 0) {
-            panelEl.style.display = 'none';
+            panelEl.style.display = 'block';
             listEl.innerHTML = '<div class="empty-state">Không có yêu cầu nào</div>';
             return;
         }

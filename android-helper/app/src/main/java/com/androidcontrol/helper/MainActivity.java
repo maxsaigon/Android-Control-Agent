@@ -13,11 +13,13 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.view.Gravity;
 import android.view.View;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.text.InputType;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -38,11 +40,10 @@ import java.util.concurrent.Executors;
 /**
  * Main activity with dual connection mode UI:
  * - LAN Mode: shows local IP + WS port (original behavior)
- * - Cloud Mode: login-based registration (server URL + username + password + device name)
+ * - Cloud Mode: username-token approval (fixed server URL + device name)
  *
- * Cloud flow: user enters credentials → app calls /api/device/register →
- * server auto-creates device + token → app connects WebSocket with token.
- * No manual token copying needed!
+ * Cloud flow: user enters username token → admin approves in dashboard →
+ * app receives a device token → app connects WebSocket with token.
  */
 public class MainActivity extends Activity {
 
@@ -146,7 +147,7 @@ public class MainActivity extends Activity {
 
         // Username
         TextView usernameLabel = new TextView(this);
-        usernameLabel.setText("Username");
+        usernameLabel.setText("Token / Username");
         usernameLabel.setTextColor(Color.parseColor("#cccccc"));
         usernameLabel.setTextSize(12);
         usernameLabel.setPadding(0, 16, 0, 0);
@@ -160,6 +161,10 @@ public class MainActivity extends Activity {
         usernameInput.setPadding(16, 12, 16, 12);
         usernameInput.setText(config.getUsername());
         usernameInput.setSingleLine(true);
+        usernameInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL);
+        usernameInput.setSelectAllOnFocus(false);
+        usernameInput.setFocusable(true);
+        usernameInput.setFocusableInTouchMode(true);
         cloudConfigLayout.addView(usernameInput);
 
         // Device Name
@@ -180,6 +185,9 @@ public class MainActivity extends Activity {
         if (savedName.isEmpty()) savedName = android.os.Build.MODEL;
         deviceNameInput.setText(savedName);
         deviceNameInput.setSingleLine(true);
+        deviceNameInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL);
+        deviceNameInput.setFocusable(true);
+        deviceNameInput.setFocusableInTouchMode(true);
         cloudConfigLayout.addView(deviceNameInput);
 
         root.addView(cloudConfigLayout);
@@ -235,7 +243,11 @@ public class MainActivity extends Activity {
             cloudConfigLayout.setVisibility(View.GONE);
         }
 
-        setContentView(root);
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(false);
+        scrollView.setBackgroundColor(Color.parseColor("#1a1a2e"));
+        scrollView.addView(root);
+        setContentView(scrollView);
         Log.i(TAG, "🚀 " + HelperBuildInfo.releaseLabel() + " | " + HelperBuildInfo.debugLabel());
     }
 

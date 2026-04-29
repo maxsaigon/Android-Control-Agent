@@ -33,8 +33,8 @@ android {
         applicationId "com.androidcontrol.helper"
         minSdk 28          // Android 9+ (screencap global action requires API 28)
         targetSdk 33
-        versionCode 4
-        versionName "1.2.0"
+        versionCode 5
+        versionName "1.2.1"
 
         buildConfigField "String", "HELPER_RELEASE_NAME", "\"${helperArtifactBaseName}\""
         buildConfigField "String", "HELPER_BUILD_SHA", "\"${gitBuildRef()}\""
