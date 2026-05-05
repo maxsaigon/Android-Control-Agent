@@ -476,13 +476,14 @@ def dashboard_stats():
 
 @app.get("/download/helper.apk")
 def download_apk():
-    """Backward-compatible alias. Redirect to versioned static artifact."""
+    """Backward-compatible alias with stable URL and versioned download name."""
     apk_path = resolve_helper_apk_path()
     if apk_path and apk_path.exists():
         artifact_name = helper_download_filename()
-        return RedirectResponse(
-            url=f"/static/downloads/{quote(artifact_name)}",
-            status_code=307,
+        return FileResponse(
+            str(apk_path),
+            filename=artifact_name,
+            media_type="application/vnd.android.package-archive",
             headers={
                 "Cache-Control": "no-store, max-age=0, must-revalidate",
                 "Pragma": "no-cache",
