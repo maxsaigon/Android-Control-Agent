@@ -30,7 +30,8 @@ class ADBBackend(DeviceBackend):
 
     async def _run_adb(self, device: str, *args: str) -> tuple[int, str, str]:
         """Run an ADB command targeting a specific device."""
-        cmd = [self.adb_path, "-s", device, *args]
+        device_id = device.split("?")[0]
+        cmd = [self.adb_path, "-s", device_id, *args]
         logger.debug(f"ADB: {' '.join(cmd)}")
         proc = await asyncio.create_subprocess_exec(
             *cmd,

@@ -220,6 +220,7 @@ function renderDevices() {
                     <span class="device-status status-${d.status}">${st.label}</span>
                 </div>
                 <div class="device-info">
+                    <span>🆔 Device #${d.id}</span>
                     <span>🌐 ${d.ip_address}:${d.adb_port}</span>
                     <span>📱 ${d.device_model || 'Unknown'}</span>
                     ${d.battery_level !== null && d.battery_level !== undefined ? `<span>🔋 ${d.battery_level}%</span>` : ''}

@@ -31,6 +31,12 @@ def _as_aware_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _cloud_display_name(base_name: str, device_id: int) -> str:
+    """Build a stable cloud device label that always includes unique ID."""
+    clean = (base_name or "Cloud Device").strip()
+    return f"{clean} #{device_id}"
+
+
 def _require_session_user(request: Request, session: Session) -> User:
     user_id = request.session.get("user_id")
     if not user_id:
@@ -169,40 +175,28 @@ def accept_request(request_id: str, request: Request, session: Session = Depends
         session.commit()
         raise HTTPException(status_code=400, detail="Request expired")
         
-    device = session.exec(
-        select(Device).where(
-            Device.name == req.device_name,
-            Device.adb_port == 0,
-        )
-    ).first()
-    if not device:
-        device = Device(
-            name=req.device_name,
-            ip_address="cloud",
-            adb_port=0,
-            android_version=req.android_version,
-            device_model=req.device_model
-        )
-        session.add(device)
-        session.commit()
-        session.refresh(device)
-    else:
-        old_tokens = session.exec(
-            select(DeviceToken).where(
-                DeviceToken.device_id == device.id,
-                DeviceToken.is_active == True,
-            )
-        ).all()
-        for ot in old_tokens:
-            ot.is_active = False
-            session.add(ot)
+    # IMPORTANT: never identify cloud devices by human-readable name.
+    # Two physical devices can share the same model/name (e.g. "S31"),
+    # and matching by name causes task routing to the wrong device.
+    device = Device(
+        name=req.device_name,
+        ip_address="cloud",
+        adb_port=0,
+        android_version=req.android_version,
+        device_model=req.device_model
+    )
+    session.add(device)
+    session.commit()
+    session.refresh(device)
+    device.name = _cloud_display_name(req.device_name, device.id)
+    session.add(device)
             
     token_str = secrets.token_urlsafe(32)
     dt = DeviceToken(
         device_id=device.id,
         user_id=user.id,
         token=token_str,
-        name=f"auto_token_{req.device_name}"
+        name=f"auto_token_{device.id}"
     )
     session.add(dt)
     

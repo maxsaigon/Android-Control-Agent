@@ -88,6 +88,13 @@ class TikTokController:
         "upload_gallery": re.compile(r"^(Upload|Tải lên)$", re.IGNORECASE),
         "next_btn": re.compile(r"^(Next|Tiếp)$", re.IGNORECASE),
         "post_btn": re.compile(r"^(Post|Đăng)$", re.IGNORECASE),
+        # --- Profile navigation (Phase C1 — metrics sync) ---
+        "videos_tab": re.compile(r"^Videos$", re.IGNORECASE),
+        "reposts_tab": re.compile(r"^Reposts$", re.IGNORECASE),
+        "favorites_tab": re.compile(r"^Favorites$", re.IGNORECASE),
+        "liked_tab": re.compile(r"^Liked$", re.IGNORECASE),
+        "followers": re.compile(r"Followers?$", re.IGNORECASE),
+        "following": re.compile(r"^Following$", re.IGNORECASE),
     }
     DURATION_PATTERN = re.compile(r"^\d{1,2}:\d{2}$")
 
@@ -534,6 +541,19 @@ class TikTokController:
     def _bounds_area(self, bounds: tuple[int, int, int, int]) -> int:
         return max(0, bounds[2] - bounds[0]) * max(0, bounds[3] - bounds[1])
 
+    def _point_in_expanded_bounds(
+        self,
+        bounds: tuple[int, int, int, int],
+        point: tuple[int, int],
+        *,
+        expand: int = 0,
+    ) -> bool:
+        x, y = point
+        return (
+            bounds[0] - expand <= x <= bounds[2] + expand
+            and bounds[1] - expand <= y <= bounds[3] + expand
+        )
+
     def _find_smallest_clickable_container(
         self,
         elements: list[UIElement],
@@ -582,6 +602,37 @@ class TikTokController:
         folded = re.sub(r"[^0-9a-z# ]+", " ", folded)
         folded = re.sub(r"\s+", " ", folded)
         return folded.strip()
+
+    def _extract_locator_tokens(
+        self,
+        value: str,
+        *,
+        limit: int = 10,
+    ) -> list[str]:
+        """Extract stable caption tokens for post-locator matching."""
+        tokens: list[str] = []
+        seen = set()
+        for raw in self._expected_text_tokens(value):
+            folded = self._fold_text(raw).strip().lower()
+            folded = re.sub(r"[^0-9a-z#_]+", "", folded)
+            core = folded.replace("#", "")
+            if len(core) < 3:
+                continue
+            if folded in seen:
+                continue
+            seen.add(folded)
+            tokens.append(folded)
+            if len(tokens) >= limit:
+                break
+        return tokens
+
+    def _build_locator_fingerprint(self, preview_text: str, tokens: list[str]) -> str | None:
+        fingerprint_basis = " ".join(tokens).strip()
+        if not fingerprint_basis:
+            fingerprint_basis = self._normalize_fingerprint_text(preview_text or "")[:160]
+        if not fingerprint_basis:
+            return None
+        return hashlib.sha1(fingerprint_basis.encode("utf-8")).hexdigest()[:16]
 
     def _collect_feed_signature_texts(
         self,
@@ -701,6 +752,181 @@ class TikTokController:
 
         digest = hashlib.sha1("|".join(unique_parts).encode("utf-8")).hexdigest()[:16]
         return digest
+
+    def build_post_locator(
+        self,
+        *,
+        caption_text: str,
+        account_name: str | None = None,
+        grid_position_hint: int = 0,
+        upload_timestamp: str | None = None,
+    ) -> dict:
+        """Build a durable locator payload stored on VideoAssignment.post_locator."""
+        preview = re.sub(r"\s+", " ", (caption_text or "")).strip()[:160]
+        tokens = self._extract_locator_tokens(caption_text or "")
+        return {
+            "locator_version": 2,
+            "caption_fingerprint": self._build_locator_fingerprint(preview, tokens),
+            "caption_preview": preview or None,
+            "caption_tokens": tokens,
+            "upload_timestamp": upload_timestamp or datetime.now(timezone.utc).isoformat(),
+            "grid_position_hint": max(int(grid_position_hint or 0), 0),
+            "account_name": account_name,
+        }
+
+    def extract_post_locator_signals(self, elements: list[UIElement]) -> dict:
+        """Extract visible post-detail signals used to match a profile post."""
+        info = self._extract_video_info_from_elements(elements)
+        signature_texts = self._collect_feed_signature_texts(elements, max_count=8)
+        preview = re.sub(
+            r"\s+",
+            " ",
+            str(info.get("description") or " ".join(signature_texts[:2]) or ""),
+        ).strip()[:160]
+        combined_text = " ".join(
+            part
+            for part in [
+                str(info.get("author") or ""),
+                str(info.get("description") or ""),
+                *signature_texts,
+            ]
+            if part
+        )
+        tokens = self._extract_locator_tokens(combined_text, limit=12)
+        return {
+            "author": info.get("author"),
+            "description": info.get("description"),
+            "signature_texts": signature_texts,
+            "caption_preview": preview or None,
+            "caption_tokens": tokens,
+            "caption_fingerprint": self._build_locator_fingerprint(preview, tokens),
+        }
+
+    async def read_post_detail_locator_signals(self, device: str) -> dict:
+        """Read visible locator signals from a post detail screen."""
+        elements = await self.dump_ui(device)
+        if not elements:
+            return {
+                "author": None,
+                "description": None,
+                "signature_texts": [],
+                "caption_preview": None,
+                "caption_tokens": [],
+                "caption_fingerprint": None,
+            }
+        return self.extract_post_locator_signals(elements)
+
+    def match_post_locator(
+        self,
+        locator: dict | None,
+        signals: dict | None,
+    ) -> dict:
+        """Score whether visible post-detail signals match the stored locator."""
+        locator = locator or {}
+        signals = signals or {}
+
+        expected_preview = str(locator.get("caption_preview") or "")
+        actual_preview = str(signals.get("caption_preview") or "")
+        expected_tokens = list(locator.get("caption_tokens") or self._extract_locator_tokens(expected_preview))
+        actual_tokens = list(
+            signals.get("caption_tokens")
+            or self._extract_locator_tokens(
+                " ".join(
+                    filter(
+                        None,
+                        [
+                            str(signals.get("description") or ""),
+                            actual_preview,
+                            *list(signals.get("signature_texts") or []),
+                        ],
+                    )
+                ),
+                limit=12,
+            )
+        )
+
+        expected_set = set(expected_tokens)
+        actual_set = set(actual_tokens)
+        overlap = sorted(expected_set & actual_set)
+        overlap_count = len(overlap)
+        token_ratio = overlap_count / max(len(expected_set), 1) if expected_set else 0.0
+
+        score = 0
+        reasons: list[str] = []
+
+        expected_author = self._fold_text(str(locator.get("account_name") or "")).strip().lstrip("@")
+        actual_author = self._fold_text(str(signals.get("author") or "")).strip().lstrip("@")
+        if expected_author and actual_author:
+            if expected_author == actual_author or expected_author in actual_author or actual_author in expected_author:
+                score += 1
+                reasons.append("author")
+            else:
+                score -= 1
+                reasons.append("author_mismatch")
+
+        expected_fp = str(locator.get("caption_fingerprint") or "")
+        actual_fp = str(signals.get("caption_fingerprint") or "")
+        fingerprint_match = bool(expected_fp and actual_fp and expected_fp == actual_fp)
+        if fingerprint_match:
+            score += 6
+            reasons.append("fingerprint")
+
+        if overlap_count >= 3:
+            score += 4
+            reasons.append("token_overlap_3+")
+        elif overlap_count >= 2:
+            score += 3
+            reasons.append("token_overlap_2")
+        elif overlap_count == 1 and token_ratio >= 0.5:
+            score += 2
+            reasons.append("token_overlap_ratio")
+
+        actual_blob = self._normalize_fingerprint_text(
+            " ".join(
+                filter(
+                    None,
+                    [
+                        str(signals.get("description") or ""),
+                        actual_preview,
+                        *list(signals.get("signature_texts") or []),
+                    ],
+                )
+            )
+        )
+        expected_preview_folded = self._normalize_fingerprint_text(expected_preview)
+        preview_match = False
+        if expected_preview_folded and actual_blob:
+            if expected_preview_folded in actual_blob:
+                preview_match = True
+            elif len(actual_blob) >= 16 and actual_blob in expected_preview_folded:
+                preview_match = True
+            if preview_match:
+                score += 3
+                reasons.append("preview")
+
+        has_strong_locator = bool(
+            locator.get("locator_version")
+            or locator.get("caption_tokens")
+            or locator.get("caption_preview")
+        )
+        matched = False
+        if has_strong_locator:
+            matched = fingerprint_match or (
+                overlap_count >= 2 and (preview_match or token_ratio >= 0.5 or score >= 4)
+            )
+
+        return {
+            "matched": matched,
+            "score": score,
+            "reasons": reasons,
+            "token_overlap": overlap_count,
+            "token_overlap_values": overlap,
+            "token_ratio": round(token_ratio, 3),
+            "fingerprint_match": fingerprint_match,
+            "preview_match": preview_match,
+            "expected_preview": expected_preview[:80] or None,
+            "actual_preview": actual_preview[:80] or None,
+        }
 
     def _expected_text_tokens(self, expected_text: str) -> list[str]:
         """Build stable verification tokens from expected input text."""
@@ -3668,3 +3894,749 @@ class TikTokController:
             except ValueError:
                 pass
         return None
+
+    # ==================================================================
+    # PROFILE NAVIGATION & METRICS READING  (Phase C1)
+    # ==================================================================
+
+    # --- Metric text parser ---
+
+    @staticmethod
+    def _parse_metric_text(text: str) -> int | None:
+        """Parse TikTok's compact metric format into an integer.
+
+        Examples:
+            "1.2K"   → 1200
+            "3.5M"   → 3500000
+            "12.4K"  → 12400
+            "123"    → 123
+            "0"      → 0
+            "1,234"  → 1234
+            "1.2B"   → 1200000000
+            ""       → None
+            "abc"    → None
+        """
+        if not text:
+            return None
+        cleaned = text.strip().replace(",", "").replace(" ", "")
+        if not cleaned:
+            return None
+
+        # Try suffix multipliers: K, M, B (case-insensitive)
+        m = re.match(r"^([\d.]+)\s*([KMBkmb])$", cleaned)
+        if m:
+            number = float(m.group(1))
+            suffix = m.group(2).upper()
+            multiplier = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}[suffix]
+            return int(number * multiplier)
+
+        # Try plain integer
+        m = re.match(r"^(\d+)$", cleaned)
+        if m:
+            return int(m.group(1))
+
+        # Try float without suffix (e.g. "1.5" shown as-is)
+        m = re.match(r"^(\d+\.\d+)$", cleaned)
+        if m:
+            return int(float(m.group(1)))
+
+        return None
+
+    def _estimate_profile_grid_top(self, elements: list[UIElement]) -> int:
+        """Estimate where the profile video grid begins."""
+        if not elements:
+            return 0
+
+        max_screen_bottom = max((el.bounds[3] for el in elements), default=0)
+        fallback_top = int(max_screen_bottom * 0.35)
+        marker_bottoms: list[int] = []
+
+        for el in elements:
+            desc = (el.content_desc or "").strip()
+            text = (el.text or "").strip()
+            lower_text = text.lower()
+            lower_desc = desc.lower()
+
+            if any(
+                pattern.search(desc) or pattern.search(text)
+                for pattern in (
+                    self.PATTERNS["videos_tab"],
+                    self.PATTERNS["reposts_tab"],
+                    self.PATTERNS["favorites_tab"],
+                    self.PATTERNS["liked_tab"],
+                    self.PATTERNS["followers"],
+                    self.PATTERNS["following"],
+                )
+            ):
+                marker_bottoms.append(el.bounds[3])
+                continue
+
+            if lower_text == "edit profile" or lower_desc == "edit profile":
+                marker_bottoms.append(el.bounds[3])
+
+        if not marker_bottoms:
+            return fallback_top
+
+        return max(max(marker_bottoms) + 24, fallback_top)
+
+    def _profile_video_grid_visible(self, elements: list[UIElement]) -> bool:
+        """Return True when the profile screen clearly shows a video grid."""
+        return bool(self._find_grid_items(elements))
+
+    # --- Profile screen detection ---
+
+    def detect_profile_screen(
+        self,
+        elements: list[UIElement],
+    ) -> bool:
+        """Heuristic: detect whether the current screen is the user's own profile.
+
+        Checks multiple signals:
+        - "Following" / "Followers" text or content-desc
+        - "Videos" sub-tab
+        - "Profile" nav tab in selected state
+        - Absence of feed signals (like/comment/share icons with counts)
+
+        Returns True when ≥2 profile signals detected AND no feed signals.
+        """
+        if not elements:
+            return False
+
+        signals = 0
+        has_feed_signals = False
+
+        for el in elements:
+            desc = (el.content_desc or "").strip()
+            text = (el.text or "").strip()
+            desc_l = desc.lower()
+            text_l = text.lower()
+
+            # Profile signals
+            if text_l == "following" or desc_l == "following":
+                signals += 1
+            elif re.search(r"followers?$", text_l) or re.search(r"followers?$", desc_l):
+                signals += 1
+            elif text_l == "videos" or desc_l == "videos":
+                signals += 1
+            elif text_l == "edit profile" or desc_l == "edit profile":
+                signals += 2  # strong signal — only on own profile
+            elif (
+                desc_l == "profile"
+                and el.bounds[1] > 0
+                and el.bounds[3] > el.bounds[1]
+            ):
+                # "Profile" bottom nav tab — present on own profile
+                signals += 1
+
+            # Feed counter-signals
+            if re.search(r"like video", desc_l):
+                has_feed_signals = True
+            if re.search(r"share video", desc_l):
+                has_feed_signals = True
+
+        if has_feed_signals:
+            return False
+
+        return signals >= 2
+
+    async def navigate_to_profile_tab(self, device: str) -> bool:
+        """Tap the 'Profile' bottom navigation tab.
+
+        Returns True if we confirmed landing on the profile screen.
+        """
+        elements = await self.dump_ui(device)
+
+        # Already on profile?
+        if self.detect_profile_screen(elements):
+            logger.info("  📱 [profile_nav] Already on profile screen")
+            return True
+
+        # Strategy 1: Find "Profile" element in bottom nav bar
+        profile_el = self.find_element(elements, "profile")
+        if profile_el and profile_el.bounds[1] > 0:
+            x, y = profile_el.center
+            logger.info(f"  📱 [profile_nav] Tapping Profile tab at ({x}, {y})")
+            await self._realistic_tap(device, x, y, duration_ms=90)
+            await asyncio.sleep(1.5)
+
+            # Verify
+            elements = await self.dump_ui(device)
+            if self.detect_profile_screen(elements):
+                logger.info("  ✅ [profile_nav] Navigated to profile via tab element")
+                return True
+
+        # Strategy 2: Fallback tap at typical bottom-right Profile position
+        w, h = await self._get_screen_size(device)
+        fx = int(w * 0.90) + random.randint(-8, 8)
+        fy = int(h * 0.96) + random.randint(-6, 6)
+        logger.info(f"  ⚠️ [profile_nav] Fallback Profile tap at ({fx}, {fy})")
+        await self._realistic_tap(device, fx, fy, duration_ms=90)
+        await asyncio.sleep(1.5)
+
+        elements = await self.dump_ui(device)
+        if self.detect_profile_screen(elements):
+            logger.info("  ✅ [profile_nav] Navigated to profile via fallback tap")
+            return True
+
+        logger.warning("  ❌ [profile_nav] Could not confirm profile screen")
+        return False
+
+    async def ensure_on_profile(self, device: str) -> bool:
+        """Ensure we're on own TikTok profile screen with recovery.
+
+        Steps:
+        1. Check TikTok foreground (recover if not)
+        2. Dismiss popups
+        3. Detect if already on profile
+        4. Navigate to profile tab
+
+        Returns True if profile screen is confirmed.
+        """
+        deadline = asyncio.get_event_loop().time() + 25.0
+
+        for attempt in range(3):
+            if asyncio.get_event_loop().time() > deadline:
+                break
+
+            # Foreground check
+            if not await self.is_tiktok_foreground(device):
+                await self.recover(device)
+                await asyncio.sleep(1.0)
+                if not await self.is_tiktok_foreground(device):
+                    continue
+
+            # Dismiss popups/dialogs
+            await self.dismiss_popups(device, max_attempts=2)
+
+            # Already on profile?
+            elements = await self.dump_ui(device)
+            if self.detect_profile_screen(elements):
+                logger.info("  ✅ [ensure_profile] On profile (attempt %d)", attempt + 1)
+                return True
+
+            # Navigate to profile
+            if await self.navigate_to_profile_tab(device):
+                return True
+
+            logger.info(
+                "  ⚠️ [ensure_profile] Attempt %d failed, retrying...",
+                attempt + 1,
+            )
+            await asyncio.sleep(1.0)
+
+        logger.warning("  ❌ [ensure_profile] Could not confirm profile screen")
+        return False
+
+    # --- Profile tab navigation ---
+
+    async def navigate_to_videos_tab(self, device: str) -> bool:
+        """Tap the 'Videos' sub-tab within the profile screen.
+
+        TikTok profile has sub-tabs: Videos | Reposts | Liked | ...
+        We need to ensure the Videos tab is active to see the video grid.
+
+        Returns True if Videos tab is confirmed active.
+        """
+        elements = await self.dump_ui(device)
+
+        # Check if "Videos" sub-tab element exists
+        videos_el = self.find_element(elements, "videos_tab")
+        if videos_el:
+            # Check if it might already be selected — if there's a grid visible
+            # we may already be on Videos tab
+            if self._profile_video_grid_visible(elements):
+                logger.info(
+                    "  📱 [videos_tab] Grid already visible, likely on Videos tab"
+                )
+                return True
+
+            x, y = videos_el.center
+            logger.info(f"  📱 [videos_tab] Tapping Videos tab at ({x}, {y})")
+            await self._realistic_tap(device, x, y, duration_ms=90)
+            await asyncio.sleep(1.0)
+
+            # Verify grid appeared
+            elements = await self.dump_ui(device)
+            if self._profile_video_grid_visible(elements):
+                logger.info(
+                    "  ✅ [videos_tab] Videos tab active, video grid visible"
+                )
+                return True
+
+        # Fallback: try finding by text match in sub-tab area
+        for el in elements:
+            text = (el.text or "").strip().lower()
+            if text == "videos" and el.bounds[1] < (await self._get_screen_size(device))[1] * 0.55:
+                x, y = el.center
+                logger.info(f"  📱 [videos_tab] Tapping Videos text at ({x}, {y})")
+                await self._realistic_tap(device, x, y, duration_ms=90)
+                await asyncio.sleep(1.0)
+                elements = await self.dump_ui(device)
+                if self._profile_video_grid_visible(elements):
+                    logger.info("  ✅ [videos_tab] Videos tab active after fallback tap")
+                    return True
+                logger.warning("  ⚠️ [videos_tab] Fallback tap did not reveal video grid")
+                return False
+
+        logger.warning("  ⚠️ [videos_tab] Could not find Videos tab")
+        return False
+
+    # --- Grid reading ---
+
+    def _find_grid_items(
+        self,
+        elements: list[UIElement],
+        *,
+        min_size: int = 120,
+    ) -> list[UIElement]:
+        """Find video grid tile candidates from UI elements.
+
+        Grid tiles in TikTok profile are typically:
+        - Thumbnail images (ImageView) in a 3-column grid
+        - Each has a view count overlay
+        - Located below the bio/stats area (roughly y > 40% of screen height)
+        - Square-ish aspect ratio
+
+        Returns list of candidate grid tile elements sorted top-left to bottom-right.
+        """
+        candidates: list[UIElement] = []
+        grid_top = self._estimate_profile_grid_top(elements)
+        max_screen_right = max((el.bounds[2] for el in elements), default=0)
+
+        for el in elements:
+            w = el.bounds[2] - el.bounds[0]
+            h = el.bounds[3] - el.bounds[1]
+            center_x, center_y = el.center
+
+            if center_y < grid_top:
+                continue
+
+            # Grid tiles are roughly square and have minimum size
+            if w < min_size or h < min_size:
+                continue
+
+            # Aspect ratio should be roughly square (0.5 to 2.0 for tiles)
+            aspect = w / max(h, 1)
+            if aspect < 0.4 or aspect > 2.5:
+                continue
+
+            # Grid items are typically FrameLayout or ImageView
+            cls_lower = (el.cls or "").lower()
+            is_container = any(
+                k in cls_lower for k in ("framelayout", "imageview", "relativelayout")
+            )
+            if not is_container:
+                continue
+
+            # Avoid broad non-clickable wrappers; grid tiles are usually
+            # clickable containers or direct image nodes.
+            if not el.clickable and "imageview" not in cls_lower:
+                continue
+
+            if max_screen_right:
+                width_ratio = w / max_screen_right
+                if width_ratio < 0.18:
+                    continue
+            if w > 600:
+                continue
+
+            if center_x < 24 or center_x > max_screen_right - 24:
+                continue
+
+            candidates.append(el)
+
+        # Sort by position: top-to-bottom, left-to-right
+        candidates.sort(key=lambda el: (el.bounds[1], el.bounds[0]))
+
+        return candidates
+
+    def _extract_grid_view_counts(
+        self,
+        elements: list[UIElement],
+    ) -> list[dict]:
+        """Extract view count overlays from profile grid.
+
+        TikTok shows view counts on grid tiles. These appear as:
+        - Small text elements (e.g., "12.4K", "3.5M")
+        - Positioned within/on top of grid tiles
+        - Often have a play icon indicator nearby
+
+        Returns list of {views_text, views_int, bounds} sorted by position.
+        """
+        view_count_pattern = re.compile(
+            r"^[\d,.]+[KMBkmb]?$"
+        )
+        results: list[dict] = []
+        grid_top = self._estimate_profile_grid_top(elements)
+        grid_items = self._find_grid_items(elements)
+        if not grid_items:
+            return []
+
+        for el in elements:
+            text = (el.text or "").strip()
+            desc = (el.content_desc or "").strip()
+
+            candidate = text or desc
+            if not candidate:
+                continue
+
+            # Must match a metric-like pattern
+            if not view_count_pattern.match(candidate):
+                continue
+
+            # View count overlays are small elements
+            w = el.bounds[2] - el.bounds[0]
+            h = el.bounds[3] - el.bounds[1]
+            if w > 400 or h > 100:
+                continue  # Too large to be a view count chip
+            center = ((el.bounds[0] + el.bounds[2]) // 2, (el.bounds[1] + el.bounds[3]) // 2)
+            if center[1] < grid_top:
+                continue
+
+            parsed = self._parse_metric_text(candidate)
+            if parsed is None:
+                continue
+
+            matched_tile: UIElement | None = None
+            for tile in grid_items:
+                if self._point_in_expanded_bounds(tile.bounds, center, expand=28):
+                    matched_tile = tile
+                    break
+            if not matched_tile:
+                continue
+
+            results.append({
+                "views_text": candidate,
+                "views_int": parsed,
+                "bounds": el.bounds,
+                "tile_bounds": matched_tile.bounds,
+                "center_y": center[1],
+                "center_x": center[0],
+            })
+
+        # Sort by position: top-to-bottom, left-to-right
+        results.sort(key=lambda r: (r["center_y"], r["center_x"]))
+        deduped: list[dict] = []
+        seen_tiles: set[tuple[int, int, int, int]] = set()
+        for item in results:
+            tile_bounds = item["tile_bounds"]
+            if tile_bounds in seen_tiles:
+                continue
+            seen_tiles.add(tile_bounds)
+            deduped.append(item)
+        return deduped
+
+    async def read_profile_grid_metrics(
+        self,
+        device: str,
+    ) -> list[dict]:
+        """Read view counts from the profile video grid.
+
+        Returns a list of visible grid items with their view counts:
+        [
+            {
+                "position": 0,     # grid position (0 = top-left, newest)
+                "views_text": "12.4K",
+                "views_int": 12400,
+                "bounds": (x1, y1, x2, y2),  # approximate tile bounds
+            },
+            ...
+        ]
+
+        Returns empty list if no grid items found (empty profile, wrong tab,
+        or UI dump failed).
+        """
+        elements = await self.dump_ui(device)
+        if not elements:
+            logger.warning("  ⚠️ [grid_metrics] UI dump returned no elements")
+            return []
+
+        view_counts = self._extract_grid_view_counts(elements)
+        if not view_counts:
+            logger.info("  📊 [grid_metrics] No view count overlays found in grid")
+            return []
+
+        # Assign grid positions based on visual order
+        grid_items: list[dict] = []
+        for idx, vc in enumerate(view_counts):
+            grid_items.append({
+                "position": idx,
+                "views_text": vc["views_text"],
+                "views_int": vc["views_int"],
+                "bounds": vc["bounds"],
+            })
+
+        logger.info(
+            "  📊 [grid_metrics] Found %d grid items with view counts: %s",
+            len(grid_items),
+            ", ".join(f"#{i['position']}={i['views_text']}" for i in grid_items[:6]),
+        )
+        return grid_items
+
+    # --- Post detail navigation & reading ---
+
+    async def open_profile_video_at_position(
+        self,
+        device: str,
+        position: int = 0,
+    ) -> bool:
+        """Open a video from the profile grid at the given position.
+
+        Position 0 = top-left (most recent video).
+        Uses grid layout to calculate tap coordinates.
+
+        Returns True if we confirmed landing on post detail screen.
+        """
+        elements = await self.dump_ui(device)
+        w, h = await self._get_screen_size(device)
+
+        # Strategy 1: Use grid view count positions to find the right tile
+        view_counts = self._extract_grid_view_counts(elements)
+        if view_counts and position < len(view_counts):
+            vc = view_counts[position]
+            # Tap slightly above the view count (toward center of tile)
+            tap_x = vc["center_x"] + random.randint(-10, 10)
+            tap_y = vc["center_y"] - 60 + random.randint(-10, 10)
+            # Clamp to screen
+            tap_y = max(50, min(tap_y, h - 50))
+            logger.info(
+                "  📱 [grid_open] Tapping grid item #%d at (%d, %d) "
+                "(view count at %s)",
+                position, tap_x, tap_y, vc["views_text"],
+            )
+            await self._realistic_tap(device, tap_x, tap_y, duration_ms=100)
+            await asyncio.sleep(2.0)
+
+            # Verify we're on post detail
+            elements = await self.dump_ui(device)
+            if self._detect_post_detail_screen(elements):
+                logger.info("  ✅ [grid_open] Opened post detail via view count position")
+                return True
+
+        # Strategy 2: Calculate grid position from screen geometry
+        # TikTok uses 3-column grid, tiles start below the bio area (~45% of screen)
+        grid_top_y = int(h * 0.45)
+        col_width = w // 3
+        row_height = col_width  # Grid tiles are roughly square
+
+        row = position // 3
+        col = position % 3
+
+        tap_x = col * col_width + col_width // 2 + random.randint(-15, 15)
+        tap_y = grid_top_y + row * row_height + row_height // 2 + random.randint(-15, 15)
+        tap_y = min(tap_y, int(h * 0.90))  # Don't tap nav bar
+
+        logger.info(
+            "  📱 [grid_open] Fallback: tapping grid position #%d at (%d, %d) "
+            "(row=%d, col=%d)",
+            position, tap_x, tap_y, row, col,
+        )
+        await self._realistic_tap(device, tap_x, tap_y, duration_ms=100)
+        await asyncio.sleep(2.0)
+
+        # Verify
+        elements = await self.dump_ui(device)
+        if self._detect_post_detail_screen(elements):
+            logger.info("  ✅ [grid_open] Opened post detail via grid geometry")
+            return True
+
+        logger.warning(
+            "  ❌ [grid_open] Could not confirm post detail screen "
+            "(position=%d)",
+            position,
+        )
+        return False
+
+    def _detect_post_detail_screen(
+        self,
+        elements: list[UIElement],
+    ) -> bool:
+        """Detect whether the current screen is a post detail view.
+
+        Post detail = video playing full screen with engagement controls
+        on the right side (like, comment, share).
+
+        Very similar to feed, but accessed from profile grid.
+        We detect it by checking for engagement controls.
+        """
+        signals = 0
+        for el in elements:
+            desc = (el.content_desc or "").strip().lower()
+            if "like video" in desc:
+                signals += 1
+            elif "read or add comments" in desc or "comment" in desc:
+                signals += 1
+            elif "share video" in desc:
+                signals += 1
+        return signals >= 2
+
+    async def read_post_detail_metrics(
+        self,
+        device: str,
+    ) -> dict:
+        """Read metrics from a post detail screen (own video viewed from profile).
+
+        When viewing your OWN video from profile, TikTok shows:
+        - View count prominently (often at the top or in the description area)
+        - Likes: "Like video. N likes" in content-desc
+        - Comments: "Read or add comments. N" in content-desc
+        - Shares: "Share video. N shares" in content-desc
+
+        Returns:
+        {
+            "views": int | None,
+            "likes": int | None,
+            "comments": int | None,
+            "shares": int | None,
+            "raw": {...}  # all raw text/desc for debugging
+        }
+        """
+        elements = await self.dump_ui(device)
+        if not elements:
+            logger.warning("  ⚠️ [post_metrics] UI dump returned no elements")
+            return {"views": None, "likes": None, "comments": None, "shares": None, "raw": {}}
+
+        raw: dict = {}
+        views: int | None = None
+        likes: int | None = None
+        comments: int | None = None
+        shares: int | None = None
+
+        for el in elements:
+            desc = (el.content_desc or "").strip()
+            text = (el.text or "").strip()
+
+            # --- Likes ---
+            like_m = re.search(r"Like video\.?\s*([\d,.KMBkmb]+)", desc, re.IGNORECASE)
+            if like_m:
+                raw["likes_desc"] = desc
+                likes = self._parse_metric_text(like_m.group(1))
+
+            # --- Comments ---
+            comment_m = re.search(
+                r"(?:Read or add comments|comments?)\.?\s*([\d,.KMBkmb]+)",
+                desc,
+                re.IGNORECASE,
+            )
+            if comment_m:
+                raw["comments_desc"] = desc
+                comments = self._parse_metric_text(comment_m.group(1))
+
+            # --- Shares ---
+            share_m = re.search(
+                r"Share video\.?\s*([\d,.KMBkmb]+)\s*shares?",
+                desc,
+                re.IGNORECASE,
+            )
+            if share_m:
+                raw["shares_desc"] = desc
+                shares = self._parse_metric_text(share_m.group(1))
+            elif re.search(r"([\d,.KMBkmb]+)\s*shares?", desc, re.IGNORECASE):
+                share_m2 = re.search(r"([\d,.KMBkmb]+)\s*shares?", desc, re.IGNORECASE)
+                if share_m2:
+                    raw["shares_desc"] = desc
+                    shares = self._parse_metric_text(share_m2.group(1))
+
+            # --- Views ---
+            # Views may appear in different ways on own post detail:
+            # 1. As a text element with just the number (e.g., "12.4K views")
+            # 2. In content-desc of a views indicator
+            # 3. As plain text near the top of the screen
+            views_m = re.search(
+                r"([\d,.KMBkmb]+)\s*views?",
+                desc,
+                re.IGNORECASE,
+            )
+            if views_m:
+                raw["views_desc"] = desc
+                views = self._parse_metric_text(views_m.group(1))
+
+            views_text_m = re.search(
+                r"([\d,.KMBkmb]+)\s*views?",
+                text,
+                re.IGNORECASE,
+            )
+            if views_text_m and views is None:
+                raw["views_text"] = text
+                views = self._parse_metric_text(views_text_m.group(1))
+
+        # Fallback for views: look for standalone number in typical views position
+        # On own profile video, views often appear as just a number at top
+        if views is None:
+            for el in elements:
+                text = (el.text or "").strip()
+                if not text:
+                    continue
+                # Views are usually displayed near the top portion of screen
+                if el.center[1] > 400:
+                    continue
+                parsed = self._parse_metric_text(text)
+                if parsed is not None and parsed >= 0:
+                    # A number in the top area that's not likes/comments/shares
+                    desc_l = (el.content_desc or "").lower()
+                    if not any(kw in desc_l for kw in ("like", "comment", "share", "sound")):
+                        raw["views_fallback_text"] = text
+                        views = parsed
+                        break
+
+        result = {
+            "views": views,
+            "likes": likes,
+            "comments": comments,
+            "shares": shares,
+            "raw": raw,
+        }
+
+        logger.info(
+            "  📊 [post_metrics] Read: views=%s likes=%s comments=%s shares=%s",
+            views, likes, comments, shares,
+        )
+        return result
+
+    async def navigate_back_from_post_detail(self, device: str) -> bool:
+        """Navigate back from post detail to profile grid.
+
+        Presses BACK key and verifies we return to the profile screen.
+        Retries up to 2 times to handle intermediate states.
+
+        Returns True if profile grid is confirmed.
+        """
+        for attempt in range(3):
+            # Press BACK
+            await self._get_backend(device)
+            if self._backend:
+                try:
+                    await self._backend.key_event(device, "BACK")
+                except Exception as e:
+                    logger.warning(
+                        "  ⚠️ [back_from_post] Backend BACK failed: %s", e
+                    )
+                    await self._adb._run_adb(
+                        device, "shell", "input", "keyevent", "4"
+                    )
+            else:
+                await self._adb._run_adb(
+                    device, "shell", "input", "keyevent", "4"
+                )
+            await asyncio.sleep(1.2)
+
+            # Dismiss any popups that might appear after BACK
+            await self.dismiss_popups(device, max_attempts=1)
+
+            # Check if we're back on profile
+            elements = await self.dump_ui(device)
+            if self.detect_profile_screen(elements):
+                logger.info(
+                    "  ✅ [back_from_post] Back on profile (attempt %d)",
+                    attempt + 1,
+                )
+                return True
+
+            logger.info(
+                "  ⚠️ [back_from_post] Not on profile after BACK "
+                "(attempt %d), retrying...",
+                attempt + 1,
+            )
+
+        logger.warning("  ❌ [back_from_post] Could not return to profile")
+        return False

@@ -38,6 +38,7 @@ public class CloudWebSocketClient extends WebSocketClient {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private Timer heartbeatTimer;
     private boolean shouldReconnect = true;
+    private boolean reconnectScheduled = false;
     private int reconnectAttempt = 0;
     private long lastHeartbeatAckMs = 0;
     private static final int MAX_RECONNECT_DELAY_MS = 60_000; // 60s max
@@ -48,12 +49,15 @@ public class CloudWebSocketClient extends WebSocketClient {
         void onConnected();
         void onDisconnected(String reason);
         void onReconnecting(int attempt, long delayMs);
+        void onAuthInvalid(String reason);
     }
 
     public CloudWebSocketClient(URI serverUri) {
         super(serverUri);
-        // Set connection timeout
-        this.setConnectionLostTimeout(60);
+        // Give generous timeout — Cloudflare Tunnel + mobile networks
+        // can introduce jitter. The server sends keepalive pings every 25s,
+        // so 90s without ANY frame means the connection is truly dead.
+        this.setConnectionLostTimeout(90);
     }
 
     public void setConnectionListener(ConnectionListener listener) {
@@ -66,6 +70,7 @@ public class CloudWebSocketClient extends WebSocketClient {
         Log.i(TAG, "☁️ Helper build: " + HelperBuildInfo.releaseLabel() +
                 " | " + HelperBuildInfo.debugLabel());
         reconnectAttempt = 0;
+        reconnectScheduled = false;
         lastHeartbeatAckMs = System.currentTimeMillis();
         sendHello();
         startHeartbeat();
@@ -93,6 +98,12 @@ public class CloudWebSocketClient extends WebSocketClient {
                 return;
             }
 
+            // Handle server-side keepalive ping — just acknowledge receipt
+            if (data.has("type") && "server_ping".equals(data.get("type").getAsString())) {
+                lastHeartbeatAckMs = System.currentTimeMillis();
+                return;
+            }
+
             // Regular command from server — route through CommandHandler
             if (data.has("id") && data.has("action")) {
                 Log.d(TAG, "📥 Command: " + data.get("action").getAsString());
@@ -116,9 +127,18 @@ public class CloudWebSocketClient extends WebSocketClient {
                 ", remote=" + remote + ")");
         stopHeartbeat();
 
-        if (code == org.java_websocket.framing.CloseFrame.POLICY_VALIDATION) {
+        String normalizedReason = reason == null ? "" : reason.toLowerCase();
+        boolean authInvalid = code == org.java_websocket.framing.CloseFrame.POLICY_VALIDATION
+                || code == 4001
+                || normalizedReason.contains("invalid")
+                || normalizedReason.contains("inactive")
+                || normalizedReason.contains("revoked");
+        if (authInvalid) {
             Log.e(TAG, "Server rejected connection (token revoked/invalid). Stopping reconnect.");
             shouldReconnect = false;
+            if (listener != null) {
+                mainHandler.post(() -> listener.onAuthInvalid(reason));
+            }
         }
 
         if (listener != null) {
@@ -146,9 +166,9 @@ public class CloudWebSocketClient extends WebSocketClient {
             public void run() {
                 if (isOpen()) {
                     long now = System.currentTimeMillis();
-                    if (now - lastHeartbeatAckMs > HEARTBEAT_INTERVAL_MS * 2.5) {
+                    if (now - lastHeartbeatAckMs > HEARTBEAT_INTERVAL_MS * 3.5) {
                         Log.w(TAG, "No heartbeat_ack for " + (now - lastHeartbeatAckMs) + "ms! Connection stale, forcing reconnect.");
-                        closeConnection(1006, "Heartbeat timeout");
+                        close();
                         return;
                     }
                     try {
@@ -191,6 +211,10 @@ public class CloudWebSocketClient extends WebSocketClient {
     // --- Reconnect ---
 
     private void scheduleReconnect() {
+        if (reconnectScheduled) {
+            return;
+        }
+        reconnectScheduled = true;
         reconnectAttempt++;
         // Exponential backoff: 2s, 4s, 8s, 16s, 32s, 60s, 60s, ...
         long delay = Math.min(
@@ -206,6 +230,7 @@ public class CloudWebSocketClient extends WebSocketClient {
         }
 
         mainHandler.postDelayed(() -> {
+            reconnectScheduled = false;
             if (shouldReconnect) {
                 try {
                     reconnect();

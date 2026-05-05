@@ -184,6 +184,15 @@ def _rebuild_videoassignment_table(conn: sqlalchemy.engine.Connection) -> None:
                 error TEXT,
                 last_error TEXT,
                 last_run_at DATETIME,
+                metrics_status VARCHAR DEFAULT 'PENDING',
+                metrics_last_synced_at DATETIME,
+                metrics_error TEXT,
+                post_locator TEXT,
+                latest_views INTEGER,
+                latest_likes INTEGER,
+                latest_comments INTEGER,
+                latest_shares INTEGER,
+                metrics_task_id INTEGER,
                 created_at DATETIME
             )
             """
@@ -206,6 +215,15 @@ def _rebuild_videoassignment_table(conn: sqlalchemy.engine.Connection) -> None:
                 error,
                 last_error,
                 last_run_at,
+                metrics_status,
+                metrics_last_synced_at,
+                metrics_error,
+                post_locator,
+                latest_views,
+                latest_likes,
+                latest_comments,
+                latest_shares,
+                metrics_task_id,
                 created_at
             )
             SELECT
@@ -239,6 +257,33 @@ def _rebuild_videoassignment_table(conn: sqlalchemy.engine.Connection) -> None:
             + """,
                 """
             + _column_copy_expr(existing_columns, "last_run_at")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "metrics_status", default_sql="'PENDING'")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "metrics_last_synced_at")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "metrics_error")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "post_locator")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "latest_views")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "latest_likes")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "latest_comments")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "latest_shares")
+            + """,
+                """
+            + _column_copy_expr(existing_columns, "metrics_task_id")
             + """,
                 """
             + _column_copy_expr(existing_columns, "created_at", default_sql="CURRENT_TIMESTAMP")
@@ -359,6 +404,16 @@ def migrate_db():
         ("videoassignment", "last_run_at", "DATETIME"),
         ("videoassignment", "push_status", "VARCHAR DEFAULT 'pending'"),
         ("videoassignment", "created_at", "DATETIME"),
+        # --- Metrics tracking (Phase A) ---
+        ("videoassignment", "metrics_status", "VARCHAR DEFAULT 'PENDING'"),
+        ("videoassignment", "metrics_last_synced_at", "DATETIME"),
+        ("videoassignment", "metrics_error", "TEXT"),
+        ("videoassignment", "post_locator", "TEXT"),
+        ("videoassignment", "latest_views", "INTEGER"),
+        ("videoassignment", "latest_likes", "INTEGER"),
+        ("videoassignment", "latest_comments", "INTEGER"),
+        ("videoassignment", "latest_shares", "INTEGER"),
+        ("videoassignment", "metrics_task_id", "INTEGER"),
         ("deviceaccount", "account_name", "TEXT"),
         ("deviceaccount", "notes", "TEXT"),
         ("deviceaccount", "created_at", "DATETIME"),
@@ -403,6 +458,18 @@ def migrate_db():
                     "failed": "FAILED",
                 },
             ),
+            (
+                "videoassignment",
+                "metrics_status",
+                {
+                    "pending": "PENDING",
+                    "syncing": "SYNCING",
+                    "synced": "SYNCED",
+                    "needs_review": "NEEDS_REVIEW",
+                    "sync_failed": "SYNC_FAILED",
+                    "disabled": "DISABLED",
+                },
+            ),
         ]
         for table, column, mapping in enum_normalizers:
             _normalize_enum_column(conn, table, column, mapping)
@@ -412,6 +479,7 @@ def migrate_db():
         _backfill_nulls(conn, "video", "created_at", "CURRENT_TIMESTAMP")
         _backfill_nulls(conn, "videoassignment", "push_status", "'PENDING'")
         _backfill_nulls(conn, "videoassignment", "upload_status", "'PENDING'")
+        _backfill_nulls(conn, "videoassignment", "metrics_status", "'PENDING'")
         _backfill_nulls(conn, "videoassignment", "created_at", "CURRENT_TIMESTAMP")
         _backfill_nulls(conn, "deviceaccount", "created_at", "CURRENT_TIMESTAMP")
 

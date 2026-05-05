@@ -70,10 +70,9 @@
             <div class="dashboard-hero">
                 <div class="dashboard-hero-copy">
                     <span class="eyebrow">TikTok-first operations</span>
-                    <h2>Dashboard ưu tiên chất lượng comment và kiểm soát runtime thật</h2>
+                    <h2>View nhiều hơn, scroll ít hơn.</h2>
                     <p class="dashboard-hero-text">
-                        Tab này mặc định vào `TikTok Comment Videos`, hiển thị rõ pipeline hybrid,
-                        fallback, risk và tiến trình verify thay vì trộn chung với các action khác.
+                        Dashboard nén lại để theo dõi queue, launch template và xử lý run ngay trên một màn hình.
                     </p>
                 </div>
                 <div class="dashboard-hero-pills" id="dashboardHeroPills">
@@ -117,154 +116,155 @@
                 </div>
             </div>
 
-            <div class="dashboard-grid dashboard-grid-top">
-                <div class="panel composer-panel">
-                    <div class="panel-header dashboard-panel-header">
-                        <div>
-                            <span class="panel-kicker">Primary run composer</span>
-                            <h2>Launch Template</h2>
+            <div class="dashboard-workspace">
+                <div class="dashboard-grid dashboard-grid-top">
+                    <div class="panel composer-panel">
+                        <div class="panel-header dashboard-panel-header">
+                            <div>
+                                <span class="panel-kicker">Primary run composer</span>
+                                <h2>Launch</h2>
+                            </div>
+                            <div class="template-quick-meta" id="composerMeta">
+                                <span class="template-chip primary">Primary</span>
+                                <span class="template-chip">Hybrid</span>
+                            </div>
                         </div>
-                        <div class="template-quick-meta" id="composerMeta">
-                            <span class="template-chip primary">Primary</span>
-                            <span class="template-chip">Hybrid</span>
+                        <div class="panel-body">
+                            <form id="taskForm" onsubmit="submitTask(event)">
+                                <input type="hidden" id="selectedTemplate" value="">
+
+                                <div class="primary-template-card" id="primaryTemplateCard">
+                                    <div class="primary-template-head">
+                                        <div>
+                                            <div class="primary-template-label">Default template</div>
+                                            <h3 id="primaryTemplateTitle">TikTok Comment Videos</h3>
+                                        </div>
+                                        <div class="template-chip-stack" id="primaryTemplateBadges"></div>
+                                    </div>
+                                    <p class="primary-template-desc" id="primaryTemplateDescription"></p>
+                                    <div class="primary-template-stats" id="primaryTemplateStats"></div>
+                                </div>
+
+                                <div class="composer-layout">
+                                    <div class="composer-main">
+                                        <div class="config-panel">
+                                            <div class="config-title">Template controls</div>
+                                            <div id="dynamicTemplateFields" class="dynamic-fields"></div>
+                                        </div>
+
+                                        <div class="config-panel" id="composerCommandGroup" style="display:none">
+                                            <div class="config-title">AI command</div>
+                                            <div class="form-group">
+                                                <label>Command</label>
+                                                <textarea id="commandInput" rows="3" placeholder="Mô tả yêu cầu cho AI task"></textarea>
+                                            </div>
+                                            <div class="form-row">
+                                                <div class="form-group half">
+                                                    <label>Max Steps</label>
+                                                    <input type="number" id="maxSteps" value="20" min="1" max="50">
+                                                </div>
+                                                <div class="form-group half">
+                                                    <label>Max Retries</label>
+                                                    <input type="number" id="maxRetries" value="2" min="0" max="5">
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="config-panel">
+                                            <div class="config-title">Execution</div>
+                                            <div class="form-row">
+                                                <div class="form-group half">
+                                                    <label>Device</label>
+                                                    <select id="deviceSelect" required>
+                                                        <option value="">Chọn device...</option>
+                                                    </select>
+                                                </div>
+                                                <div class="form-group half">
+                                                    <label>Queue mode</label>
+                                                    <label class="checkbox-label composer-checkbox">
+                                                        <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">
+                                                        <span>Batch trên tất cả devices online</span>
+                                                    </label>
+                                                </div>
+                                            </div>
+
+                                            <div class="cost-estimate" id="costEstimate">
+                                                <div class="cost-row">
+                                                    <span>Mode</span>
+                                                    <span id="estMode">—</span>
+                                                </div>
+                                                <div class="cost-row">
+                                                    <span>Cost</span>
+                                                    <span id="estCost" class="cost-value">—</span>
+                                                </div>
+                                            </div>
+
+                                            <button type="submit" class="btn btn-primary btn-block" id="submitBtn" disabled>
+                                                Chọn template để bắt đầu
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <aside class="template-detail-panel" id="templateDetailPanel">
+                                        <div class="template-detail-heading">
+                                            <span class="panel-kicker">Template detail</span>
+                                            <h3 id="templateDetailTitle">TikTok Comment Videos</h3>
+                                        </div>
+                                        <div class="template-detail-body" id="templateDetail"></div>
+                                    </aside>
+                                </div>
+                            </form>
                         </div>
                     </div>
-                    <div class="panel-body">
-                        <form id="taskForm" onsubmit="submitTask(event)">
-                            <input type="hidden" id="selectedTemplate" value="">
 
-                            <div class="primary-template-card" id="primaryTemplateCard">
-                                <div class="primary-template-head">
-                                    <div>
-                                        <div class="primary-template-label">Default template</div>
-                                        <h3 id="primaryTemplateTitle">TikTok Comment Videos</h3>
-                                    </div>
-                                    <div class="template-chip-stack" id="primaryTemplateBadges"></div>
-                                </div>
-                                <p class="primary-template-desc" id="primaryTemplateDescription"></p>
-                                <div class="primary-template-stats" id="primaryTemplateStats"></div>
+                    <div class="panel live-panel">
+                        <div class="panel-header dashboard-panel-header">
+                            <div>
+                                <span class="panel-kicker">Live run rail</span>
+                                <h2>Running</h2>
                             </div>
-
-                            <div class="composer-layout">
-                                <div class="composer-main">
-                                    <div class="config-panel">
-                                        <div class="config-title">Template controls</div>
-                                        <div id="dynamicTemplateFields" class="dynamic-fields"></div>
-                                    </div>
-
-                                    <div class="config-panel" id="composerCommandGroup" style="display:none">
-                                        <div class="config-title">AI command</div>
-                                        <div class="form-group">
-                                            <label>Command</label>
-                                            <textarea id="commandInput" rows="3" placeholder="Mô tả yêu cầu cho AI task"></textarea>
-                                        </div>
-                                        <div class="form-row">
-                                            <div class="form-group half">
-                                                <label>Max Steps</label>
-                                                <input type="number" id="maxSteps" value="20" min="1" max="50">
-                                            </div>
-                                            <div class="form-group half">
-                                                <label>Max Retries</label>
-                                                <input type="number" id="maxRetries" value="2" min="0" max="5">
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div class="config-panel">
-                                        <div class="config-title">Execution</div>
-                                        <div class="form-row">
-                                            <div class="form-group half">
-                                                <label>Device</label>
-                                                <select id="deviceSelect" required>
-                                                    <option value="">Chọn device...</option>
-                                                </select>
-                                            </div>
-                                            <div class="form-group half">
-                                                <label>Queue mode</label>
-                                                <label class="checkbox-label composer-checkbox">
-                                                    <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">
-                                                    <span>Batch trên tất cả devices online</span>
-                                                </label>
-                                            </div>
-                                        </div>
-
-                                        <div class="cost-estimate" id="costEstimate">
-                                            <div class="cost-row">
-                                                <span>Mode</span>
-                                                <span id="estMode">—</span>
-                                            </div>
-                                            <div class="cost-row">
-                                                <span>Cost</span>
-                                                <span id="estCost" class="cost-value">—</span>
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <button type="submit" class="btn btn-primary btn-block" id="submitBtn" disabled>
-                                        Chọn template để bắt đầu
-                                    </button>
-                                </div>
-
-                                <aside class="template-detail-panel" id="templateDetailPanel">
-                                    <div class="template-detail-heading">
-                                        <span class="panel-kicker">Template detail</span>
-                                        <h3 id="templateDetailTitle">TikTok Comment Videos</h3>
-                                    </div>
-                                    <div class="template-detail-body" id="templateDetail"></div>
-                                </aside>
+                            <span class="count-badge" id="runningCount">0</span>
+                        </div>
+                        <div class="panel-body scrollable" id="runningTasks">
+                            <div class="empty-state">
+                                <div class="empty-icon">SYNC</div>
+                                <div class="empty-text">No tasks running</div>
                             </div>
-                        </form>
+                        </div>
                     </div>
                 </div>
 
-                <div class="panel live-panel">
-                    <div class="panel-header dashboard-panel-header">
-                        <div>
-                            <span class="panel-kicker">Live run rail</span>
-                            <h2>Running Tasks</h2>
+                <div class="dashboard-grid dashboard-grid-bottom">
+                    <div class="panel">
+                        <div class="panel-header dashboard-panel-header">
+                            <div>
+                                <span class="panel-kicker">Template library</span>
+                                <h2>Templates</h2>
+                            </div>
+                            <span class="count-badge" id="templateCount">0</span>
                         </div>
-                        <span class="count-badge" id="runningCount">0</span>
+                        <div class="panel-body scrollable">
+                            <div class="template-library" id="templateLibrary">
+                                <div class="loading">Loading templates...</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="panel-body scrollable" id="runningTasks">
-                        <div class="empty-state">
-                            <div class="empty-icon">SYNC</div>
-                            <div class="empty-text">No tasks running</div>
+
+                    <div class="panel">
+                        <div class="panel-header dashboard-panel-header">
+                            <div>
+                                <span class="panel-kicker">Recent outcomes</span>
+                                <h2>Recent Runs</h2>
+                            </div>
+                        </div>
+                        <div class="panel-body scrollable">
+                            <div class="recent-outcomes" id="recentOutcomes">
+                                <div class="loading">Loading...</div>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-
-            <div class="dashboard-grid dashboard-grid-bottom">
-                <div class="panel">
-                    <div class="panel-header dashboard-panel-header">
-                        <div>
-                            <span class="panel-kicker">Template library</span>
-                            <h2>Operational Templates</h2>
-                        </div>
-                        <span class="count-badge" id="templateCount">0</span>
-                    </div>
-                    <div class="panel-body">
-                        <div class="template-library" id="templateLibrary">
-                            <div class="loading">Loading templates...</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-header dashboard-panel-header">
-                        <div>
-                            <span class="panel-kicker">Recent outcomes</span>
-                            <h2>Last Completed Runs</h2>
-                        </div>
-                    </div>
-                    <div class="panel-body">
-                        <div class="recent-outcomes" id="recentOutcomes">
-                            <div class="loading">Loading...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
         </section>
 
         <!-- ============ DEVICES SECTION ============ -->

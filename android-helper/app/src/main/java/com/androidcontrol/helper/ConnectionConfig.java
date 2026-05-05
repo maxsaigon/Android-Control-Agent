@@ -100,6 +100,17 @@ public class ConnectionConfig {
     }
 
     /**
+     * Invalidate current cloud binding (used when server revokes/deletes device).
+     * Keeps username/device_name so helper can request approval again.
+     */
+    public void clearCloudBinding() {
+        prefs.edit()
+                .remove(KEY_DEVICE_TOKEN)
+                .remove(KEY_LINK_REQUEST_ID)
+                .apply();
+    }
+
+    /**
      * Get or generate a random 8-char token for LAN mode authentication.
      */
     public String getLanToken() {

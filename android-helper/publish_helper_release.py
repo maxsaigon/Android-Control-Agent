@@ -80,7 +80,15 @@ def main() -> int:
     source_apk = _resolve_source_apk(element)
 
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    artifact_name = source_apk.name
+    version_name = str(element.get("versionName", "")).strip() or "0.0.0"
+    version_code = int(element.get("versionCode", 0) or 0)
+    build_sha = _git_build_ref()
+    build_time_utc = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    # Unique artifact for every publish to avoid CDN/browser stale cache on same filename.
+    artifact_name = (
+        f"android-control-helper-v{version_name}+{version_code}"
+        f"-{build_time_utc}-{build_sha}.apk"
+    )
     artifact_path = DOWNLOADS_DIR / artifact_name
     latest_path = DOWNLOADS_DIR / LATEST_ALIAS
 
@@ -92,10 +100,10 @@ def main() -> int:
         "release_name": "android-control-helper",
         "artifact_name": artifact_name,
         "latest_alias": LATEST_ALIAS,
-        "version_name": element.get("versionName", ""),
-        "version_code": element.get("versionCode", 0),
-        "build_sha": _git_build_ref(),
-        "build_time_utc": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).strftime("%Y%m%d-%H%M%S"),
+        "version_name": version_name,
+        "version_code": version_code,
+        "build_sha": build_sha,
+        "build_time_utc": build_time_utc,
         "published_at_utc": datetime.now(timezone.utc).isoformat(),
         "file_size_bytes": stat.st_size,
         "sha256": _sha256(source_apk),

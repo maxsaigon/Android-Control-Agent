@@ -14,9 +14,19 @@ from app.models import (
 )
 from app.services.device_manager import device_manager
 from app.services.connection_watchdog import watchdog
+from app.services.device_hub import device_hub
+from app.models import DeviceToken
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 logger = logging.getLogger(__name__)
+
+
+def _cloud_display_name(base_name: str, device_id: int) -> str:
+    clean = (base_name or "Cloud Device").strip()
+    suffix = f"#{device_id}"
+    if suffix in clean:
+        return clean
+    return f"{clean} {suffix}"
 
 
 @router.get("", response_model=list[DeviceRead])
@@ -67,7 +77,10 @@ def update_device(device_id: int, body: dict, session: Session = Depends(get_ses
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     if "name" in body:
-        device.name = body["name"]
+        next_name = body["name"]
+        if device.ip_address == "cloud" or device.adb_port == 0:
+            next_name = _cloud_display_name(next_name, device.id)
+        device.name = next_name
     session.add(device)
     session.commit()
     session.refresh(device)
@@ -75,11 +88,32 @@ def update_device(device_id: int, body: dict, session: Session = Depends(get_ses
 
 
 @router.delete("/{device_id}", status_code=204)
-def delete_device(device_id: int, session: Session = Depends(get_session)):
+async def delete_device(device_id: int, session: Session = Depends(get_session)):
     """Remove a device."""
     device = session.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+
+    # Cloud device lifecycle: deleting from webapp must invalidate helper token
+    # so the phone has to request approval again.
+    is_cloud = device.ip_address == "cloud" or device.adb_port == 0
+    if is_cloud:
+        tokens = session.exec(
+            select(DeviceToken).where(DeviceToken.device_id == device.id)
+        ).all()
+        for t in tokens:
+            t.is_active = False
+            session.add(t)
+
+        conn = device_hub.get_connection(device.id)
+        if conn:
+            conn.fail_all_pending("Device deleted from dashboard")
+            try:
+                await conn.ws.close(code=4001, reason="Device deleted from dashboard")
+            except Exception:
+                logger.debug("WS close failed for deleted device %s", device.id)
+            device_hub.unregister(device.id, session_id=conn.session_id)
+
     # Unregister from watchdog
     watchdog.unregister_device(device.ip_address, device.adb_port)
     session.delete(device)
@@ -127,6 +161,28 @@ async def device_status(
     device = session.get(Device, device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
+
+    # Cloud devices must be checked via WebSocket hub, not ADB ping.
+    # Their stored ip/port is ("cloud", 0), so ADB ping would always fail
+    # and incorrectly force DB status to OFFLINE while WS is connected.
+    if device.ip_address == "cloud" or device.adb_port == 0:
+        reachable = device_hub.is_connected(device.id)
+        if reachable:
+            device.status = DeviceStatus.ONLINE
+            conn = device_hub.get_connection(device.id)
+            device.last_seen = conn.last_ping if conn else datetime.now(timezone.utc)
+        else:
+            device.status = DeviceStatus.OFFLINE
+        session.add(device)
+        session.commit()
+        return {
+            "device_id": device.id,
+            "name": device.name,
+            "reachable": reachable,
+            "status": device.status,
+            "battery_level": device.battery_level,
+            "last_seen": device.last_seen,
+        }
 
     reachable = await device_manager.ping(device.ip_address, device.adb_port)
 

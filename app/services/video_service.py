@@ -20,8 +20,10 @@ from app.models import (
     TaskStatus,
     PushStatus,
     UploadStatus,
+    MetricsStatus,
     Video,
     VideoAssignment,
+    VideoAssignmentMetricSnapshot,
     VideoStatus,
     DeviceAccount,
 )
@@ -223,6 +225,26 @@ def _assignment_to_dict(
         "artifact_result": artifact.get("result") if artifact else None,
         "artifact_latest_snapshot": artifact.get("latest_snapshot") if artifact else None,
         "artifact_snapshots_count": artifact.get("snapshots_count", 0) if artifact else 0,
+        # --- Metrics tracking ---
+        "metrics_status": a.metrics_status or MetricsStatus.PENDING,
+        "metrics_last_synced_at": a.metrics_last_synced_at,
+        "metrics_error": a.metrics_error,
+        "post_locator": a.post_locator,
+        "latest_views": a.latest_views,
+        "latest_likes": a.latest_likes,
+        "latest_comments": a.latest_comments,
+        "latest_shares": a.latest_shares,
+        "metrics_task_id": a.metrics_task_id,
+        "has_metrics": any([
+            a.latest_views is not None,
+            a.latest_likes is not None,
+            a.latest_comments is not None,
+            a.latest_shares is not None,
+        ]),
+        "can_sync_metrics": (
+            a.upload_status == UploadStatus.UPLOADED
+            and a.metrics_status not in (MetricsStatus.SYNCING, MetricsStatus.DISABLED)
+        ),
     }
 
 
@@ -1052,6 +1074,246 @@ class VideoService:
             logger.info(f"🗑️ Video cleanup: {cleaned} files removed")
 
         return cleaned
+
+    # ------------------------------------------------------------------
+    # Metrics
+    # ------------------------------------------------------------------
+
+    def get_metrics_summary(self, session: Session) -> dict:
+        """Aggregate metrics summary for the VIDEOS tab dashboard cards."""
+        assignments = session.exec(
+            select(VideoAssignment).where(
+                VideoAssignment.platform == "tiktok",
+                VideoAssignment.upload_status == UploadStatus.UPLOADED,
+            )
+        ).all()
+
+        total_tracked = len(assignments)
+        total_views = sum(a.latest_views or 0 for a in assignments)
+        total_likes = sum(a.latest_likes or 0 for a in assignments)
+        total_comments = sum(a.latest_comments or 0 for a in assignments)
+        total_shares = sum(a.latest_shares or 0 for a in assignments)
+
+        synced_count = sum(
+            1 for a in assignments
+            if a.metrics_status == MetricsStatus.SYNCED
+        )
+        pending_count = sum(
+            1 for a in assignments
+            if a.metrics_status in (MetricsStatus.PENDING, None)
+        )
+        review_count = sum(
+            1 for a in assignments
+            if a.metrics_status in (
+                MetricsStatus.NEEDS_REVIEW, MetricsStatus.SYNC_FAILED
+            )
+        )
+
+        return {
+            "total_tracked": total_tracked,
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "total_comments": total_comments,
+            "total_shares": total_shares,
+            "synced_count": synced_count,
+            "pending_count": pending_count,
+            "review_count": review_count,
+        }
+
+    def save_manual_metrics(
+        self,
+        session: Session,
+        assignment_id: int,
+        views: Optional[int] = None,
+        likes: Optional[int] = None,
+        comments: Optional[int] = None,
+        shares: Optional[int] = None,
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Save manually-entered metrics for an assignment.
+
+        Creates a snapshot with source='manual' and updates latest state.
+        """
+        assignment = session.get(VideoAssignment, assignment_id)
+        if not assignment:
+            return None, "Assignment not found"
+
+        if assignment.upload_status != UploadStatus.UPLOADED:
+            return None, (
+                f"Assignment #{assignment_id} chưa upload thành công "
+                f"(status={assignment.upload_status}). Chỉ có thể sync metrics "
+                f"cho bài đã uploaded."
+            )
+        if all(value is None for value in (views, likes, comments, shares)):
+            return None, "Phải cung cấp ít nhất 1 metric để lưu thủ công"
+
+        now = datetime.now(timezone.utc)
+
+        # Update latest state
+        if views is not None:
+            assignment.latest_views = views
+        if likes is not None:
+            assignment.latest_likes = likes
+        if comments is not None:
+            assignment.latest_comments = comments
+        if shares is not None:
+            assignment.latest_shares = shares
+
+        assignment.metrics_status = MetricsStatus.SYNCED
+        assignment.metrics_last_synced_at = now
+        assignment.metrics_error = None
+
+        # Create snapshot
+        snapshot = VideoAssignmentMetricSnapshot(
+            assignment_id=assignment_id,
+            views=assignment.latest_views,
+            likes=assignment.latest_likes,
+            comments=assignment.latest_comments,
+            shares=assignment.latest_shares,
+            source="manual",
+            raw_payload=None,
+        )
+        session.add(snapshot)
+        session.add(assignment)
+        session.commit()
+        session.refresh(assignment)
+        session.refresh(snapshot)
+
+        logger.info(
+            "Manual metrics saved: assignment=%s views=%s likes=%s comments=%s shares=%s",
+            assignment_id, views, likes, comments, shares,
+        )
+
+        return {
+            "assignment_id": assignment_id,
+            "snapshot_id": snapshot.id,
+            "metrics_status": assignment.metrics_status,
+            "latest_views": assignment.latest_views,
+            "latest_likes": assignment.latest_likes,
+            "latest_comments": assignment.latest_comments,
+            "latest_shares": assignment.latest_shares,
+            "collected_at": str(snapshot.collected_at),
+        }, None
+
+    def get_assignment_metrics_history(
+        self,
+        session: Session,
+        assignment_id: int,
+        limit: int = 50,
+    ) -> Optional[list[dict]]:
+        """Get metrics snapshot history for an assignment."""
+        assignment = session.get(VideoAssignment, assignment_id)
+        if not assignment:
+            return None
+
+        snapshots = session.exec(
+            select(VideoAssignmentMetricSnapshot)
+            .where(VideoAssignmentMetricSnapshot.assignment_id == assignment_id)
+            .order_by(VideoAssignmentMetricSnapshot.collected_at.desc())  # type: ignore
+            .limit(limit)
+        ).all()
+
+        return [
+            {
+                "id": s.id,
+                "views": s.views,
+                "likes": s.likes,
+                "comments": s.comments,
+                "shares": s.shares,
+                "source": s.source,
+                "error": s.error,
+                "collected_at": str(s.collected_at),
+            }
+            for s in snapshots
+        ]
+
+
+    def save_automated_metrics(
+        self,
+        session: Session,
+        assignment_id: int,
+        *,
+        views: Optional[int] = None,
+        likes: Optional[int] = None,
+        comments: Optional[int] = None,
+        shares: Optional[int] = None,
+        source: str = "post_detail",
+        raw_payload: Optional[str] = None,
+        artifact_dir: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """Save metrics collected by the automated sync runner.
+
+        Unlike save_manual_metrics, this:
+        - Accepts source (grid / post_detail)
+        - Accepts raw_payload and artifact_dir for debugging
+        - Is called by _tiktok_metrics_sync handler
+        """
+        assignment = session.get(VideoAssignment, assignment_id)
+        if not assignment:
+            return None, "Assignment not found"
+
+        now = datetime.now(timezone.utc)
+
+        has_any_metric = any(v is not None for v in (views, likes, comments, shares))
+
+        # Update latest state (only overwrite non-None values)
+        if views is not None:
+            assignment.latest_views = views
+        if likes is not None:
+            assignment.latest_likes = likes
+        if comments is not None:
+            assignment.latest_comments = comments
+        if shares is not None:
+            assignment.latest_shares = shares
+
+        # Handle partial or failed sync
+        if error:
+            assignment.metrics_status = MetricsStatus.NEEDS_REVIEW
+            assignment.metrics_error = error
+        elif has_any_metric:
+            assignment.metrics_status = MetricsStatus.SYNCED
+            assignment.metrics_error = None
+        else:
+            assignment.metrics_status = MetricsStatus.NEEDS_REVIEW
+            assignment.metrics_error = "No metrics could be read"
+
+        assignment.metrics_last_synced_at = now
+
+        # Create snapshot
+        snapshot = VideoAssignmentMetricSnapshot(
+            assignment_id=assignment_id,
+            views=assignment.latest_views,
+            likes=assignment.latest_likes,
+            comments=assignment.latest_comments,
+            shares=assignment.latest_shares,
+            source=source,
+            raw_payload=raw_payload,
+            artifact_dir=artifact_dir,
+            error=error,
+        )
+        session.add(snapshot)
+        session.add(assignment)
+        session.commit()
+        session.refresh(assignment)
+        session.refresh(snapshot)
+
+        logger.info(
+            "Automated metrics saved: assignment=%s source=%s views=%s likes=%s "
+            "comments=%s shares=%s error=%s",
+            assignment_id, source, views, likes, comments, shares, error,
+        )
+
+        return {
+            "assignment_id": assignment_id,
+            "snapshot_id": snapshot.id,
+            "metrics_status": assignment.metrics_status,
+            "latest_views": assignment.latest_views,
+            "latest_likes": assignment.latest_likes,
+            "latest_comments": assignment.latest_comments,
+            "latest_shares": assignment.latest_shares,
+            "collected_at": str(snapshot.collected_at),
+            "source": source,
+        }, None
 
 
 # Singleton

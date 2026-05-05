@@ -8,7 +8,16 @@ from typing import Dict
 from sqlmodel import Session
 
 from app.database import engine
-from app.models import Task, TaskLog, TaskStatus, Device, DeviceStatus, VideoAssignment, UploadStatus
+from app.models import (
+    Task,
+    TaskLog,
+    TaskStatus,
+    Device,
+    DeviceStatus,
+    VideoAssignment,
+    UploadStatus,
+    MetricsStatus,
+)
 from app.services.task_engine import task_engine, TaskResult
 
 logger = logging.getLogger(__name__)
@@ -65,6 +74,51 @@ def _sync_assignment_upload_status(
         )
 
 
+def _extract_metrics_assignment_id(task: Task | None) -> int | None:
+    if not task or task.template != "tiktok_metrics_sync":
+        return None
+    template_vars = task.template_vars or {}
+    assignment_id = template_vars.get("assignment_id")
+    if assignment_id in (None, ""):
+        return None
+    try:
+        return int(assignment_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_upload_assignment_id(task: Task | None) -> int | None:
+    """Return the upload lifecycle assignment id for upload tasks only."""
+    if not task or task.template == "tiktok_metrics_sync":
+        return None
+    return task.assignment_id
+
+
+def _sync_assignment_metrics_status(
+    assignment_id: int | None,
+    new_status: MetricsStatus,
+    error_msg: str | None = None,
+) -> None:
+    """Sync VideoAssignment.metrics_status for metrics tasks."""
+    if not assignment_id:
+        return
+    try:
+        with Session(engine) as session:
+            assignment = session.get(VideoAssignment, assignment_id)
+            if assignment:
+                assignment.metrics_status = new_status
+                if error_msg is not None:
+                    assignment.metrics_error = error_msg
+                session.add(assignment)
+                session.commit()
+    except Exception as exc:  # pragma: no cover
+        logger.warning(
+            "_sync_assignment_metrics_status: failed to update assignment %s: %s",
+            assignment_id,
+            exc,
+        )
+
+
 class TaskQueue:
     """Manages background task execution across devices with concurrency control."""
 
@@ -113,10 +167,22 @@ class TaskQueue:
         with Session(engine) as session:
             task = session.get(Task, task_id)
             if task and task.status in (TaskStatus.RUNNING, TaskStatus.PENDING):
+                upload_assignment_id = _extract_upload_assignment_id(task)
+                metrics_assignment_id = _extract_metrics_assignment_id(task)
                 task.status = TaskStatus.CANCELLED
                 task.completed_at = datetime.now(timezone.utc)
                 session.add(task)
                 session.commit()
+                _sync_assignment_metrics_status(
+                    metrics_assignment_id,
+                    MetricsStatus.PENDING,
+                    error_msg="Task cancelled",
+                )
+                _sync_assignment_upload_status(
+                    upload_assignment_id,
+                    UploadStatus.UPLOAD_FAILED,
+                    error_msg="Task cancelled",
+                )
                 logger.info(f"Task {task_id} cancelled in DB")
             else:
                 return False
@@ -142,12 +208,19 @@ class TaskQueue:
             ).all()
             for task in orphaned:
                 if task.id not in self._running_tasks:
+                    upload_assignment_id = _extract_upload_assignment_id(task)
+                    metrics_assignment_id = _extract_metrics_assignment_id(task)
                     task.status = TaskStatus.CANCELLED
                     task.error = "Cancelled: server restarted"
                     task.completed_at = datetime.now(timezone.utc)
                     session.add(task)
+                    _sync_assignment_metrics_status(
+                        metrics_assignment_id,
+                        MetricsStatus.PENDING,
+                        error_msg=task.error,
+                    )
                     _sync_assignment_upload_status(
-                        task.assignment_id,
+                        upload_assignment_id,
                         UploadStatus.UPLOAD_FAILED,
                         error_msg=task.error,
                     )
@@ -158,12 +231,18 @@ class TaskQueue:
 
     async def _execute(self, task_id: int) -> None:
         """Execute a task with device locking, concurrency control, and retry."""
+        device_id = 0
+        assignment_id = None
+        metrics_assignment_id = None
         # Load task and device from DB
         with Session(engine) as session:
             task = session.get(Task, task_id)
             if not task:
                 logger.error(f"Task {task_id} not found")
                 return
+
+            assignment_id = _extract_upload_assignment_id(task)
+            metrics_assignment_id = _extract_metrics_assignment_id(task)
 
             device = session.get(Device, task.device_id)
             if not device:
@@ -172,6 +251,16 @@ class TaskQueue:
                 task.completed_at = datetime.now(timezone.utc)
                 session.add(task)
                 session.commit()
+                _sync_assignment_metrics_status(
+                    metrics_assignment_id,
+                    MetricsStatus.NEEDS_REVIEW,
+                    error_msg=task.error,
+                )
+                _sync_assignment_upload_status(
+                    assignment_id,
+                    UploadStatus.UPLOAD_FAILED,
+                    error_msg=task.error,
+                )
                 return
 
             # Mark task as running
@@ -188,7 +277,6 @@ class TaskQueue:
             max_steps = task.max_steps
             max_retries = task.max_retries
             device_id = device.id
-            assignment_id = task.assignment_id  # May be None for non-upload tasks
 
             # Cloud devices: use cloud:{id} prefix instead of IP
             is_cloud = device.adb_port == 0 or device.ip_address.startswith("cloud")
@@ -284,6 +372,11 @@ class TaskQueue:
                 # Sync assignment upload_status based on task outcome
                 # (script runner sets UPLOADED on success; we handle failure here)
                 if not result.success:
+                    _sync_assignment_metrics_status(
+                        metrics_assignment_id,
+                        MetricsStatus.NEEDS_REVIEW,
+                        error_msg=result.error or result.reason,
+                    )
                     _sync_assignment_upload_status(
                         assignment_id,
                         UploadStatus.UPLOAD_FAILED,
@@ -302,6 +395,11 @@ class TaskQueue:
 
         except asyncio.CancelledError:
             logger.info(f"Task {task_id} was cancelled")
+            _sync_assignment_metrics_status(
+                metrics_assignment_id,
+                MetricsStatus.PENDING,
+                error_msg="Task cancelled",
+            )
             # Mark assignment as failed if cancelled during upload
             _sync_assignment_upload_status(
                 assignment_id,
@@ -327,6 +425,11 @@ class TaskQueue:
             _sync_assignment_upload_status(
                 assignment_id,
                 UploadStatus.UPLOAD_FAILED,
+                error_msg=str(e),
+            )
+            _sync_assignment_metrics_status(
+                metrics_assignment_id,
+                MetricsStatus.NEEDS_REVIEW,
                 error_msg=str(e),
             )
             await self._notify(task_id, {"event": "failed", "error": str(e)})

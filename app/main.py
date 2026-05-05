@@ -4,11 +4,12 @@ import hashlib
 import logging
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from urllib.parse import quote
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import settings
@@ -202,11 +203,17 @@ def helper_release():
     """Expose the latest published helper APK metadata."""
     metadata = load_helper_release_metadata() or {}
     apk_path = resolve_helper_apk_path()
+    artifact_name = helper_download_filename() if apk_path else None
+    download_path = (
+        f"/static/downloads/{quote(artifact_name)}"
+        if artifact_name
+        else None
+    )
     return {
         "available": apk_path is not None,
-        "download_path": "/download/helper.apk",
+        "download_path": download_path,
         "latest_alias": HELPER_LATEST_ALIAS,
-        "artifact_name": helper_download_filename() if apk_path else None,
+        "artifact_name": artifact_name,
         "metadata": metadata,
     }
 
@@ -469,13 +476,18 @@ def dashboard_stats():
 
 @app.get("/download/helper.apk")
 def download_apk():
-    """Download the latest published Android Control Helper APK."""
+    """Backward-compatible alias. Redirect to versioned static artifact."""
     apk_path = resolve_helper_apk_path()
     if apk_path and apk_path.exists():
-        return FileResponse(
-            str(apk_path),
-            media_type="application/vnd.android.package-archive",
-            filename=helper_download_filename(),
+        artifact_name = helper_download_filename()
+        return RedirectResponse(
+            url=f"/static/downloads/{quote(artifact_name)}",
+            status_code=307,
+            headers={
+                "Cache-Control": "no-store, max-age=0, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
         )
     from fastapi import HTTPException
     raise HTTPException(
@@ -497,6 +509,7 @@ def setup_page():
     build_sha = release.get("build_sha", "—")
     build_time_utc = release.get("build_time_utc", "—")
     artifact_name = release.get("artifact_name", helper_download_filename())
+    versioned_download_path = f"/static/downloads/{quote(artifact_name)}"
     file_size_mb = release.get("file_size_bytes")
     file_size_label = (
         f"{file_size_mb / (1024 * 1024):.2f} MB"
@@ -628,7 +641,7 @@ def setup_page():
         </div>
 
         <div class="card">
-            <a href="/download/helper.apk" class="download-btn">
+            <a href="{versioned_download_path}" class="download-btn">
                 ⬇️ Download Latest Helper APK
             </a>
             <div class="release-grid">
@@ -653,8 +666,8 @@ def setup_page():
                     <span id="helperFileSize">{file_size_label}</span>
                 </div>
                 <div class="release-item">
-                    <strong>Latest Alias</strong>
-                    <span id="helperAlias">/download/helper.apk</span>
+                    <strong>Versioned URL</strong>
+                    <span id="helperAlias">{versioned_download_path}</span>
                 </div>
             </div>
         </div>

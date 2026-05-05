@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["device-websocket"])
 
 
+def _cloud_display_name(base_name: str, device_id: int) -> str:
+    clean = (base_name or "Cloud Device").strip()
+    return f"{clean} #{device_id}"
+
+
 @router.websocket("/ws/device/{token}")
 async def device_connect(websocket: WebSocket, token: str):
     """WebSocket endpoint for remote device connections.
@@ -76,10 +81,52 @@ async def device_connect(websocket: WebSocket, token: str):
         "server_time": datetime.now(timezone.utc).isoformat(),
     })
 
-    # 5. Listen for messages from device
+    # 5. Server-side keepalive ping task.
+    #    Sends a lightweight ping every 25s to prevent Cloudflare Tunnel
+    #    and other reverse proxies from closing the idle WebSocket.
+    ping_count = 0
+    hb_ack_count = 0
+    connected_at = datetime.now(timezone.utc)
+
+    async def _server_ping_loop():
+        nonlocal ping_count
+        try:
+            while True:
+                await asyncio.sleep(25)
+                try:
+                    await websocket.send_json({
+                        "type": "server_ping",
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                    })
+                    ping_count += 1
+                    logger.debug(
+                        "📡 Device %s server_ping sent (count=%s)",
+                        device_id,
+                        ping_count,
+                    )
+                except Exception:
+                    break  # WS closed, exit silently
+        except asyncio.CancelledError:
+            pass
+
+    ping_task = asyncio.create_task(_server_ping_loop())
+
+    # 6. Listen for messages from device
+    #    Uses a 90-second receive timeout to detect stale connections
+    #    that dropped without a proper close frame (e.g. network loss).
     try:
         while True:
-            raw = await websocket.receive_text()
+            try:
+                raw = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=90.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"📱 Device {device_id}: no data for 90s — closing stale connection"
+                )
+                break
+
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
@@ -100,6 +147,24 @@ async def device_connect(websocket: WebSocket, token: str):
                 )
 
             elif msg_type == "heartbeat":
+                # Re-validate token/device on heartbeat so revoked/deleted
+                # devices are force-disconnected promptly.
+                with Session(engine) as session:
+                    latest_token = session.exec(
+                        select(DeviceToken).where(DeviceToken.token == token)
+                    ).first()
+                    latest_device = session.get(Device, device_id)
+                    if not latest_token or not latest_token.is_active or not latest_device:
+                        logger.warning(
+                            "📱 Device %s heartbeat rejected: token/device revoked; closing",
+                            device_id,
+                        )
+                        try:
+                            await websocket.close(code=4001, reason="Token revoked")
+                        except Exception:
+                            pass
+                        break
+
                 # Device heartbeat — update last_seen
                 conn.last_ping = datetime.now(timezone.utc)
                 conn.update_metadata(data.get("helper") or {})
@@ -113,6 +178,11 @@ async def device_connect(websocket: WebSocket, token: str):
                         session.commit()
                 # Ack the heartbeat
                 await websocket.send_json({"type": "heartbeat_ack"})
+                hb_ack_count += 1
+
+            elif msg_type == "server_ping":
+                # Ignore echo of our own ping (shouldn't happen, but be safe)
+                pass
 
             elif "id" in data:
                 # This is a response to a command we sent
@@ -127,6 +197,13 @@ async def device_connect(websocket: WebSocket, token: str):
     except Exception as e:
         logger.error(f"📱 Device {device_id} connection error: {e}")
     finally:
+        # Cancel the keepalive ping task
+        ping_task.cancel()
+        try:
+            await ping_task
+        except asyncio.CancelledError:
+            pass
+
         # Guard unregister with session_id so a reconnect race does not
         # remove the newly registered connection.
         removed_active_connection = device_hub.unregister(
@@ -140,6 +217,14 @@ async def device_connect(websocket: WebSocket, token: str):
                     device.status = DeviceStatus.OFFLINE
                     session.add(device)
                     session.commit()
+        uptime_s = (datetime.now(timezone.utc) - connected_at).total_seconds()
+        logger.info(
+            "📱 Device %s WS session closed: uptime=%.1fs, server_pings=%s, heartbeat_acks=%s",
+            device_id,
+            uptime_s,
+            ping_count,
+            hb_ack_count,
+        )
 
 
 # --- REST API for device registration + token management ---
@@ -187,24 +272,20 @@ def register_device(req: RegisterRequest):
             raise HTTPException(401, "Invalid username or password")
         logger.info(f"🔑 Device registration auth OK for user: {user.username}")
 
-        # 2. Find or create device
-        device = session.exec(
-            select(Device).where(
-                Device.name == req.device_name,
-                Device.adb_port == 0,  # Cloud devices have adb_port=0
-            )
-        ).first()
-
-        if not device:
-            device = Device(
-                name=req.device_name,
-                ip_address="cloud",
-                adb_port=0,
-            )
-            session.add(device)
-            session.commit()
-            session.refresh(device)
-            logger.info(f"📱 Auto-created cloud device: {device.name} (id={device.id})")
+        # 2. Always create a dedicated cloud device record for this registration.
+        #    Never match by name to avoid collisions between same-model phones.
+        device = Device(
+            name=req.device_name,
+            ip_address="cloud",
+            adb_port=0,
+        )
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+        device.name = _cloud_display_name(req.device_name, device.id)
+        session.add(device)
+        session.commit()
+        logger.info(f"📱 Auto-created cloud device: {device.name} (id={device.id})")
 
         # 3. Deactivate old tokens for this device
         old_tokens = session.exec(
@@ -222,7 +303,7 @@ def register_device(req: RegisterRequest):
             device_id=device.id,
             user_id=user.id,
             token=secrets.token_urlsafe(32),
-            name=f"Auto: {req.device_name}",
+            name=f"auto_token_{device.id}",
         )
         session.add(token)
         session.commit()
@@ -307,7 +388,7 @@ def list_device_tokens(device_id: int = None):
 
 
 @token_router.delete("/{token_id}")
-def revoke_device_token(token_id: int):
+async def revoke_device_token(token_id: int):
     """Revoke (deactivate) a device token and disconnect active WebSocket.
 
     After revocation the device's active cloud connection (if any) is
@@ -330,6 +411,10 @@ def revoke_device_token(token_id: int):
     conn = device_hub.get_connection(device_id)
     if conn and conn.device_token == token.token:
         conn.fail_all_pending("Token revoked")
+        try:
+            await conn.ws.close(code=4001, reason="Token revoked")
+        except Exception:
+            logger.debug("WS close failed for revoked token %s", token_id)
         logger.info(f"🔒 Token {token_id} revoked — device {device_id} hub connection closed")
     else:
         logger.info(f"🔒 Token {token_id} revoked (device {device_id} was not connected)")

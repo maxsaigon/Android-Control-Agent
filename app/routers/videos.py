@@ -11,7 +11,7 @@ from app.database import get_session
 from app.models import (
     Video, VideoAssignment, DeviceAccount, Device, Task, TaskStatus,
     PushStatus, UploadStatus, RunUploadRequest, RunBatchUploadRequest,
-    AssignmentUpdate,
+    AssignmentUpdate, MetricsManualInput,
 )
 from app.services.video_service import video_service
 from app.services.ai_metadata_service import ai_metadata_service
@@ -98,6 +98,17 @@ async def upload_video(
 # declared first. Putting /assignments or /auto-assign after /{video_id} causes
 # FastAPI to capture "assignments" as video_id and return 422/404.
 
+
+@router.get("/metrics-summary")
+def get_metrics_summary(
+    session: Session = Depends(get_session),
+):
+    """Aggregated metrics summary for VIDEOS tab dashboard cards.
+
+    Returns total tracked posts, views, pending/review counts.
+    """
+    return video_service.get_metrics_summary(session)
+
 @router.get("/assignments")
 def get_assignments(
     video_id: Optional[int] = None,
@@ -166,6 +177,217 @@ def get_assignment_artifacts(
     if not artifact:
         raise HTTPException(404, "No upload artifacts found for this assignment")
     return artifact
+
+
+@router.get("/assignments/{assignment_id}/metrics")
+def get_assignment_metrics(
+    assignment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Return latest metrics + history snapshots for an assignment."""
+    assignment = session.get(VideoAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(404, "Assignment not found")
+
+    history = video_service.get_assignment_metrics_history(session, assignment_id)
+    return {
+        "assignment_id": assignment_id,
+        "latest": {
+            "views": assignment.latest_views,
+            "likes": assignment.latest_likes,
+            "comments": assignment.latest_comments,
+            "shares": assignment.latest_shares,
+            "metrics_status": assignment.metrics_status,
+            "metrics_last_synced_at": assignment.metrics_last_synced_at,
+            "metrics_error": assignment.metrics_error,
+        },
+        "history": history or [],
+    }
+
+
+@router.post("/assignments/{assignment_id}/metrics")
+def save_manual_metrics(
+    assignment_id: int,
+    body: MetricsManualInput,
+    session: Session = Depends(get_session),
+):
+    """Manually enter metrics for an assignment (fallback when crawl fails).
+
+    Body: { "views": 1200, "likes": 45, "comments": 3, "shares": 2 }
+    Creates a snapshot with source=manual and updates latest state.
+    """
+    result, error = video_service.save_manual_metrics(
+        session,
+        assignment_id,
+        views=body.views,
+        likes=body.likes,
+        comments=body.comments,
+        shares=body.shares,
+    )
+    if error:
+        if "not found" in error.lower():
+            raise HTTPException(404, error)
+        raise HTTPException(400, error)
+    return result
+
+
+@router.post("/assignments/{assignment_id}/sync-metrics")
+async def sync_metrics(
+    assignment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Trigger automated metrics sync for a TikTok assignment.
+
+    Creates a tiktok_metrics_sync task and submits it to the task queue.
+    Only allowed for uploaded TikTok assignments that aren't already syncing.
+    """
+    from app.models import MetricsStatus
+
+    assignment = session.get(VideoAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(404, "Assignment not found")
+
+    if assignment.platform != "tiktok":
+        raise HTTPException(
+            400,
+            f"Metrics sync only supported for TikTok (got: {assignment.platform})",
+        )
+
+    if assignment.upload_status != UploadStatus.UPLOADED:
+        raise HTTPException(
+            400,
+            f"Assignment not uploaded (status={assignment.upload_status.value}). "
+            f"Only uploaded assignments can sync metrics.",
+        )
+
+    if assignment.metrics_status in (MetricsStatus.SYNCING, MetricsStatus.DISABLED):
+        raise HTTPException(
+            409,
+            f"Cannot sync: metrics_status={assignment.metrics_status.value}. "
+            f"Wait for current sync to finish or re-enable tracking.",
+        )
+
+    # Check for existing running metrics task
+    if assignment.metrics_task_id:
+        existing_task = session.get(Task, assignment.metrics_task_id)
+        if existing_task and existing_task.status in (
+            TaskStatus.PENDING, TaskStatus.RUNNING
+        ):
+            raise HTTPException(
+                409,
+                f"Assignment already has a {existing_task.status.value} "
+                f"metrics task (task_id={existing_task.id}).",
+            )
+
+    # Device check
+    device = session.get(Device, assignment.device_id)
+    if not device:
+        raise HTTPException(404, "Device not found")
+
+    # Atomic claim: set metrics_status → SYNCING
+    claim_stmt = (
+        update(VideoAssignment)
+        .where(VideoAssignment.id == assignment_id)
+        .where(
+            VideoAssignment.metrics_status.notin_([  # type: ignore
+                MetricsStatus.SYNCING,
+                MetricsStatus.DISABLED,
+            ])
+        )
+        .values(
+            metrics_status=MetricsStatus.SYNCING,
+            metrics_error=None,
+        )
+    )
+    claim_result = session.exec(claim_stmt)
+    if claim_result.rowcount != 1:
+        session.rollback()
+        raise HTTPException(
+            409,
+            f"Assignment {assignment_id} is already syncing or disabled.",
+        )
+    session.refresh(assignment)
+
+    # Create task
+    task = Task(
+        device_id=assignment.device_id,
+        command=f"Sync TikTok metrics (assignment #{assignment.id})",
+        template="tiktok_metrics_sync",
+        execution_mode="script",
+        max_steps=30,
+        max_retries=1,
+    )
+    task.template_vars = {"assignment_id": assignment.id}
+
+    session.add(task)
+    session.flush()
+    assignment.metrics_task_id = task.id
+    session.add(assignment)
+    session.commit()
+    session.refresh(task)
+
+    # Submit to queue
+    await task_queue.submit(task.id)
+
+    logger.info(
+        "📊 Metrics sync job created: assignment=%s task=%s device=%s",
+        assignment_id, task.id, device.name,
+    )
+
+    return {
+        "success": True,
+        "task_id": task.id,
+        "assignment_id": assignment_id,
+        "metrics_status": assignment.metrics_status.value,
+        "device": device.name,
+        "message": f"Metrics sync task #{task.id} queued",
+    }
+
+
+@router.post("/assignments/{assignment_id}/cancel-sync")
+async def cancel_sync(
+    assignment_id: int,
+    session: Session = Depends(get_session),
+):
+    """Cancel a running or pending metrics sync task.
+
+    Resets metrics_status to PENDING (if was SYNCING) or leaves as-is.
+    """
+    from app.models import MetricsStatus
+
+    assignment = session.get(VideoAssignment, assignment_id)
+    if not assignment:
+        raise HTTPException(404, "Assignment not found")
+
+    if not assignment.metrics_task_id:
+        raise HTTPException(400, "No metrics sync task linked to this assignment")
+
+    task = session.get(Task, assignment.metrics_task_id)
+    cancelled = False
+
+    if task and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+        cancelled = await task_queue.cancel(task.id)
+        session.refresh(assignment)
+        task = session.get(Task, assignment.metrics_task_id)
+
+    # Reset metrics_status
+    if assignment.metrics_status == MetricsStatus.SYNCING:
+        assignment.metrics_status = MetricsStatus.PENDING
+        assignment.metrics_error = "Sync cancelled by operator"
+    session.add(assignment)
+    session.commit()
+
+    logger.info(
+        "📊 Metrics sync cancelled: assignment=%s task=%s cancelled=%s",
+        assignment_id, assignment.metrics_task_id, cancelled,
+    )
+
+    return {
+        "success": True,
+        "assignment_id": assignment_id,
+        "metrics_status": assignment.metrics_status.value,
+        "task_cancelled": cancelled,
+    }
 
 
 @router.patch("/assignments/{assignment_id}")

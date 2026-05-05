@@ -429,7 +429,14 @@ public class MainActivity extends Activity {
         if (config.isCloudMode()) {
             sb.append("☁️ Mode: CLOUD\n");
             if (!config.getDeviceName().isEmpty()) {
-                sb.append("📱 ").append(config.getDeviceName());
+                sb.append("📱 ").append(config.getDeviceName()).append("\n");
+            }
+            if (config.hasToken()) {
+                sb.append("🔗 Cloud binding: ACTIVE");
+            } else if (!config.getLinkRequestId().isEmpty()) {
+                sb.append("⏳ Cloud binding: WAITING APPROVAL");
+            } else {
+                sb.append("⚠️ Cloud binding: RELINK REQUIRED");
             }
         } else {
             sb.append("🏠 Mode: LAN\n");

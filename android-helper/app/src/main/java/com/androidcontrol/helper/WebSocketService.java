@@ -10,11 +10,14 @@ import android.content.Intent;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.util.Log;
 
 import org.java_websocket.WebSocket;
 import org.java_websocket.drafts.Draft;
+import org.java_websocket.enums.ReadyState;
 import org.java_websocket.exceptions.InvalidDataException;
 import org.java_websocket.framing.CloseFrame;
 import org.java_websocket.handshake.ClientHandshake;
@@ -53,6 +56,9 @@ public class WebSocketService extends Service {
     private ConnectivityManager.NetworkCallback networkCallback;
     private ConnectionConfig config;
     private String currentMode = ConnectionConfig.MODE_LAN;
+    private volatile boolean relinkInProgress = false;
+    private final Handler relinkHandler = new Handler(Looper.getMainLooper());
+    private Runnable relinkPollRunnable;
 
     @Override
     public void onCreate() {
@@ -79,7 +85,7 @@ public class WebSocketService extends Service {
                         Log.w(TAG, "🌐 Network lost");
                         if (cloudClient != null && cloudClient.isOpen()) {
                             Log.i(TAG, "Closing cloud client aggressively due to network loss");
-                            cloudClient.closeConnection(1006, "Network lost");
+                            cloudClient.close();
                         }
                     }
                 };
@@ -133,7 +139,18 @@ public class WebSocketService extends Service {
     // --- Cloud Mode (WebSocket Client) ---
 
     private void startCloudMode() {
-        if (cloudClient != null && cloudClient.isOpen()) return;
+        // Keep a single client instance alive while it is open/connecting/reconnecting.
+        // onStartCommand() can be called multiple times; recreating here causes
+        // self-disconnect loops right after successful connection.
+        if (cloudClient != null) {
+            ReadyState state = cloudClient.getReadyState();
+            if (state != ReadyState.CLOSED) {
+                Log.i(TAG, "☁️ Cloud client already active/recovering (state=" + state + "), skip recreate");
+                return;
+            }
+            cloudClient.shutdown();
+            cloudClient = null;
+        }
 
         String wsUrl = config.getCloudWsUrl();
         Log.i(TAG, "☁️ Cloud mode: connecting to " + wsUrl);
@@ -165,12 +182,133 @@ public class WebSocketService extends Service {
                 public void onReconnecting(int attempt, long delayMs) {
                     updateNotification("Cloud Mode — reconnecting (" + attempt + ")...");
                 }
+
+                @Override
+                public void onAuthInvalid(String reason) {
+                    handleAuthInvalid(reason);
+                }
             });
             cloudClient.connect();
         } catch (Exception e) {
             Log.e(TAG, "Failed to start cloud client", e);
             // Fallback to LAN mode
             startLanMode();
+        }
+    }
+
+    private void handleAuthInvalid(String reason) {
+        String msg = reason == null || reason.trim().isEmpty()
+                ? "token invalid"
+                : reason.trim();
+        Log.w(TAG, "☁️ Token invalid/revoked: " + msg);
+        config.clearCloudBinding();
+        relinkInProgress = false;
+        updateNotification("Cloud Mode — token revoked, requesting approval...");
+        requestRelink();
+    }
+
+    private void requestRelink() {
+        if (relinkInProgress) {
+            return;
+        }
+        String username = config.getUsername();
+        String deviceName = config.getDeviceName();
+        if (username == null || username.trim().isEmpty()
+                || deviceName == null || deviceName.trim().isEmpty()) {
+            updateNotification("Cloud Mode — relink required (open app)");
+            return;
+        }
+
+        relinkInProgress = true;
+        DeviceLinkClient.requestLink(config, username, deviceName, new DeviceLinkClient.LinkCallback() {
+            @Override
+            public void onPending(String requestId) {
+                config.setLinkRequestId(requestId);
+                updateNotification("Cloud Mode — waiting for re-approval...");
+                startRelinkPolling(requestId);
+                relinkInProgress = false;
+            }
+
+            @Override
+            public void onApproved(String token) {
+                config.setDeviceToken(token);
+                config.clearLinkRequestId();
+                stopRelinkPolling();
+                updateNotification("Cloud Mode — re-approved, reconnecting...");
+                relinkInProgress = false;
+                startCloudMode();
+            }
+
+            @Override
+            public void onRejected(String reason) {
+                String text = "Cloud Mode — re-approval rejected";
+                if (reason != null && !reason.trim().isEmpty()) {
+                    text += " (" + reason + ")";
+                }
+                updateNotification(text);
+                stopRelinkPolling();
+                relinkInProgress = false;
+            }
+
+            @Override
+            public void onError(String error) {
+                String text = "Cloud Mode — relink request failed";
+                if (error != null && !error.trim().isEmpty()) {
+                    text += " (" + error + ")";
+                }
+                updateNotification(text);
+                relinkInProgress = false;
+            }
+        });
+    }
+
+    private void startRelinkPolling(String requestId) {
+        stopRelinkPolling();
+        relinkPollRunnable = new Runnable() {
+            @Override
+            public void run() {
+                DeviceLinkClient.pollStatus(config, requestId, new DeviceLinkClient.LinkCallback() {
+                    @Override
+                    public void onPending(String ignored) {
+                        updateNotification("Cloud Mode — waiting for re-approval...");
+                    }
+
+                    @Override
+                    public void onApproved(String token) {
+                        config.setDeviceToken(token);
+                        config.clearLinkRequestId();
+                        stopRelinkPolling();
+                        updateNotification("Cloud Mode — re-approved, reconnecting...");
+                        startCloudMode();
+                    }
+
+                    @Override
+                    public void onRejected(String reason) {
+                        String text = "Cloud Mode — re-approval rejected";
+                        if (reason != null && !reason.trim().isEmpty()) {
+                            text += " (" + reason + ")";
+                        }
+                        updateNotification(text);
+                        stopRelinkPolling();
+                    }
+
+                    @Override
+                    public void onError(String error) {
+                        // Keep polling on transient network errors.
+                    }
+                });
+                if (relinkPollRunnable != null && !config.hasToken()) {
+                    relinkHandler.postDelayed(this, 4000);
+                }
+            }
+        };
+        relinkHandler.post(relinkPollRunnable);
+    }
+
+    private void stopRelinkPolling() {
+        if (relinkPollRunnable != null) {
+            relinkHandler.removeCallbacks(relinkPollRunnable);
+            relinkPollRunnable = null;
         }
     }
 
@@ -193,6 +331,7 @@ public class WebSocketService extends Service {
 
     @Override
     public void onDestroy() {
+        stopRelinkPolling();
         if (networkCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
             if (cm != null) {

@@ -22,6 +22,7 @@
 | 12 | [android-helper-stability-hardening.md](android-helper-stability-hardening.md) | 🔄 IN PROGRESS | Plan + task tracker cho Android Helper APK stability, cloud reconnect safety, credential handling, LAN auth, protocol hardening |
 | 13 | [workflow-karpathy-alignment.md](workflow-karpathy-alignment.md) | ✅ COMPLETE | Rà soát workflow/skill docs và đưa assumptions, non-goals, surgical scope, verification của karpathy-guidelines vào quy trình chuẩn |
 | 14 | [android-device-approval-linking.md](android-device-approval-linking.md) | 🔄 IN PROGRESS | Username-only Android linking: device requests access, WebApp/admin accepts or rejects, then server issues device token |
+| 15 | [cloud-websocket-stability.md](cloud-websocket-stability.md) | 🔄 IN PROGRESS | Fix cloud WS persistent connection: server keepalive ping, stale detection, client timeout tuning, dual-client conflict |
 
 ## Completed Features (No Separate Plan Files)
 

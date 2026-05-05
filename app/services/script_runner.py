@@ -68,6 +68,7 @@ class ScriptRunner:
         "tiktok_comment",
         "tiktok_follow",
         "tiktok_upload",
+        "tiktok_metrics_sync",
         "youtube_watch",
         "facebook_scroll",
         "instagram_scroll",
@@ -144,6 +145,7 @@ class ScriptRunner:
             "tiktok_comment": self._tiktok_comment,
             "tiktok_follow": self._tiktok_follow,
             "tiktok_upload": self._tiktok_upload,
+            "tiktok_metrics_sync": self._tiktok_metrics_sync,
             "youtube_watch": self._youtube_watch,
             "facebook_scroll": self._facebook_scroll,
             "instagram_scroll": self._instagram_scroll,
@@ -163,8 +165,8 @@ class ScriptRunner:
             logger.info(f"🔧 Script '{script_name}' starting on {device}")
             # Initialize backend for this run
             from app.services.backend_manager import backend_manager
-            if script_name == "tiktok_upload":
-                # Upload flow is more stable with raw ADB on current device setup.
+            if script_name in ("tiktok_upload", "tiktok_metrics_sync"):
+                # UI automation flows are more stable with raw ADB.
                 backend_manager.set_backend(device, "adb")
             self._backend = await backend_manager.get_backend(device)
             result = await handler(**params)
@@ -1965,15 +1967,44 @@ class ScriptRunner:
             except Exception:
                 pass
 
-            # [Script 10] Update DB
+            # [Script 10] Update DB + capture post_locator
             if assignment:
                 with Session(engine) as session:
+                    from sqlmodel import select as sql_select
+                    from app.models import DeviceAccount
+
                     a = session.get(VideoAssignment, assignment.id)
                     if a:
                         a.push_status = PushStatus.UPLOADED  # Legacy compat
                         a.upload_status = UploadStatus.UPLOADED
                         a.uploaded_at = datetime.now(timezone.utc)
                         a.last_error = None
+
+                        # Capture post_locator fingerprint for metrics sync
+                        try:
+                            acct = session.exec(
+                                sql_select(DeviceAccount).where(
+                                    DeviceAccount.device_id == a.device_id,
+                                    DeviceAccount.platform == a.platform,
+                                )
+                            ).first()
+                            locator = tiktok.build_post_locator(
+                                caption_text=f"{use_title}\n\n{use_desc}".strip(),
+                                account_name=(acct.account_name if acct else None),
+                                grid_position_hint=0,
+                                upload_timestamp=datetime.now(timezone.utc).isoformat(),
+                            )
+                            a.post_locator = json.dumps(locator)
+                            logger.info(
+                                "  📍 post_locator captured: %s",
+                                a.post_locator,
+                            )
+                        except Exception as loc_err:
+                            logger.warning(
+                                "  ⚠️ post_locator capture failed: %s",
+                                loc_err,
+                            )
+
                         session.commit()
                         await self._step("db", f"assignment {a.id} upload_status -> UPLOADED")
 
@@ -2007,6 +2038,409 @@ class ScriptRunner:
                         "error": result.error,
                     }
                 self._write_upload_debug_manifest()
+
+    def _build_metrics_candidate_positions(
+        self,
+        locator: dict,
+        grid_data: list[dict],
+        *,
+        max_candidates: int = 6,
+    ) -> list[int]:
+        """Build candidate grid positions for locator matching."""
+        try:
+            hint = int(locator.get("grid_position_hint", 0) or 0)
+        except Exception:
+            hint = 0
+
+        visible_positions = []
+        for idx, item in enumerate(grid_data):
+            try:
+                visible_positions.append(int(item.get("position", idx)))
+            except Exception:
+                visible_positions.append(idx)
+
+        candidates: list[int] = []
+        for offset in (0, 1, -1, 2, -2, 3, -3):
+            pos = hint + offset
+            if pos >= 0:
+                candidates.append(pos)
+        candidates.extend(sorted(set(visible_positions)))
+
+        fallback_limit = max(max_candidates, hint + 3, (max(visible_positions) + 1) if visible_positions else 0)
+        candidates.extend(range(fallback_limit))
+
+        deduped: list[int] = []
+        seen = set()
+        for pos in candidates:
+            if pos < 0 or pos in seen:
+                continue
+            seen.add(pos)
+            deduped.append(pos)
+            if len(deduped) >= max_candidates:
+                break
+        return deduped or [0]
+
+    # === TIKTOK METRICS SYNC ===
+
+    async def _tiktok_metrics_sync(
+        self,
+        assignment_id: int | None = None,
+        **_,
+    ) -> ScriptResult:
+        """Sync performance metrics for a TikTok assignment.
+
+        Flow:
+        1. Open TikTok → ensure on feed
+        2. Navigate to own profile
+        3. Open Videos tab → read grid metrics
+        4. Open target post from locator/grid hint → read full metrics
+        5. Save metrics to DB (latest state + snapshot)
+        """
+        if not assignment_id:
+            return ScriptResult(
+                success=False,
+                reason="Missing assignment_id",
+                steps=self._step_num,
+                error="assignment_id is required",
+            )
+
+        # --- DB lookup ---
+        from sqlmodel import Session
+        from app.database import engine
+        from app.models import (
+            VideoAssignment, Video, MetricsStatus, UploadStatus,
+        )
+
+        locator: dict = {}
+        with Session(engine) as session:
+            assignment = session.get(VideoAssignment, assignment_id)
+            if not assignment:
+                return ScriptResult(
+                    False, f"Assignment {assignment_id} not found",
+                    self._step_num,
+                )
+            if assignment.upload_status != UploadStatus.UPLOADED:
+                return ScriptResult(
+                    False,
+                    f"Assignment {assignment_id} not uploaded "
+                    f"(status={assignment.upload_status})",
+                    self._step_num,
+                )
+            if assignment.post_locator:
+                try:
+                    locator = json.loads(assignment.post_locator)
+                except Exception:
+                    locator = {}
+
+        tiktok = self._get_tiktok_controller()
+
+        # Artifact directory for debug snapshots
+        session_name = (
+            f"metrics_{assignment_id}_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+        artifact_dir = str(
+            Path(settings.screenshots_dir)
+            / "tiktok_metrics_debug"
+            / session_name
+        )
+
+        sync_error: str | None = None
+        metrics_data: dict = {}
+        grid_data: list[dict] = []
+        locator_signals: dict = {}
+        locator_match_result: dict | None = None
+        selected_position: int | None = None
+        candidate_positions: list[int] = []
+        save_result_dict: dict | None = None
+        save_error: str | None = None
+        final_success = False
+        final_reason = ""
+        final_error: str | None = None
+
+        try:
+            # [Step 1] Open TikTok & ensure on feed
+            await self._open_app("tiktok")
+            await self._wait(3, 5, "app loading")
+
+            if not await tiktok.ensure_on_feed(self._device):
+                sync_error = "Could not get to TikTok feed"
+                await tiktok.capture_debug_snapshot(
+                    self._device, artifact_dir, "feed_fail", sync_error
+                )
+            else:
+                await self._step("ensure_feed", "on For You feed")
+
+            if sync_error is None:
+                # [Step 2] Navigate to own profile
+                if not await tiktok.ensure_on_profile(self._device):
+                    sync_error = "Could not navigate to profile"
+                    await tiktok.capture_debug_snapshot(
+                        self._device, artifact_dir, "profile_fail", sync_error
+                    )
+                else:
+                    await self._step("navigate", "on own profile")
+
+            if sync_error is None:
+                # [Step 3] Navigate to Videos tab
+                if not await tiktok.navigate_to_videos_tab(self._device):
+                    sync_error = "Could not navigate to Videos tab"
+                    await tiktok.capture_debug_snapshot(
+                        self._device, artifact_dir, "videos_tab_fail", sync_error
+                    )
+                else:
+                    await self._step("navigate", "on Videos tab")
+
+            target_position = 0
+            try:
+                target_position = int(locator.get("grid_position_hint", 0) or 0)
+            except Exception:
+                target_position = 0
+            has_strong_locator = bool(
+                locator.get("locator_version")
+                or locator.get("caption_tokens")
+                or locator.get("caption_preview")
+            )
+
+            if sync_error is None:
+                # [Step 4] Read grid metrics (quick view counts)
+                grid_data = await tiktok.read_profile_grid_metrics(self._device)
+                await self._step(
+                    "read_grid",
+                    f"grid: {len(grid_data)} items with view counts",
+                )
+                await tiktok.capture_debug_snapshot(
+                    self._device, artifact_dir, "grid_metrics",
+                    f"Grid items: {len(grid_data)}",
+                )
+
+                if not grid_data:
+                    logger.info("  ℹ️ No grid view counts found, trying locator/grid hint fallback")
+
+            if sync_error is None:
+                # [Step 5] Match target video from profile grid
+                candidate_positions = self._build_metrics_candidate_positions(
+                    locator,
+                    grid_data,
+                )
+                await self._step(
+                    "match_candidates",
+                    f"candidate positions={candidate_positions}",
+                )
+
+                if has_strong_locator:
+                    for candidate_position in candidate_positions:
+                        await self._wait(0.5, 1.0, "before opening candidate post")
+                        if not await tiktok.open_profile_video_at_position(
+                            self._device, position=candidate_position
+                        ):
+                            logger.info(
+                                "  ℹ️ Could not open candidate at position %s",
+                                candidate_position,
+                            )
+                            continue
+
+                        await self._step(
+                            "open_post",
+                            f"opened candidate at grid position {candidate_position}",
+                        )
+                        await self._wait(0.8, 1.4, "candidate detail loading")
+                        locator_signals = await tiktok.read_post_detail_locator_signals(
+                            self._device
+                        )
+                        locator_match_result = tiktok.match_post_locator(
+                            locator,
+                            locator_signals,
+                        )
+                        await self._step(
+                            "match_post",
+                            f"position={candidate_position} "
+                            f"matched={locator_match_result.get('matched')} "
+                            f"score={locator_match_result.get('score')} "
+                            f"overlap={locator_match_result.get('token_overlap')}",
+                        )
+                        if locator_match_result.get("matched"):
+                            selected_position = candidate_position
+                            target_position = candidate_position
+                            await tiktok.capture_debug_snapshot(
+                                self._device,
+                                artifact_dir,
+                                f"locator_match_{candidate_position}",
+                                json.dumps(locator_match_result, default=str),
+                            )
+                            break
+
+                        await tiktok.capture_debug_snapshot(
+                            self._device,
+                            artifact_dir,
+                            f"locator_miss_{candidate_position}",
+                            json.dumps(
+                                {
+                                    "match_result": locator_match_result,
+                                    "signals": locator_signals,
+                                },
+                                default=str,
+                            ),
+                        )
+                        if not await tiktok.navigate_back_from_post_detail(self._device):
+                            sync_error = (
+                                "Could not return to profile after locator mismatch"
+                            )
+                            await tiktok.capture_debug_snapshot(
+                                self._device,
+                                artifact_dir,
+                                "locator_back_fail",
+                                sync_error,
+                            )
+                            break
+
+                    if sync_error is None and selected_position is None:
+                        sync_error = (
+                            "Could not match uploaded post from locator "
+                            f"across positions {candidate_positions}"
+                        )
+                        await tiktok.capture_debug_snapshot(
+                            self._device,
+                            artifact_dir,
+                            "locator_match_fail",
+                            sync_error,
+                        )
+                else:
+                    await self._wait(0.5, 1.0, "before opening post")
+                    if not await tiktok.open_profile_video_at_position(
+                        self._device, position=target_position
+                    ):
+                        sync_error = f"Could not open post at position {target_position}"
+                        await tiktok.capture_debug_snapshot(
+                            self._device, artifact_dir, "open_post_fail", sync_error
+                        )
+                    else:
+                        selected_position = target_position
+                        await self._step(
+                            "open_post",
+                            f"opened post at grid position {target_position}",
+                        )
+
+            if sync_error is None:
+                # [Step 6] Read full metrics from post detail
+                await self._wait(1.0, 2.0, "post detail loading")
+                metrics_data = await tiktok.read_post_detail_metrics(self._device)
+                await self._step(
+                    "read_metrics",
+                    f"views={metrics_data.get('views')} "
+                    f"likes={metrics_data.get('likes')} "
+                    f"comments={metrics_data.get('comments')} "
+                    f"shares={metrics_data.get('shares')}",
+                )
+                await tiktok.capture_debug_snapshot(
+                    self._device, artifact_dir, "post_detail_metrics",
+                    json.dumps(metrics_data, default=str),
+                )
+
+                if metrics_data.get("views") is None and grid_data:
+                    fallback_position = min(
+                        max(target_position, 0),
+                        len(grid_data) - 1,
+                    )
+                    metrics_data["views"] = grid_data[fallback_position].get("views_int")
+                    logger.info(
+                        "  📊 Using grid views fallback: %s",
+                        metrics_data["views"],
+                    )
+
+                # [Step 7] Navigate back
+                if not await tiktok.navigate_back_from_post_detail(self._device):
+                    sync_error = "Could not return to profile after reading post detail"
+                    await tiktok.capture_debug_snapshot(
+                        self._device, artifact_dir, "back_to_profile_fail", sync_error
+                    )
+                else:
+                    await self._step("navigate", "back to profile grid")
+
+        except Exception as e:
+            sync_error = f"Metrics sync exception: {e}"
+            logger.exception("Metrics sync failed: %s", e)
+            try:
+                await tiktok.capture_debug_snapshot(
+                    self._device, artifact_dir, "exception", sync_error
+                )
+            except Exception:
+                pass
+            final_reason = sync_error
+            final_error = str(e)
+        else:
+            final_success = sync_error is None and any(
+                metrics_data.get(key) is not None
+                for key in ("views", "likes", "comments", "shares")
+            )
+            final_reason = (
+                f"Metrics synced: views={metrics_data.get('views')} "
+                f"likes={metrics_data.get('likes')} "
+                f"comments={metrics_data.get('comments')} "
+                f"shares={metrics_data.get('shares')}"
+                if final_success
+                else (sync_error or "No metrics could be read")
+            )
+            final_error = sync_error
+
+        # [Step 8] Save to DB
+        try:
+            from app.services.video_service import video_service
+
+            with Session(engine) as session:
+                raw_payload_str = json.dumps(
+                    {
+                        "post_detail": metrics_data,
+                        "grid": grid_data[:6],
+                        "locator": locator,
+                        "locator_signals": locator_signals,
+                        "locator_match": locator_match_result,
+                        "selected_position": selected_position,
+                        "candidate_positions": candidate_positions,
+                    },
+                    default=str,
+                )
+                assignment = session.get(VideoAssignment, assignment_id)
+                if assignment and locator:
+                    updated_locator = dict(locator)
+                    if selected_position is not None:
+                        updated_locator["grid_position_hint"] = selected_position
+                    assignment.post_locator = json.dumps(updated_locator)
+                    session.add(assignment)
+                save_result_dict, save_error = video_service.save_automated_metrics(
+                    session,
+                    assignment_id,
+                    views=metrics_data.get("views"),
+                    likes=metrics_data.get("likes"),
+                    comments=metrics_data.get("comments"),
+                    shares=metrics_data.get("shares"),
+                    source="post_detail",
+                    raw_payload=raw_payload_str,
+                    artifact_dir=artifact_dir,
+                    error=sync_error,
+                )
+                if save_error:
+                    return ScriptResult(
+                        False, f"DB save failed: {save_error}",
+                        self._step_num,
+                    )
+
+            await self._step("db", "metrics saved to DB")
+        except Exception as e:
+            return ScriptResult(
+                False, f"DB save exception: {e}",
+                self._step_num, error=str(e),
+            )
+
+        return ScriptResult(
+            success=final_success,
+            reason=final_reason,
+            steps=self._step_num,
+            step_log=self._step_log,
+            error=final_error,
+        )
+
+    # === OTHER PLATFORM SCRIPTS ===
 
     async def _youtube_watch(
         self,
