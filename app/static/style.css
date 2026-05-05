@@ -300,7 +300,6 @@ body {
 .dashboard-section {
     min-height: calc(100dvh - var(--topbar-height));
     overflow: hidden;
-    display: grid;
     grid-template-rows: auto auto minmax(0, 1fr);
     gap: 14px;
     background:
