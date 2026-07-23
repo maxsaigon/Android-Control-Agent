@@ -72,6 +72,7 @@ def _request_link(client: TestClient, username: str = "admin") -> dict:
         "/api/device/link/request",
         json={
             "username": username,
+            "installation_id": "approval-installation-1",
             "device_name": "Pixel Approval Test",
             "device_model": "Pixel 7",
             "android_version": "14",
@@ -141,6 +142,47 @@ def test_device_link_request_accept_status_and_cloud_connect(approval_app):
             ).first()
             assert token is not None
             assert token.token == status["device_token"]
+
+
+def test_device_link_reapproval_reuses_device_and_rotates_token(approval_app):
+    app, engine = approval_app
+
+    with TestClient(app) as client:
+        headers = {"x-test-user": "admin"}
+        first_request = _request_link(client)
+        first_accept = client.post(
+            f"/api/device/link/requests/{first_request['request_id']}/accept",
+            headers=headers,
+        )
+        first_device_id = first_accept.json()["device_id"]
+        first_token = client.get(
+            f"/api/device/link/status/{first_request['request_id']}"
+        ).json()["device_token"]
+
+        second_request = _request_link(client)
+        second_accept = client.post(
+            f"/api/device/link/requests/{second_request['request_id']}/accept",
+            headers=headers,
+        )
+        second_device_id = second_accept.json()["device_id"]
+        second_token = client.get(
+            f"/api/device/link/status/{second_request['request_id']}"
+        ).json()["device_token"]
+
+        assert second_device_id == first_device_id
+        assert second_token != first_token
+
+        with Session(engine) as session:
+            tokens = session.exec(
+                select(DeviceToken).where(
+                    DeviceToken.device_id == first_device_id,
+                )
+            ).all()
+            assert len([token for token in tokens if token.is_active]) == 1
+            assert any(
+                token.token == first_token and not token.is_active
+                for token in tokens
+            )
 
 
 def test_device_link_request_is_visible_only_to_target_username(approval_app):

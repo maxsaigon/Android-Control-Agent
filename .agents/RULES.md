@@ -7,6 +7,10 @@
 > **Trước khi làm bất cứ thứ gì**, đọc workflow chuẩn:
 > `cat .agents/workflows/agent-standard-workflow.md`
 > Đây là quy trình bắt buộc từ NHẬN PROMPT → HOÀN THÀNH.
+>
+> Khi task có code change, review, hoặc refactor, đọc thêm:
+> `cat .agents/skills/karpathy-guidelines/SKILL.md`
+> Không được bỏ qua assumptions, non-goals, và verification criteria.
 
 ---
 
@@ -138,6 +142,10 @@ class PlatformController:
 2. **Nếu task mới** → Tạo `docs/plans/<feature>.md` + đăng ký vào `_index.md`
 3. **Khi hoàn thành** → Cập nhật plan status → `✅ COMPLETE` và update `_index.md`
 4. **KHÔNG xóa plan cũ** — chỉ thay đổi status
+5. **Plan phải kiểm chứng được**:
+   - Ghi rõ assumptions
+   - Ghi rõ non-goals
+   - Mỗi implementation step có verify check cụ thể
 
 ---
 
@@ -213,3 +221,5 @@ Trước khi commit, mỗi agent PHẢI:
 - [ ] Knowledge base đã cập nhật (nếu gặp vấn đề mới)
 - [ ] Không sửa file ngoài ownership
 - [ ] Không chạm venv
+- [ ] Không vượt quá non-goals đã chốt
+- [ ] Có verify rõ ràng cho thay đổi vừa làm

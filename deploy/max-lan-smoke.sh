@@ -56,9 +56,10 @@ rsync -avz --delete \
     --exclude 'screenshots' \
     --exclude 'android-helper/build' \
     --exclude 'android-helper/.gradle' \
-    --exclude 'android-helper/app/build/intermediates' \
-    --exclude 'android-helper/app/build/tmp' \
+    --exclude 'android-helper/app/build' \
     --exclude '*.egg-info' \
+    --include 'app/static/downloads/android-control-helper-latest.apk' \
+    --exclude 'app/static/downloads/*.apk' \
     "$PROJECT_DIR/" "$SERVER:$REMOTE_DIR/"
 
 ssh "$SERVER" "set -e; \

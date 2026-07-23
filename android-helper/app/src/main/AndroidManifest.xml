@@ -8,6 +8,7 @@
 
     <!-- Foreground service to keep alive -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!-- Query installed packages -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
@@ -32,6 +33,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Transparent system-consent flow for MediaProjection -->
+        <activity
+            android:name=".ScreenCaptureActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@android:style/Theme.Material.Light.Dialog.NoActionBar" />
+
         <!-- Accessibility Service — core automation engine -->
         <service
             android:name=".HelperAccessibilityService"
@@ -50,6 +58,11 @@
             android:name=".WebSocketService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <service
+            android:name=".ScreenStreamService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!-- Boot receiver -->
         <receiver

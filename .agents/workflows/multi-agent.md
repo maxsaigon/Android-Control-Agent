@@ -25,6 +25,7 @@ description: Quy trình làm việc khi sử dụng nhiều sub-agent song song 
 # Mỗi agent PHẢI đọc:
 cat .agents/RULES.md                          # Global rules
 cat .agents/skills/<agent-name>/SKILL.md       # Agent-specific skill
+cat .agents/skills/karpathy-guidelines/SKILL.md  # Assumptions, scope, verification
 ```
 
 ### 2. KHÔNG BAO GIỜ chạm vào môi trường (venv)
@@ -65,9 +66,19 @@ Khi cần thay đổi file thuộc agent khác → ghi vào `HANDOFF.md` + thôn
 cat .agents/workflows/agent-standard-workflow.md   # ← ĐỌC TRƯỚC TIÊN
 cat .agents/RULES.md                               # Global rules
 cat .agents/skills/<name>/SKILL.md                 # Skill documentation
+cat .agents/skills/karpathy-guidelines/SKILL.md   # Execution guardrails
 cat docs/plans/_index.md                           # Plan registry — task này thuộc plan nào?
 cat <platform>-action.md                           # Knowledge base (nếu có)
 ```
+
+### Bước 1.1: Tách task theo goal rõ ràng
+Mỗi sub-agent chỉ nhận task khi có đủ 4 phần:
+- **Goal**: kết quả cần đạt
+- **Write scope**: file nào được sửa
+- **Non-goals**: file hay hành vi nào không được đụng
+- **Verify**: test/check nào chứng minh xong
+
+Nếu task chưa tách được như trên, chưa dispatch song song.
 
 ### Bước 2: Git branch
 ```bash
@@ -81,6 +92,8 @@ git checkout -b feat/ai-brain/campaign-manager
 - Chỉ sửa files được phân công
 - Anti-detection behaviors bắt buộc
 - Post-action verification bắt buộc
+- Không “tiện tay” cleanup ngoài scope của mình
+- Không 2 agent cùng sửa 1 file trừ khi có handoff rõ ràng và tuần tự
 
 ### Bước 4a: Update Knowledge Base
 Gặp vấn đề mới? → Ghi vào `<platform>-action.md`
@@ -137,7 +150,8 @@ docs(tiktok): update tiktok-action.md with upload issues
 6. ✅ `git status` — check uncommitted changes
 7. ✅ Xác nhận file ownership
 8. ✅ **KHÔNG chạm venv**
-9. ✅ Test / verify trước khi commit
-10. ✅ Update knowledge base nếu gặp issue mới
-11. ✅ Cập nhật plan file + `_index.md` khi hoàn thành
-12. ✅ Commit theo convention
+9. ✅ Ghi assumptions + non-goals + verify trước khi sửa
+10. ✅ Test / verify trước khi commit
+11. ✅ Update knowledge base nếu gặp issue mới
+12. ✅ Cập nhật plan file + `_index.md` khi hoàn thành
+13. ✅ Commit theo convention

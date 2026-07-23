@@ -25,6 +25,7 @@ public class ConnectionConfig {
     private static final String KEY_DEVICE_TOKEN = "device_token";
     private static final String KEY_LAN_TOKEN = "lan_token";
     private static final String KEY_LINK_REQUEST_ID = "link_request_id";
+    private static final String KEY_INSTALLATION_ID = "installation_id";
 
     public static final String MODE_LAN = "lan";
     public static final String MODE_CLOUD = "cloud";
@@ -89,6 +90,19 @@ public class ConnectionConfig {
 
     public String getLinkRequestId() {
         return prefs.getString(KEY_LINK_REQUEST_ID, "");
+    }
+
+    /**
+     * Stable ID for this helper installation. It survives app restarts and
+     * lets the server reuse the same device record after token rotation.
+     */
+    public String getInstallationId() {
+        String id = prefs.getString(KEY_INSTALLATION_ID, "");
+        if (id.isEmpty()) {
+            id = java.util.UUID.randomUUID().toString();
+            prefs.edit().putString(KEY_INSTALLATION_ID, id).commit();
+        }
+        return id;
     }
 
     public void setLinkRequestId(String id) {

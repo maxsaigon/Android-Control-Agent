@@ -15,18 +15,11 @@ from app.models import (
 from app.services.device_manager import device_manager
 from app.services.connection_watchdog import watchdog
 from app.services.device_hub import device_hub
+from app.services.device_identity import cloud_display_name
 from app.models import DeviceToken
 
 router = APIRouter(prefix="/api/devices", tags=["devices"])
 logger = logging.getLogger(__name__)
-
-
-def _cloud_display_name(base_name: str, device_id: int) -> str:
-    clean = (base_name or "Cloud Device").strip()
-    suffix = f"#{device_id}"
-    if suffix in clean:
-        return clean
-    return f"{clean} {suffix}"
 
 
 @router.get("", response_model=list[DeviceRead])
@@ -79,7 +72,7 @@ def update_device(device_id: int, body: dict, session: Session = Depends(get_ses
     if "name" in body:
         next_name = body["name"]
         if device.ip_address == "cloud" or device.adb_port == 0:
-            next_name = _cloud_display_name(next_name, device.id)
+            next_name = cloud_display_name(next_name, device.id)
         device.name = next_name
     session.add(device)
     session.commit()

@@ -16,15 +16,11 @@ from sqlmodel import Session, select
 from app.database import engine
 from app.models import Device, DeviceStatus, DeviceToken, User
 from app.routers.auth import _verify_password
+from app.services.device_identity import cloud_display_name
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["device-websocket"])
-
-
-def _cloud_display_name(base_name: str, device_id: int) -> str:
-    clean = (base_name or "Cloud Device").strip()
-    return f"{clean} #{device_id}"
 
 
 @router.websocket("/ws/device/{token}")
@@ -240,6 +236,7 @@ class RegisterRequest(BaseModel):
     username: str
     password: str
     device_name: str
+    installation_id: str | None = None
 
 
 class RegisterResponse(BaseModel):
@@ -272,20 +269,33 @@ def register_device(req: RegisterRequest):
             raise HTTPException(401, "Invalid username or password")
         logger.info(f"🔑 Device registration auth OK for user: {user.username}")
 
-        # 2. Always create a dedicated cloud device record for this registration.
-        #    Never match by name to avoid collisions between same-model phones.
-        device = Device(
-            name=req.device_name,
-            ip_address="cloud",
-            adb_port=0,
-        )
+        # 2. Reuse a record only when the helper sends its stable installation
+        #    ID. Legacy clients without one still create a dedicated record.
+        device = None
+        if req.installation_id:
+            device = session.exec(
+                select(Device).where(
+                    Device.installation_id == req.installation_id,
+                )
+            ).first()
+
+        if device is None:
+            device = Device(
+                installation_id=req.installation_id,
+                name=req.device_name,
+                ip_address="cloud",
+                adb_port=0,
+            )
+            session.add(device)
+            session.commit()
+            session.refresh(device)
+
+        device.name = cloud_display_name(req.device_name, device.id)
+        device.ip_address = "cloud"
+        device.adb_port = 0
         session.add(device)
         session.commit()
-        session.refresh(device)
-        device.name = _cloud_display_name(req.device_name, device.id)
-        session.add(device)
-        session.commit()
-        logger.info(f"📱 Auto-created cloud device: {device.name} (id={device.id})")
+        logger.info(f"📱 Registered cloud device: {device.name} (id={device.id})")
 
         # 3. Deactivate old tokens for this device
         old_tokens = session.exec(

@@ -43,6 +43,7 @@ public class DeviceLinkClient {
 
                 JsonObject body = new JsonObject();
                 body.addProperty("username", username);
+                body.addProperty("installation_id", config.getInstallationId());
                 body.addProperty("device_name", deviceName);
                 body.addProperty("device_model", Build.MODEL);
                 body.addProperty("android_version", Build.VERSION.RELEASE);

@@ -21,7 +21,9 @@ app/static/downloads/helper-release.json
 
 # IDE
 .idea/
+.vscode/
 *.iml
 
 # Temp
+.DS_Store
 project_documentation.md

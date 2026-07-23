@@ -18,7 +18,8 @@ RUN pip install --no-cache-dir \
     pydantic-settings \
     websockets \
     Pillow \
-    itsdangerous
+    itsdangerous \
+    "livekit-api>=1.0,<2"
 
 # Copy app code
 COPY app/ ./app/

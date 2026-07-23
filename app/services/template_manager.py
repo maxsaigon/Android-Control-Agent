@@ -207,12 +207,12 @@ class TemplateManager:
 
         # Apply defaults first, then user variables override
         meta = self.get_template_meta(name) or {}
+        normalized_variables = self._normalize_variables(name, variables)
         all_vars = {
             **self.DEFAULTS,
             **meta.get("default_vars", {}),
-            **variables,
+            **normalized_variables,
         }
-        all_vars = self._normalize_variables(name, all_vars)
         for key, value in all_vars.items():
             content = content.replace(f"{{{{{key}}}}}", str(value))
 

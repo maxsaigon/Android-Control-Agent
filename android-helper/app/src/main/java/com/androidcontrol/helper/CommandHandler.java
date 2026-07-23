@@ -108,6 +108,18 @@ public class CommandHandler {
                     handleScreenshot(service, id, callback);
                     break;
 
+                case "start_stream":
+                    handleStartStream(service, id, params, callback);
+                    break;
+
+                case "stop_stream":
+                    handleStopStream(service, id, callback);
+                    break;
+
+                case "get_stream_status":
+                    handleGetStreamStatus(id, callback);
+                    break;
+
                 default:
                     sendError(callback, id, "Unknown action: " + action);
             }
@@ -345,6 +357,39 @@ public class CommandHandler {
                 sendError(callback, id, "screenshot error: " + error);
             }
         });
+    }
+
+    // --- Live screen stream handlers ---
+
+    private static void handleStartStream(HelperAccessibilityService service, String id,
+                                          JsonObject params, ResponseCallback callback) {
+        if (service == null) { sendError(callback, id, "Service not running"); return; }
+        try {
+            String url = requireString(params, "url");
+            String token = requireString(params, "token");
+            String room = requireString(params, "room");
+            ScreenStreamService.request(service.getApplicationContext(), url, token, room);
+            sendOk(callback, id, "Screen capture permission requested");
+        } catch (IllegalArgumentException e) {
+            sendError(callback, id, e.getMessage());
+        } catch (Exception e) {
+            sendError(callback, id, "Cannot start screen stream: " + e.getMessage());
+        }
+    }
+
+    private static void handleStopStream(HelperAccessibilityService service, String id,
+                                         ResponseCallback callback) {
+        if (service == null) { sendError(callback, id, "Service not running"); return; }
+        ScreenStreamService.stop(service.getApplicationContext());
+        sendOk(callback, id, "Screen stream stopping");
+    }
+
+    private static void handleGetStreamStatus(String id, ResponseCallback callback) {
+        JsonObject result = new JsonObject();
+        result.addProperty("state", ScreenStreamService.status());
+        result.addProperty("room", ScreenStreamService.currentRoom());
+        result.addProperty("error", ScreenStreamService.error());
+        sendOkJson(callback, id, result);
     }
 
     // --- Param validation helpers ---

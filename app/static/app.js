@@ -229,6 +229,10 @@ function renderDevices() {
                 </div>
                 ${d.status === 'unauthorized' ? '<div class="device-warning">⚠️ Chấp nhận kết nối ADB trên phone</div>' : ''}
                 <div class="device-actions">
+                    ${d.status !== 'offline' && (d.ip_address === 'cloud' || d.adb_port === 0)
+                        ? `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); openLiveControl(${d.id})">📺 Live Control</button>`
+                        : ''
+                    }
                     ${d.status === 'offline'
                         ? `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); connectDevice(${d.id})">🔗 Connect</button>`
                         : d.status === 'unauthorized'
@@ -241,6 +245,169 @@ function renderDevices() {
             </div>
         `;
     }).join('') + '</div>';
+}
+
+// ============================================
+// LIVE ANDROID CONTROL
+// ============================================
+
+let liveControlRoom = null;
+let liveControlDeviceId = null;
+let livePointerStart = null;
+
+async function openLiveControl(deviceId) {
+    const modal = document.getElementById('liveControlModal');
+    const status = document.getElementById('liveControlStatus');
+    const device = devices.find(item => item.id === deviceId);
+    liveControlDeviceId = deviceId;
+    document.getElementById('liveControlTitle').textContent =
+        `Live Control — ${device?.name || `Device #${deviceId}`}`;
+    status.textContent = 'Đang yêu cầu quyền chia sẻ màn hình trên device…';
+    modal.classList.add('active');
+
+    try {
+        const startResponse = await fetch(`${API}/api/devices/${deviceId}/stream/start`, {
+            method: 'POST',
+        });
+        if (!startResponse.ok) {
+            throw new Error((await startResponse.json()).detail || 'Không thể bắt đầu stream');
+        }
+
+        const tokenResponse = await fetch(`${API}/api/devices/${deviceId}/stream/viewer-token`, {
+            method: 'POST',
+        });
+        if (!tokenResponse.ok) {
+            throw new Error((await tokenResponse.json()).detail || 'Không thể lấy viewer token');
+        }
+        const connection = await tokenResponse.json();
+        await connectLiveControlRoom(connection);
+        status.textContent = 'Chờ device chấp nhận Screen capture…';
+    } catch (error) {
+        status.textContent = `Lỗi: ${error.message}`;
+        toast(`❌ ${error.message}`, 'error');
+    }
+}
+
+async function connectLiveControlRoom(connection) {
+    if (!window.LivekitClient) {
+        throw new Error('LiveKit browser SDK chưa tải được');
+    }
+    if (liveControlRoom) {
+        await liveControlRoom.disconnect();
+    }
+
+    const { Room, RoomEvent, Track } = window.LivekitClient;
+    const room = new Room({ adaptiveStream: true, dynacast: true });
+    liveControlRoom = room;
+
+    room.on(RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind !== Track.Kind.Video) return;
+        const video = document.getElementById('liveControlVideo');
+        track.attach(video);
+        document.getElementById('liveControlStatus').textContent = 'Đang điều khiển trực tiếp';
+    });
+    room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach());
+    room.on(RoomEvent.Disconnected, () => {
+        const status = document.getElementById('liveControlStatus');
+        if (status) status.textContent = 'Stream đã ngắt kết nối';
+    });
+    await room.connect(connection.url, connection.token);
+}
+
+async function closeLiveControl(event) {
+    if (event && event.target !== event.currentTarget) return;
+    const deviceId = liveControlDeviceId;
+    liveControlDeviceId = null;
+    livePointerStart = null;
+
+    if (liveControlRoom) {
+        await liveControlRoom.disconnect();
+        liveControlRoom = null;
+    }
+    const video = document.getElementById('liveControlVideo');
+    video.srcObject = null;
+    document.getElementById('liveControlModal').classList.remove('active');
+
+    if (deviceId) {
+        try {
+            await fetch(`${API}/api/devices/${deviceId}/stream/stop`, { method: 'POST' });
+        } catch (_) {
+            // Closing the UI must not be blocked by a disconnected device.
+        }
+    }
+}
+
+function mapLivePointer(event) {
+    const video = document.getElementById('liveControlVideo');
+    if (!video.videoWidth || !video.videoHeight) return null;
+    const rect = video.getBoundingClientRect();
+    const contentScale = Math.min(
+        rect.width / video.videoWidth,
+        rect.height / video.videoHeight,
+    );
+    const contentWidth = video.videoWidth * contentScale;
+    const contentHeight = video.videoHeight * contentScale;
+    const offsetX = (rect.width - contentWidth) / 2;
+    const offsetY = (rect.height - contentHeight) / 2;
+    const localX = event.clientX - rect.left - offsetX;
+    const localY = event.clientY - rect.top - offsetY;
+    if (localX < 0 || localY < 0 || localX > contentWidth || localY > contentHeight) {
+        return null;
+    }
+    return {
+        x: Math.round(localX * video.videoWidth / contentWidth),
+        y: Math.round(localY * video.videoHeight / contentHeight),
+    };
+}
+
+function livePointerDown(event) {
+    const point = mapLivePointer(event);
+    if (!point) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    livePointerStart = { ...point, time: Date.now() };
+}
+
+async function livePointerUp(event) {
+    if (!livePointerStart) return;
+    event.preventDefault();
+    const end = mapLivePointer(event);
+    const start = livePointerStart;
+    livePointerStart = null;
+    if (!end) return;
+
+    const distance = Math.hypot(end.x - start.x, end.y - start.y);
+    const duration = Date.now() - start.time;
+    if (distance < 12 && duration >= 600) {
+        await sendLiveControl('long_press', { x: start.x, y: start.y, duration });
+    } else if (distance < 12) {
+        await sendLiveControl('tap', { x: end.x, y: end.y });
+    } else {
+        await sendLiveControl('swipe', {
+            x1: start.x, y1: start.y, x2: end.x, y2: end.y,
+            duration: Math.max(100, Math.min(duration, 1500)),
+        });
+    }
+}
+
+async function sendLiveControl(action, params = {}) {
+    if (!liveControlDeviceId) return;
+    const response = await fetch(`${API}/api/devices/${liveControlDeviceId}/live-control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, params }),
+    });
+    if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        toast(`❌ ${body.detail || 'Control command failed'}`, 'error');
+    }
+}
+
+async function sendLiveText() {
+    const input = document.getElementById('liveControlText');
+    if (!input.value) return;
+    await sendLiveControl('type_text', { text: input.value });
+    input.value = '';
 }
 
 function selectDevice(id) {

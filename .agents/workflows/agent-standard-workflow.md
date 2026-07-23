@@ -15,9 +15,20 @@ description: Quy trình làm việc chuẩn từ khi nhận prompt đến khi ho
 ```bash
 cat .agents/RULES.md                           # Global rules
 cat .agents/skills/<agent-name>/SKILL.md       # Skill của agent này
+cat .agents/skills/karpathy-guidelines/SKILL.md  # Decision and execution guardrails
 ```
 
-### Bước 0.2 — Đọc Plan Index
+### Bước 0.2 — Chốt task brief trước khi code
+
+Viết ngắn gọn 4 ý này trước khi đụng code:
+- **Request**: user thực sự muốn gì
+- **Assumptions**: điều gì đang giả định đúng
+- **Non-goals**: điều gì cố ý không làm
+- **Verify**: check nào sẽ chứng minh task xong
+
+Nếu có hơn 1 cách hiểu hợp lý, **không được tự chọn im lặng**. Phải nêu ambiguity và chốt lại trước khi implement.
+
+### Bước 0.3 — Đọc Plan Index
 ```bash
 cat docs/plans/_index.md
 ```
@@ -26,12 +37,15 @@ Xác định:
 - Plan đang ở status nào?
 - Có task nào liên quan đang IN PROGRESS không?
 
-### Bước 0.3 — Check Git Status
+### Bước 0.4 — Check Git Status
 ```bash
 git status
 git log --oneline -5
 ```
-Nếu có uncommitted changes → hỏi user trước khi tiếp tục.
+Nếu có uncommitted changes:
+- Không revert
+- Không đụng vào file lạ nếu chưa hiểu
+- Chỉ hỏi user khi changes đó chặn trực tiếp task hiện tại
 
 ---
 
@@ -48,11 +62,18 @@ Nếu có uncommitted changes → hỏi user trước khi tiếp tục.
 ## Mục tiêu
 [Mô tả ngắn gọn]
 
+## Assumptions
+- [Giả định 1]
+
+## Non-goals
+- [Điều cố ý không làm]
+
 ## Implementation Plan
-[Chi tiết từng bước]
+1. [Step] → verify: [check cụ thể]
+2. [Step] → verify: [check cụ thể]
 
 ## Verification
-[Cách kiểm tra kết quả]
+- [Lệnh test / thao tác reproduce / expected output]
 ```
 Lưu vào `docs/plans/<feature-name>.md`
 
@@ -74,6 +95,11 @@ git checkout -b feat/<agent-name>/<feature-slug>
 # Ví dụ: feat/platform-core/cloud-websocket
 ```
 
+### Bước 1.4 — Chốt write scope
+- Liệt kê file nào sẽ sửa
+- Mỗi file phải trace được về request
+- Không thêm refactor, cleanup, config flexibility nếu user chưa yêu cầu
+
 ---
 
 ## 🔨 PHASE 2: EXECUTION
@@ -82,6 +108,8 @@ git checkout -b feat/<agent-name>/<feature-slug>
 - Chỉ sửa files trong ownership matrix của mình
 - Tuân thủ code conventions (type hints, async/await, logging)
 - Tích hợp anti-detection nếu là platform agent
+- Ưu tiên thay đổi nhỏ nhất đủ giải quyết vấn đề
+- Không “tiện tay” sửa code lân cận, format lại diện rộng, hay thêm abstraction dùng 1 lần
 
 ### Bước 2.2 — Update Plan File (liên tục)
 Khi hoàn thành từng sub-task:
@@ -95,12 +123,14 @@ Khi hoàn thành từng sub-task:
 ## ✅ PHASE 3: VERIFICATION
 
 ### Bước 3.1 — Tự kiểm tra
-Chạy checklist trong RULES.md Section 8:
+Chạy checklist trong RULES.md Section 8 và đối chiếu lại task brief:
 - [ ] Code không có syntax errors
 - [ ] Type hints đầy đủ
 - [ ] Anti-detection behaviors integrated (nếu platform agent)
 - [ ] Không sửa file ngoài ownership
 - [ ] Không chạm venv
+- [ ] Không vượt quá assumptions / non-goals đã chốt
+- [ ] Mỗi thay đổi đều gắn trực tiếp với request
 
 ### Bước 3.2 — Test
 ```bash
@@ -153,19 +183,22 @@ Tóm tắt những gì đã làm, file nào đã sửa, kết quả test.
 NHẬN PROMPT
     ↓
 [0] Đọc RULES.md + SKILL.md + _index.md
+    + karpathy-guidelines
     ↓
-[1] Task mới? → Tạo plan file + đăng ký _index.md
+[1] Chốt request + assumptions + non-goals + verify
+    ↓
+[2] Task mới? → Tạo plan file + đăng ký _index.md
     Task cũ? → Tìm plan file, cập nhật status IN PROGRESS
     ↓
-[2] git checkout -b feat/<agent>/<feature>
+[3] git checkout -b feat/<agent>/<feature>
     ↓
-[3] Implement (chỉ sửa files trong ownership)
+[4] Implement (chỉ sửa files trong ownership)
     ↓
-[4] Verify + Test
+[5] Verify + Test
     ↓
-[5] Cập nhật plan file + _index.md → COMPLETE
+[6] Cập nhật plan file + _index.md → COMPLETE
     ↓
-[6] Commit + Báo cáo user
+[7] Commit + Báo cáo user
 ```
 
 ---
@@ -175,6 +208,8 @@ NHẬN PROMPT
 | ❌ KHÔNG làm | ✅ Thay vào đó |
 |-------------|---------------|
 | Bắt đầu code ngay khi nhận prompt | Đọc RULES.md + _index.md trước |
+| Tự diễn giải yêu cầu mơ hồ | Ghi assumptions + nêu ambiguity trước khi code |
+| Sửa lan sang code lân cận | Giữ surgical change, chỉ chạm đúng write scope |
 | Tạo skill/agent trong `.agent/` | Luôn dùng `.agents/skills/` |
 | Tạo plan file xong quên đăng ký _index.md | Bước 1.1: đăng ký ngay sau khi tạo |
 | Xong task mà không update plan status | Bước 4.1–4.2 bắt buộc |

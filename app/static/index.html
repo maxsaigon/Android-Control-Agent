@@ -732,11 +732,42 @@
                 </div>
             </div>
         </div>
+
+        <div class="modal-overlay" id="liveControlModal" onclick="closeLiveControl(event)">
+            <div class="modal-content live-control-modal" onclick="event.stopPropagation()">
+                <div class="modal-header">
+                    <div>
+                        <h3 id="liveControlTitle">Live Control</h3>
+                        <div class="live-control-status" id="liveControlStatus">Đang kết nối…</div>
+                    </div>
+                    <button class="modal-close" onclick="closeLiveControl()">&times;</button>
+                </div>
+                <div class="live-control-stage">
+                    <video
+                        id="liveControlVideo"
+                        autoplay
+                        playsinline
+                        muted
+                        onpointerdown="livePointerDown(event)"
+                        onpointerup="livePointerUp(event)"
+                        oncontextmenu="event.preventDefault()"></video>
+                </div>
+                <div class="live-control-toolbar">
+                    <button class="btn btn-sm btn-ghost" onclick="sendLiveControl('global_action', {action:'back'})">← Back</button>
+                    <button class="btn btn-sm btn-ghost" onclick="sendLiveControl('global_action', {action:'home'})">⌂ Home</button>
+                    <button class="btn btn-sm btn-ghost" onclick="sendLiveControl('global_action', {action:'recents'})">▣ Recents</button>
+                    <input id="liveControlText" type="text" placeholder="Nhập text Unicode…"
+                           onkeydown="if(event.key==='Enter') sendLiveText()">
+                    <button class="btn btn-sm btn-primary" onclick="sendLiveText()">Gửi</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Toast notifications -->
     <div id="toastContainer" class="toast-container"></div>
 
+    <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.20.2/dist/livekit-client.umd.min.js"></script>
     <script src="/static/app.js?v=__STATIC_VERSION__"></script>
 </body>
 </html>

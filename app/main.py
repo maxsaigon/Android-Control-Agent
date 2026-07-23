@@ -16,6 +16,7 @@ from app.config import settings
 from app.database import create_db_and_tables, migrate_db, get_session
 from app.models import Device, DeviceStatus, User
 from app.routers import devices, tasks, ws, schedules, device_ws
+from app.routers import live_streams
 from app.routers.auth import router as auth_router
 from app.routers.videos import router as videos_router, account_router as accounts_router
 from app.middleware.auth_middleware import AuthMiddleware
@@ -135,6 +136,7 @@ app.add_middleware(
 # Register routers
 app.include_router(auth_router)               # Auth: login/logout/me
 app.include_router(devices.router)
+app.include_router(live_streams.router)
 app.include_router(tasks.router)
 app.include_router(ws.router)
 app.include_router(schedules.router)

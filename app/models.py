@@ -27,6 +27,7 @@ class Device(SQLModel, table=True):
     """Represents a connected Android device."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    installation_id: Optional[str] = Field(default=None, index=True, unique=True)
     name: str  # "Android 1", "Pixel 7", etc.
     ip_address: str  # "192.168.1.100"
     adb_port: int = 5555
@@ -140,6 +141,7 @@ class DeviceLinkRequest(SQLModel, table=True):
     request_id: str = Field(index=True, unique=True)
     username: str = Field(index=True)
     user_id: Optional[int] = Field(default=None, index=True)
+    installation_id: Optional[str] = Field(default=None, index=True)
     device_name: str
     device_model: Optional[str] = None
     android_version: Optional[str] = None
@@ -171,6 +173,7 @@ class HelperInfo(SQLModel):
 
 class DeviceLinkRequestCreate(SQLModel):
     username: str
+    installation_id: Optional[str] = None
     device_name: str
     device_model: Optional[str] = None
     android_version: Optional[str] = None

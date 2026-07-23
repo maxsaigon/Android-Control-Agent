@@ -384,6 +384,8 @@ def migrate_db():
     """
     _migrations = [
         # (table_name, column_name, sqlite_type_def)
+        ("device", "installation_id", "TEXT"),
+        ("devicelinkrequest", "installation_id", "TEXT"),
         ("task", "template_vars_json", "TEXT"),
         ("task", "assignment_id", "INTEGER"),
         ("video", "description", "TEXT"),
@@ -422,6 +424,22 @@ def migrate_db():
     with engine.connect() as conn:
         for table, col, col_def in _migrations:
             _add_column_if_missing(conn, table, col, col_def)
+
+        try:
+            conn.execute(
+                sqlalchemy.text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "ix_device_installation_id "
+                    "ON device (installation_id) "
+                    "WHERE installation_id IS NOT NULL"
+                )
+            )
+            conn.commit()
+        except Exception as exc:  # pragma: no cover
+            logger.warning(
+                "migrate_db: could not index device.installation_id: %s",
+                exc,
+            )
 
         # Normalize legacy enum values written as lowercase strings.
         # SQLAlchemy Enum stores member names (e.g., PENDING), while some old rows

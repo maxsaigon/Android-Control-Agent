@@ -1,0 +1,12 @@
+# Local LiveKit media server for Android live-control development.
+# Production must use real keys, TLS, and public UDP/TCP media ports.
+services:
+  livekit:
+    image: livekit/livekit-server:v1.9.9
+    command: --dev --bind 0.0.0.0
+    restart: unless-stopped
+    ports:
+      - "7880:7880"       # WebSocket/API signaling
+      - "7881:7881"       # WebRTC over TCP
+      - "7882:7882/udp"   # WebRTC over UDP (development mode)
+

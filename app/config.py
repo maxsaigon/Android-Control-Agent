@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
 
+    # LiveKit Android screen streaming
+    livekit_url: str = ""
+    livekit_api_key: str = ""
+    livekit_api_secret: str = ""
+    livekit_token_ttl_seconds: int = 600
+
     # Auth / Session
     secret_key: str = "CHANGE-THIS-IN-PRODUCTION-USE-RANDOM-32-CHARS"
     session_expire_hours: int = 24  # Session cookie lifetime

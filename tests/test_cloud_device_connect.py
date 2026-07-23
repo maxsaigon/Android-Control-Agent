@@ -49,13 +49,18 @@ def cloud_app(tmp_path, monkeypatch):
     device_hub._token_map.clear()
 
 
-def _register_device(client: TestClient, name: str = "Cloud Test Device") -> dict:
+def _register_device(
+    client: TestClient,
+    name: str = "Cloud Test Device",
+    installation_id: str = "test-installation-1",
+) -> dict:
     response = client.post(
         "/api/device/register",
         json={
             "username": "cloud_user",
             "password": "secret",
             "device_name": name,
+            "installation_id": installation_id,
         },
     )
     assert response.status_code == 200, response.text

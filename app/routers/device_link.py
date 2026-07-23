@@ -17,6 +17,7 @@ from app.models import (
     DeviceToken,
     User,
 )
+from app.services.device_identity import cloud_display_name
 
 router = APIRouter(prefix="/api/device/link", tags=["Device Link"])
 
@@ -29,12 +30,6 @@ def _as_aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
-
-def _cloud_display_name(base_name: str, device_id: int) -> str:
-    """Build a stable cloud device label that always includes unique ID."""
-    clean = (base_name or "Cloud Device").strip()
-    return f"{clean} #{device_id}"
 
 
 def _require_session_user(request: Request, session: Session) -> User:
@@ -74,7 +69,11 @@ def request_device_link(req: DeviceLinkRequestCreate, request: Request, session:
     existing_requests = session.exec(
         select(DeviceLinkRequest).where(
             DeviceLinkRequest.username == req.username,
-            DeviceLinkRequest.device_name == req.device_name,
+            (
+                DeviceLinkRequest.installation_id == req.installation_id
+                if req.installation_id
+                else DeviceLinkRequest.device_name == req.device_name
+            ),
             DeviceLinkRequest.status == DeviceLinkStatus.PENDING
         )
     ).all()
@@ -88,6 +87,7 @@ def request_device_link(req: DeviceLinkRequestCreate, request: Request, session:
         request_id="lrq_" + secrets.token_urlsafe(16),
         username=req.username,
         user_id=user.id if user else None,
+        installation_id=req.installation_id,
         device_name=req.device_name,
         device_model=req.device_model,
         android_version=req.android_version,
@@ -175,21 +175,43 @@ def accept_request(request_id: str, request: Request, session: Session = Depends
         session.commit()
         raise HTTPException(status_code=400, detail="Request expired")
         
-    # IMPORTANT: never identify cloud devices by human-readable name.
-    # Two physical devices can share the same model/name (e.g. "S31"),
-    # and matching by name causes task routing to the wrong device.
-    device = Device(
-        name=req.device_name,
-        ip_address="cloud",
-        adb_port=0,
-        android_version=req.android_version,
-        device_model=req.device_model
-    )
+    device = None
+    if req.installation_id:
+        device = session.exec(
+            select(Device).where(
+                Device.installation_id == req.installation_id,
+            )
+        ).first()
+
+    if device is None:
+        device = Device(
+            installation_id=req.installation_id,
+            name=req.device_name,
+            ip_address="cloud",
+            adb_port=0,
+            android_version=req.android_version,
+            device_model=req.device_model
+        )
+        session.add(device)
+        session.commit()
+        session.refresh(device)
+
+    device.name = cloud_display_name(req.device_name, device.id)
+    device.ip_address = "cloud"
+    device.adb_port = 0
+    device.android_version = req.android_version
+    device.device_model = req.device_model
     session.add(device)
-    session.commit()
-    session.refresh(device)
-    device.name = _cloud_display_name(req.device_name, device.id)
-    session.add(device)
+
+    old_tokens = session.exec(
+        select(DeviceToken).where(
+            DeviceToken.device_id == device.id,
+            DeviceToken.is_active == True,
+        )
+    ).all()
+    for old_token in old_tokens:
+        old_token.is_active = False
+        session.add(old_token)
             
     token_str = secrets.token_urlsafe(32)
     dt = DeviceToken(
