@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Android Control</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace">Bỏ qua điều hướng</a>
+
+  <svg class="icon-defs" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></symbol>
+    <symbol id="i-device" viewBox="0 0 24 24"><rect x="6" y="2.5" width="12" height="19" rx="2"/><path d="M10 18.5h4"/></symbol>
+    <symbol id="i-media" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m9.5 9 6 3-6 3z"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.5"/><path d="M4 4v4.5h4.5M12 7v5l3 2"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 8a7 7 0 0 1 11.7-1L20 12M4 12l2.2 5a7 7 0 0 0 11.7-1"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></symbol>
+    <symbol id="i-recents" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5"/><path d="M4 15v5h16v-5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4 6 5 5-5 5M11 18h9"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m21 3-7.5 18-3.2-7.3L3 10.5z"/><path d="M10.3 13.7 21 3"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <aside class="nav-rail" aria-label="Điều hướng chính">
+      <a class="brand" href="/dashboard" aria-label="Android Control">
+        <span class="brand-mark"><svg><use href="#i-device"/></svg></span>
+        <span class="brand-copy">AC</span>
+      </a>
+      <nav class="nav-stack">
+        <button class="nav-button is-active" title="Điều khiển" aria-label="Điều khiển"><svg><use href="#i-grid"/></svg></button>
+        <button class="nav-button" title="Thiết bị" aria-label="Thiết bị"><svg><use href="#i-device"/></svg></button>
+        <button class="nav-button" title="Media" aria-label="Media"><svg><use href="#i-media"/></svg></button>
+        <button class="nav-button" title="Lịch sử" aria-label="Lịch sử"><svg><use href="#i-history"/></svg></button>
+      </nav>
+      <button class="nav-button nav-bottom" title="Cài đặt" aria-label="Cài đặt"><svg><use href="#i-settings"/></svg></button>
+    </aside>
+
+    <aside class="fleet-panel" aria-labelledby="fleet-title">
+      <header class="fleet-header">
+        <div>
+          <p class="eyebrow">Thiết bị</p>
+          <h1 id="fleet-title">Device fleet</h1>
+        </div>
+        <button class="icon-button" id="addDeviceButton" aria-label="Thêm thiết bị"><svg><use href="#i-plus"/></svg></button>
+      </header>
+      <label class="search-box">
+        <svg><use href="#i-search"/></svg>
+        <span class="sr-only">Tìm thiết bị</span>
+        <input id="deviceSearch" type="search" placeholder="Tìm thiết bị">
+      </label>
+      <div class="fleet-summary">
+        <span><strong id="onlineCount">0</strong> online</span>
+        <span class="summary-divider"></span>
+        <span><strong id="deviceCount">0</strong> tổng</span>
+      </div>
+      <div class="device-list" id="deviceList" aria-live="polite">
+        <div class="empty-card">Chưa có thiết bị. Thêm cloud device hoặc ADB target để bắt đầu.</div>
+      </div>
+      <div class="server-card">
+        <span class="status-dot" id="serverDot"></span>
+        <div><strong id="serverLabel">Control plane</strong><small id="serverUrl">Đang kết nối…</small></div>
+      </div>
+    </aside>
+
+    <main class="workspace" id="workspace">
+      <header class="workspace-header">
+        <div class="device-heading">
+          <span class="device-avatar"><svg><use href="#i-device"/></svg></span>
+          <div>
+            <div class="title-row">
+              <h2 id="selectedDeviceName">Chọn một thiết bị</h2>
+              <span class="status-badge is-offline" id="selectedStatus">offline</span>
+            </div>
+            <p id="selectedDeviceMeta">Thiết bị được chọn sẽ xuất hiện tại đây</p>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="button button-quiet" id="refreshAllButton"><svg><use href="#i-refresh"/></svg> Làm mới</button>
+          <button class="button button-primary" id="launchTikTokButton"><svg><use href="#i-play"/></svg> Mở TikTok</button>
+        </div>
+      </header>
+
+      <div class="workspace-grid">
+        <section class="screen-section" aria-labelledby="screen-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Quan sát</p><h3 id="screen-title">Màn hình thiết bị</h3></div>
+            <div class="screen-actions">
+              <span class="updated-label" id="screenUpdated">Chưa chụp</span>
+              <button class="icon-button" id="refreshScreenButton" aria-label="Chụp màn hình"><svg><use href="#i-refresh"/></svg></button>
+            </div>
+          </div>
+          <div class="phone-stage">
+            <div class="phone-frame">
+              <div class="phone-speaker"></div>
+              <div class="screen-surface" id="screenSurface">
+                <img id="deviceScreen" alt="Ảnh chụp màn hình Android đang chọn" hidden>
+                <div class="screen-empty" id="screenEmpty">
+                  <svg><use href="#i-device"/></svg>
+                  <strong>Chưa có ảnh màn hình</strong>
+                  <span>Kết nối thiết bị và chọn “Làm mới”.</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="control-section" aria-labelledby="control-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">Điều khiển</p><h3 id="control-title">Direct control</h3></div>
+            <span class="shortcut-hint">Helper first</span>
+          </div>
+
+          <div class="control-block">
+            <span class="control-label">Navigation</span>
+            <div class="nav-control-grid">
+              <button class="control-key" data-key="back"><svg><use href="#i-back"/></svg><span>Back</span></button>
+              <button class="control-key is-primary" data-key="home"><svg><use href="#i-home"/></svg><span>Home</span></button>
+              <button class="control-key" data-key="recents"><svg><use href="#i-recents"/></svg><span>Recents</span></button>
+            </div>
+          </div>
+
+          <div class="control-block">
+            <span class="control-label">Feed gesture</span>
+            <div class="gesture-grid">
+              <button class="gesture-button" data-swipe="up"><svg><use href="#i-chevron-up"/></svg><span>Swipe up</span><small>Next item</small></button>
+              <button class="gesture-button" data-swipe="down"><svg><use href="#i-chevron-down"/></svg><span>Swipe down</span><small>Previous</small></button>
+            </div>
+          </div>
+
+          <form class="control-block" id="textForm">
+            <label class="control-label" for="deviceText">Nhập Unicode</label>
+            <div class="send-field">
+              <input id="deviceText" type="text" placeholder="Nhập nội dung vào Android" autocomplete="off">
+              <button type="submit" class="send-button" aria-label="Gửi văn bản"><svg><use href="#i-send"/></svg></button>
+            </div>
+          </form>
+
+          <div class="control-block">
+            <span class="control-label">Media transfer</span>
+            <label class="drop-zone" for="mediaFile" id="dropZone">
+              <svg><use href="#i-upload"/></svg>
+              <span><strong>Chọn media</strong> để lưu vào control plane</span>
+              <small>ADB device có thể push trực tiếp vào DCIM</small>
+              <input id="mediaFile" type="file" accept="video/*,image/*">
+            </label>
+            <div class="media-row" id="mediaRow">
+              <select id="mediaSelect" aria-label="Media đã tải lên"><option value="">Chưa có media</option></select>
+              <button class="button button-secondary" id="pushMediaButton">Đẩy tới máy</button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <aside class="context-panel">
+      <section class="context-section">
+        <div class="section-heading compact">
+          <div><p class="eyebrow">Workflow</p><h3>Quick run</h3></div>
+          <span class="verified-pill">Deterministic</span>
+        </div>
+        <article class="workflow-card">
+          <div class="workflow-icon"><svg><use href="#i-play"/></svg></div>
+          <div class="workflow-copy">
+            <strong>Browse TikTok feed</strong>
+            <span>Launch, observe and advance through a bounded feed session.</span>
+          </div>
+          <div class="workflow-fields">
+            <label>Items<input id="browseCount" type="number" min="1" max="30" value="5" inputmode="numeric"></label>
+            <label>View time<input id="viewSeconds" type="number" min="0.5" max="30" step="0.5" value="2" inputmode="decimal"></label>
+          </div>
+          <button class="button button-primary button-full" id="runBrowseButton"><svg><use href="#i-play"/></svg> Chạy workflow</button>
+        </article>
+      </section>
+
+      <section class="context-section activity-section">
+        <div class="section-heading compact">
+          <div><p class="eyebrow">Audit</p><h3>Hoạt động gần đây</h3></div>
+          <svg class="heading-icon"><use href="#i-terminal"/></svg>
+        </div>
+        <div class="activity-list" id="activityList" aria-live="polite">
+          <div class="empty-activity">Chưa có workflow nào được chạy.</div>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <dialog class="modal" id="deviceDialog">
+    <form method="dialog" id="deviceForm">
+      <header><div><p class="eyebrow">Provisioning</p><h2>Thêm thiết bị</h2></div><button class="icon-button" value="cancel" aria-label="Đóng">×</button></header>
+      <label>Tên thiết bị<input name="name" required maxlength="80" placeholder="Pixel Studio 01"></label>
+      <label>Transport<select name="transport"><option value="cloud">Cloud Helper</option><option value="adb">ADB</option></select></label>
+      <label>ADB address<input name="address" placeholder="192.168.1.45:5555"><small>Để trống với Cloud Helper.</small></label>
+      <div class="provision-result" id="provisionResult" hidden></div>
+      <footer><button class="button button-quiet" value="cancel">Huỷ</button><button class="button button-primary" value="default" id="createDeviceSubmit">Tạo thiết bị</button></footer>
+    </form>
+  </dialog>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

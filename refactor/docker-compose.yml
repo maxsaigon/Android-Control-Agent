@@ -1,0 +1,24 @@
+services:
+  control:
+    container_name: android-control-refactor
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8090:8080"
+    env_file:
+      # Reuse existing API keys and infrastructure values from the legacy
+      # server without copying them into the refactor source tree.
+      - ../.env
+    environment:
+      - CONTROL_PUBLIC_URL=https://m.buonme.com
+      - CONTROL_DATA_DIR=/app/runtime
+      - CONTROL_DATABASE_PATH=/app/runtime/control.db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./runtime:/app/runtime
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
