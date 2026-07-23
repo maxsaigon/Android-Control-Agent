@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Đăng nhập · Android Control</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="auth-mark">AC</div>
+    <p class="eyebrow">Protected workspace</p>
+    <h1>Android Control</h1>
+    <p class="auth-copy">Đăng nhập để truy cập thiết bị, media và workflow.</p>
+    <form id="loginForm">
+      <label>Tên đăng nhập<input name="username" autocomplete="username" required autofocus></label>
+      <label>Mật khẩu<input name="password" type="password" autocomplete="current-password" required></label>
+      <p class="auth-error" id="loginError" role="alert" hidden></p>
+      <button class="button button-primary button-full" type="submit">Đăng nhập</button>
+    </form>
+  </main>
+  <script>
+    document.getElementById("loginForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const error = document.getElementById("loginError");
+      error.hidden = true;
+      const response = await fetch("/auth/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({username: form.get("username"), password: form.get("password")}),
+      });
+      if (response.ok) {
+        const next = new URLSearchParams(location.search).get("next");
+        location.href = next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard";
+        return;
+      }
+      const payload = await response.json().catch(() => ({}));
+      error.textContent = payload.detail || "Không thể đăng nhập.";
+      error.hidden = false;
+    });
+  </script>
+</body>
+</html>

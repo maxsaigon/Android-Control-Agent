@@ -13,6 +13,10 @@ async function api(path, options = {}) {
     ...options,
   });
   if (!response.ok) {
+    if (response.status === 401) {
+      window.location.href = `/login?next=${encodeURIComponent(window.location.pathname)}`;
+      throw new Error("Phiên đăng nhập đã hết hạn");
+    }
     let message = `${response.status} ${response.statusText}`;
     try {
       const payload = await response.json();

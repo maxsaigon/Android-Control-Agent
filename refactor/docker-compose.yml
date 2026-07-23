@@ -13,6 +13,10 @@ services:
       - CONTROL_PUBLIC_URL=https://m.buonme.com
       - CONTROL_DATA_DIR=/app/runtime
       - CONTROL_DATABASE_PATH=/app/runtime/control.db
+      - CONTROL_ADMIN_PASSWORD_FILE=/app/runtime/admin-password
+      - CONTROL_SESSION_SECRET_FILE=/app/runtime/session-secret
+      # Parallel max.lan deployment is HTTP-only. Set true at HTTPS cutover.
+      - CONTROL_COOKIE_SECURE=false
       - PYTHONUNBUFFERED=1
     volumes:
       - ./runtime:/app/runtime

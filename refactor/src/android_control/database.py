@@ -34,6 +34,14 @@ class Repository:
                     battery_level INTEGER,
                     last_seen TEXT,
                     helper_json TEXT NOT NULL DEFAULT '{}',
+                    legacy_id INTEGER,
+                    created_at TEXT NOT NULL
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_id
+                    ON devices(legacy_id) WHERE legacy_id IS NOT NULL;
+                CREATE TABLE IF NOT EXISTS admins (
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS runs (
@@ -58,6 +66,33 @@ class Repository:
                 );
                 """
             )
+            columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(devices)").fetchall()
+            }
+            if "legacy_id" not in columns:
+                db.execute("ALTER TABLE devices ADD COLUMN legacy_id INTEGER")
+                db.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_id "
+                    "ON devices(legacy_id) WHERE legacy_id IS NOT NULL"
+                )
+
+    def ensure_admin(self, username: str, password_hash: str) -> None:
+        with self.connect() as db:
+            db.execute(
+                """
+                INSERT INTO admins (username, password_hash, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(username) DO NOTHING
+                """,
+                (username, password_hash, utc_now()),
+            )
+
+    def get_admin_password_hash(self, username: str) -> str | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT password_hash FROM admins WHERE username = ?", (username,)
+            ).fetchone()
+        return row["password_hash"] if row else None
 
     @staticmethod
     def hash_token(token: str) -> str:

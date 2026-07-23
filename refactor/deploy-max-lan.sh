@@ -27,6 +27,11 @@ echo "Deploying refactor $HEAD_SHA to $SERVER:$REMOTE_REFACTOR"
 
 ssh "$SERVER" "set -e
   mkdir -p '$REMOTE_REFACTOR/runtime/backups'
+  umask 077
+  test -s '$REMOTE_REFACTOR/runtime/admin-password' ||
+    python3 -c \"import secrets; print(secrets.token_urlsafe(24))\" > '$REMOTE_REFACTOR/runtime/admin-password'
+  test -s '$REMOTE_REFACTOR/runtime/session-secret' ||
+    python3 -c \"import secrets; print(secrets.token_urlsafe(48))\" > '$REMOTE_REFACTOR/runtime/session-secret'
   if [ -f '$REMOTE_REFACTOR/runtime/control.db' ]; then
     timestamp=\$(date +%Y%m%d-%H%M%S)
     cp '$REMOTE_REFACTOR/runtime/control.db' \
@@ -52,8 +57,15 @@ ssh "$SERVER" "set -e
     sleep 3
   done
   curl -sf http://localhost:$HOST_PORT/api/health
-  curl -sf http://localhost:$HOST_PORT/api/resources
-  curl -sf http://localhost:$HOST_PORT/dashboard >/dev/null
+  test \"\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$HOST_PORT/api/resources)\" = 401
+  test \"\$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$HOST_PORT/dashboard)\" = 303
+  admin_password=\$(cat '$REMOTE_REFACTOR/runtime/admin-password')
+  curl -sf -c /tmp/refactor-auth-cookie \
+    -H 'content-type: application/json' \
+    -d \"{\\\"username\\\":\\\"admin\\\",\\\"password\\\":\\\"\$admin_password\\\"}\" \
+    http://localhost:$HOST_PORT/auth/login >/dev/null
+  curl -sf -b /tmp/refactor-auth-cookie http://localhost:$HOST_PORT/api/auth/me >/dev/null
+  rm -f /tmp/refactor-auth-cookie
   docker inspect --format='{{.State.Health.Status}}' android-control-refactor"
 
 echo

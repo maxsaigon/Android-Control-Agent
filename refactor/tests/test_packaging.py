@@ -6,5 +6,6 @@ def test_dashboard_assets_exist_in_package():
     static_dir = package_dir / "static"
 
     assert (static_dir / "index.html").is_file()
+    assert (static_dir / "login.html").is_file()
     assert (static_dir / "style.css").is_file()
     assert (static_dir / "app.js").is_file()

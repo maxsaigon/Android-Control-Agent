@@ -150,7 +150,7 @@ database is expected on the production host and must be inventoried there.
 - [ ] Record APK version installed on every device.
 - [ ] Tag and clean-build the Helper APK.
 - [ ] Inventory external cron/systemd jobs and Docker volumes.
-- [ ] Remove the legacy `admin/admin` bootstrap credential.
+- [x] Do not carry the legacy `admin/admin` bootstrap credential into refactor.
 - [ ] Rotate third-party keys after cutover.
 
 ## 5. Target architecture
@@ -243,7 +243,7 @@ Design system:
 - [x] Implement ADB transport for control, screenshot and media push.
 - [x] Preserve heartbeat and reconnect-session safety.
 - [x] Store only hashes of new device tokens.
-- [ ] Build selective importer for the production legacy database.
+- [x] Build selective, dry-run-first importer for legacy device identity.
 - [ ] Add LAN Helper WebSocket client after real-device contract tests.
 
 ### Workflow engine

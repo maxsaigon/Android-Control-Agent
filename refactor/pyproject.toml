@@ -5,6 +5,7 @@ description = "Focused Android device media control plane"
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "fastapi[standard]>=0.115,<1",
+  "itsdangerous>=2.2,<3",
   "pydantic-settings>=2.7,<3",
 ]
 

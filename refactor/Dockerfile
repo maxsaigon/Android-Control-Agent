@@ -9,4 +9,4 @@ ENV CONTROL_DATA_DIR=/app/runtime
 ENV CONTROL_DATABASE_PATH=/app/runtime/control.db
 EXPOSE 8080
 
-CMD ["uvicorn", "android_control.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "android_control.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]

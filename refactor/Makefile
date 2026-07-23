@@ -1,7 +1,7 @@
 .PHONY: dev test lint
 
 dev:
-	uv run uvicorn android_control.main:app --reload --port 8090
+	uv run uvicorn android_control.main:create_app --factory --reload --port 8090
 
 test:
 	uv run pytest
