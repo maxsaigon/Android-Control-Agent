@@ -37,8 +37,6 @@ class Repository:
                     legacy_id INTEGER,
                     created_at TEXT NOT NULL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_id
-                    ON devices(legacy_id) WHERE legacy_id IS NOT NULL;
                 CREATE TABLE IF NOT EXISTS admins (
                     username TEXT PRIMARY KEY,
                     password_hash TEXT NOT NULL,
@@ -71,10 +69,10 @@ class Repository:
             }
             if "legacy_id" not in columns:
                 db.execute("ALTER TABLE devices ADD COLUMN legacy_id INTEGER")
-                db.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_id "
-                    "ON devices(legacy_id) WHERE legacy_id IS NOT NULL"
-                )
+            db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_id "
+                "ON devices(legacy_id) WHERE legacy_id IS NOT NULL"
+            )
 
     def ensure_admin(self, username: str, password_hash: str) -> None:
         with self.connect() as db:

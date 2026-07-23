@@ -30,3 +30,21 @@ def test_import_is_dry_run_by_default_and_idempotent(tmp_path):
             "SELECT legacy_id, status, token_hash FROM devices"
         ).fetchone()
     assert row == (7, "offline", None)
+
+
+def test_repository_upgrades_devices_table_created_before_legacy_id(tmp_path):
+    target = tmp_path / "old-refactor.db"
+    with sqlite3.connect(target) as database:
+        database.execute(
+            "CREATE TABLE devices ("
+            "id INTEGER PRIMARY KEY, name TEXT, transport TEXT, address TEXT, "
+            "token_hash TEXT, status TEXT, battery_level INTEGER, last_seen TEXT, "
+            "helper_json TEXT, created_at TEXT)"
+        )
+
+    from android_control.database import Repository
+
+    Repository(target).initialize()
+    with sqlite3.connect(target) as database:
+        columns = [row[1] for row in database.execute("PRAGMA table_info(devices)")]
+    assert "legacy_id" in columns
