@@ -48,3 +48,24 @@ def test_repository_upgrades_devices_table_created_before_legacy_id(tmp_path):
     with sqlite3.connect(target) as database:
         columns = [row[1] for row in database.execute("PRAGMA table_info(devices)")]
     assert "legacy_id" in columns
+
+
+def test_import_maps_legacy_cloud_sentinel_without_copying_token(tmp_path):
+    source = tmp_path / "legacy.db"
+    target = tmp_path / "target.db"
+    with sqlite3.connect(source) as database:
+        database.execute(
+            "CREATE TABLE device "
+            "(id INTEGER, name TEXT, ip_address TEXT, adb_port INTEGER, status TEXT)"
+        )
+        database.execute(
+            "INSERT INTO device VALUES (1, 'Cloud phone', 'cloud:', 0, 'OFFLINE')"
+        )
+
+    report = import_devices(source, target, apply=True)
+    assert report["created"][0]["transport"] == "cloud"
+    with sqlite3.connect(target) as database:
+        row = database.execute(
+            "SELECT transport, address, token_hash FROM devices"
+        ).fetchone()
+    assert row == ("cloud", "", None)

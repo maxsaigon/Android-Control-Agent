@@ -21,27 +21,44 @@ def import_devices(source: Path, target: Path, *, apply: bool = False) -> dict:
     source_db.close()
 
     created = []
+    updated = []
     skipped = []
     with repository.connect() as target_db:
         known = {
-            row["legacy_id"]
+            row["legacy_id"]: row
             for row in target_db.execute(
-                "SELECT legacy_id FROM devices WHERE legacy_id IS NOT NULL"
+                "SELECT legacy_id, name, transport, address "
+                "FROM devices WHERE legacy_id IS NOT NULL"
             ).fetchall()
         }
         for row in rows:
-            address = row["ip_address"]
+            cloud = (row["ip_address"] or "").startswith("cloud:")
+            transport = "cloud" if cloud else "adb"
+            address = "" if cloud else row["ip_address"]
             if address and ":" not in address:
                 address = f"{address}:{row['adb_port']}"
             item = {
                 "legacy_id": row["id"],
                 "name": row["name"],
-                "transport": "adb",
+                "transport": transport,
                 "address": address or "",
                 "source_status": row["status"],
             }
             if row["id"] in known:
-                skipped.append(item)
+                current = known[row["id"]]
+                changed = any(
+                    current[field] != item[field]
+                    for field in ("name", "transport", "address")
+                )
+                (updated if changed else skipped).append(item)
+                if apply and changed:
+                    target_db.execute(
+                        """
+                        UPDATE devices SET name = ?, transport = ?, address = ?
+                        WHERE legacy_id = ?
+                        """,
+                        (item["name"], item["transport"], item["address"], row["id"]),
+                    )
                 continue
             created.append(item)
             if apply:
@@ -49,15 +66,16 @@ def import_devices(source: Path, target: Path, *, apply: bool = False) -> dict:
                     """
                     INSERT INTO devices
                         (name, transport, address, status, legacy_id, created_at)
-                    VALUES (?, 'adb', ?, 'offline', ?, ?)
+                    VALUES (?, ?, ?, 'offline', ?, ?)
                     """,
-                    (row["name"], address or "", row["id"], utc_now()),
+                    (row["name"], transport, address or "", row["id"], utc_now()),
                 )
 
     return {
         "mode": "apply" if apply else "dry-run",
         "source_count": len(rows),
         "would_create" if not apply else "created": created,
+        "would_update" if not apply else "updated": updated,
         "skipped_existing": skipped,
         "tokens_imported": 0,
         "history_imported": 0,
