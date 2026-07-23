@@ -45,6 +45,9 @@ echo "🧱 Remote compose: $REMOTE_COMPOSE_FILE"
 rsync -avz --delete \
     --exclude '.git' \
     --exclude '.env' \
+    --exclude '.env.livekit' \
+    --exclude 'livekit.yaml' \
+    --exclude 'docker-compose.livekit.yml' \
     --exclude '.DS_Store' \
     --exclude '.pytest_cache' \
     --exclude '__pycache__' \
