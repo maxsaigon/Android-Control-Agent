@@ -6,6 +6,7 @@ set -euo pipefail
 SERVER="${SERVER:-max@max.lan}"
 REMOTE_ROOT="${REMOTE_ROOT:-/home/max/android-control}"
 REMOTE_REFACTOR="$REMOTE_ROOT/refactor"
+HOST_PORT="${CONTROL_HOST_PORT:-8091}"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOCAL_REFACTOR="$PROJECT_ROOT/refactor"
 
@@ -43,18 +44,18 @@ rsync -az --delete \
 
 ssh "$SERVER" "set -e
   cd '$REMOTE_ROOT'
-  docker compose -f refactor/docker-compose.yml up -d --build
+  CONTROL_HOST_PORT='$HOST_PORT' docker compose -f refactor/docker-compose.yml up -d --build
   for attempt in 1 2 3 4 5 6; do
-    if curl -sf http://localhost:8090/api/health >/tmp/refactor-health.json; then
+    if curl -sf http://localhost:$HOST_PORT/api/health >/tmp/refactor-health.json; then
       break
     fi
     sleep 3
   done
-  curl -sf http://localhost:8090/api/health
-  curl -sf http://localhost:8090/api/resources
-  curl -sf http://localhost:8090/dashboard >/dev/null
+  curl -sf http://localhost:$HOST_PORT/api/health
+  curl -sf http://localhost:$HOST_PORT/api/resources
+  curl -sf http://localhost:$HOST_PORT/dashboard >/dev/null
   docker inspect --format='{{.State.Health.Status}}' android-control-refactor"
 
 echo
-echo "Refactor deployed at http://max.lan:8090"
+echo "Refactor deployed at http://max.lan:$HOST_PORT"
 echo "Public Cloudflare route remains on the legacy service."

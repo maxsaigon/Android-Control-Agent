@@ -31,7 +31,8 @@ uv run pytest
 ## Parallel deployment on max.lan
 
 The deploy script keeps the current public service untouched and starts the
-refactor on port `8090`:
+refactor on port `8091` by default (`8090` is already used by PocketBase on
+the current host):
 
 ```bash
 ./refactor/deploy-max-lan.sh

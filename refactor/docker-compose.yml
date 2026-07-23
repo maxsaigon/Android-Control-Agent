@@ -4,7 +4,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "8090:8080"
+      - "${CONTROL_HOST_PORT:-8091}:8080"
     env_file:
       # Reuse existing API keys and infrastructure values from the legacy
       # server without copying them into the refactor source tree.
