@@ -59,7 +59,7 @@ def test_import_maps_legacy_cloud_sentinel_without_copying_token(tmp_path):
             "(id INTEGER, name TEXT, ip_address TEXT, adb_port INTEGER, status TEXT)"
         )
         database.execute(
-            "INSERT INTO device VALUES (1, 'Cloud phone', 'cloud:', 0, 'OFFLINE')"
+            "INSERT INTO device VALUES (1, 'Cloud phone', 'cloud', 0, 'OFFLINE')"
         )
 
     report = import_devices(source, target, apply=True)

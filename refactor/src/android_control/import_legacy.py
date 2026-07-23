@@ -32,9 +32,10 @@ def import_devices(source: Path, target: Path, *, apply: bool = False) -> dict:
             ).fetchall()
         }
         for row in rows:
-            cloud = (row["ip_address"] or "").startswith("cloud:")
+            legacy_address = (row["ip_address"] or "").strip()
+            cloud = legacy_address == "cloud" or legacy_address.startswith("cloud:")
             transport = "cloud" if cloud else "adb"
-            address = "" if cloud else row["ip_address"]
+            address = "" if cloud else legacy_address
             if address and ":" not in address:
                 address = f"{address}:{row['adb_port']}"
             item = {
