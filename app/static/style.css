@@ -2688,6 +2688,13 @@ textarea { resize: vertical; min-height: 52px; }
 }
 
 /* Live Android control */
+.live-control-canvas {
+    max-width: 100%;
+    max-height: 65vh;
+    object-fit: contain;
+    touch-action: none;
+}
+
 .live-control-modal {
     width: min(94vw, 900px);
     max-width: 900px;

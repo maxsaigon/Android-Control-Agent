@@ -28,3 +28,7 @@ app/static/downloads/helper-release.json
 # Temp
 .DS_Store
 project_documentation.md
+node_modules/
+gateway/scrcpy/vendor/
+app/static/scrcpy-player.js
+app/static/scrcpy-licenses.txt

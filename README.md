@@ -9,6 +9,13 @@ Control multiple Android devices via natural language commands with hybrid autom
 
 ## Quick Start
 
+### Live Control on the dashboard
+
+Cloud devices use LiveKit + Android Helper. ADB TCP/IP devices can use the new
+scrcpy/Tango gateway for live video, touch, navigation and Unicode paste.
+See [setup, deployment and hardware verification](docs/plans/android-live-control-scrcpy.md).
+Build the gateway assets and set `SCRCPY_ENABLED=true` to enable ADB sessions.
+
 ## Deploy Rule
 
 - Trước mọi deploy lên server để smoke test hoặc demo, phải **commit + push branch hiện tại lên `origin` trước** để có backup khớp với code được deploy.

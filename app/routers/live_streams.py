@@ -73,6 +73,8 @@ async def start_stream(
             )
     except (RuntimeError, ConnectionError, TimeoutError) as exc:
         raise HTTPException(409, str(exc)) from exc
+    if result.get("status") == "error":
+        raise HTTPException(409, result.get("error", "Device rejected stream request"))
     return {
         "status": result.get("status", "ok"),
         "result": result.get("result"),
@@ -114,6 +116,19 @@ def viewer_token(
         "room": stream.room,
         "expires_in": stream.expires_in,
     }
+
+
+@router.get("/{device_id}/stream/status")
+async def stream_status(
+    device_id: int, request: Request, session: Session = Depends(get_session),
+):
+    _owned_cloud_device(request, session, device_id)
+    if not device_hub.is_connected(device_id):
+        raise HTTPException(409, "Device is not connected")
+    try:
+        return await device_hub.send_command(device_id, "get_stream_status")
+    except (RuntimeError, ConnectionError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/{device_id}/live-control")

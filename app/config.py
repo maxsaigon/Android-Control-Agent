@@ -25,6 +25,13 @@ class Settings(BaseSettings):
 
     # ADB
     adb_path: str = "adb"
+    # Optional local scrcpy/Tango gateway (same ADB server as device management).
+    scrcpy_enabled: bool = False
+    scrcpy_node_path: str = "node"
+    scrcpy_server_path: str = str(PROJECT_ROOT / "gateway/scrcpy/vendor/scrcpy-server-v3.3.3")
+    scrcpy_adb_host: str = "127.0.0.1"
+    scrcpy_adb_port: int = 5037
+    scrcpy_session_seconds: int = 1800
 
     # Accessibility Service Backend
     accessibility_ws_port: int = 38301     # WebSocket port on helper APK

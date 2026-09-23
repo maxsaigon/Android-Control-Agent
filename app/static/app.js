@@ -232,7 +232,7 @@ function renderDevices() {
                 </div>
                 ${d.status === 'unauthorized' ? '<div class="device-warning">⚠️ Chấp nhận kết nối ADB trên phone</div>' : ''}
                 <div class="device-actions">
-                    ${d.status !== 'offline' && (d.ip_address === 'cloud' || d.adb_port === 0)
+                    ${['online', 'busy'].includes(d.status)
                         ? `<button class="btn btn-xs btn-primary" onclick="event.stopPropagation(); openLiveControl(${d.id})">📺 Live Control</button>`
                         : ''
                     }
@@ -259,6 +259,9 @@ let liveControlRoom = null;
 let liveControlDeviceId = null;
 let livePointerStart = null;
 let liveControlGeneration = 0;
+let liveAdbPlayer = null;
+let liveControlTransport = null;
+let liveStatusTimer = null;
 
 async function openLiveControl(deviceId) {
     await closeLiveControl();
@@ -273,6 +276,18 @@ async function openLiveControl(deviceId) {
     modal.classList.add('active');
 
     try {
+        if (device && device.ip_address !== 'cloud' && device.adb_port !== 0) {
+            liveControlTransport = 'adb';
+            if (!window.AdbPlayer) throw new Error('ADB player chưa được build. Chạy npm run build trong gateway/scrcpy.');
+            document.getElementById('liveControlVideo').hidden = true;
+            status.textContent = 'Đang kết nối thiết bị ADB…';
+            liveAdbPlayer = window.AdbPlayer.create(deviceId,
+                document.querySelector('.live-control-stage'), message => {
+                    if (generation === liveControlGeneration) status.textContent = message;
+                });
+            return;
+        }
+        liveControlTransport = 'cloud';
         const startResponse = await fetch(`${API}/api/devices/${deviceId}/stream/start`, {
             method: 'POST',
         });
@@ -291,11 +306,41 @@ async function openLiveControl(deviceId) {
         if (generation !== liveControlGeneration) return;
         await connectLiveControlRoom(connection, generation);
         if (generation !== liveControlGeneration) return;
-        status.textContent = 'Chờ device chấp nhận Screen capture…';
+        if (!document.getElementById('liveControlVideo').srcObject) {
+            status.textContent = 'Chờ device chấp nhận Screen capture…';
+        }
+        pollLiveStreamStatus(deviceId, generation);
     } catch (error) {
         if (generation !== liveControlGeneration) return;
         status.textContent = `Lỗi: ${error.message}`;
         toast(`❌ ${error.message}`, 'error');
+    }
+}
+
+async function pollLiveStreamStatus(deviceId, generation) {
+    try {
+        const response = await fetch(`${API}/api/devices/${deviceId}/stream/status`);
+        if (generation !== liveControlGeneration) return;
+        const body = await response.json();
+        if (generation !== liveControlGeneration) return;
+        if (!response.ok) throw new Error(body.detail || 'Không đọc được trạng thái stream');
+        const result = body.result || {};
+        if (['permission_denied', 'error'].includes(result.state)) {
+            document.getElementById('liveControlStatus').textContent =
+                result.error || 'Device từ chối chia sẻ màn hình. Đóng và mở lại để thử lại.';
+            return;
+        }
+        if (result.state === 'idle') {
+            document.getElementById('liveControlStatus').textContent = 'Device đã dừng chia sẻ màn hình.';
+            return;
+        }
+    } catch (error) {
+        if (generation !== liveControlGeneration) return;
+        document.getElementById('liveControlStatus').textContent = `Lỗi: ${error.message}`;
+        return;
+    }
+    if (generation === liveControlGeneration) {
+        liveStatusTimer = setTimeout(() => pollLiveStreamStatus(deviceId, generation), 3000);
     }
 }
 
@@ -329,9 +374,15 @@ async function connectLiveControlRoom(connection, generation) {
 async function closeLiveControl(event) {
     if (event && event.target !== event.currentTarget) return;
     ++liveControlGeneration;
+    clearTimeout(liveStatusTimer);
+    liveStatusTimer = null;
     const deviceId = liveControlDeviceId;
+    const transport = liveControlTransport;
+    liveControlTransport = null;
     liveControlDeviceId = null;
     livePointerStart = null;
+    liveAdbPlayer?.close();
+    liveAdbPlayer = null;
 
     if (liveControlRoom) {
         await liveControlRoom.disconnect();
@@ -339,9 +390,10 @@ async function closeLiveControl(event) {
     }
     const video = document.getElementById('liveControlVideo');
     video.srcObject = null;
+    video.hidden = false;
     document.getElementById('liveControlModal').classList.remove('active');
 
-    if (deviceId) {
+    if (deviceId && transport === 'cloud') {
         try {
             await fetch(`${API}/api/devices/${deviceId}/stream/stop`, { method: 'POST' });
         } catch (_) {
@@ -405,6 +457,7 @@ async function livePointerUp(event) {
 
 async function sendLiveControl(action, params = {}) {
     if (!liveControlDeviceId) return false;
+    if (liveControlTransport === 'adb') return liveAdbPlayer?.send(action, params) || false;
     const response = await fetch(`${API}/api/devices/${liveControlDeviceId}/live-control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

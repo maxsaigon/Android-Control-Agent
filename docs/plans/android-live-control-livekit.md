@@ -104,7 +104,7 @@ LiveKit is the media plane only. `DeviceHub`, `CloudBackend`, and
 - [x] Validate device existence, ownership, online state, and LiveKit config.
 - [x] Implement start, stop, viewer-token, and live-control responses.
 - [x] Add focused token grant/room scoping tests.
-- [ ] Add endpoint integration tests for disabled config, offline device, and
+- [x] Add endpoint integration tests for disabled config, offline device, and
       successful command routing.
 
 ### Android Helper
@@ -126,7 +126,7 @@ LiveKit is the media plane only. `DeviceHub`, `CloudBackend`, and
 - [x] Implement pointer coordinate mapping with letterbox offsets.
 - [x] Route input through existing authenticated control endpoints.
 - [x] Handle media rotation, disconnect, and explicit stop.
-- [ ] Surface permission rejection automatically in the dashboard.
+- [x] Surface permission rejection automatically in the dashboard.
 
 ### Infrastructure
 

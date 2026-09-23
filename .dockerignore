@@ -13,3 +13,5 @@ screenshots/
 .gitignore
 *.md
 tests/
+**/node_modules/
+gateway/scrcpy/vendor/

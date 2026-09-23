@@ -1,0 +1,22 @@
+{
+  "dependencies": {
+    "@yume-chan/adb": "2.6.4",
+    "@yume-chan/adb-scrcpy": "2.3.2",
+    "@yume-chan/adb-server-node-tcp": "2.5.2",
+    "@yume-chan/scrcpy": "2.3.0",
+    "@yume-chan/scrcpy-decoder-webcodecs": "2.5.3",
+    "@yume-chan/stream-extra": "2.6.1",
+    "esbuild": "0.28.2"
+  },
+  "name": "android-control-scrcpy",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "node setup.mjs",
+    "build": "node build.mjs",
+    "test": "node --test *.test.mjs"
+  }
+}
