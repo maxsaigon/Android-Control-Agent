@@ -161,6 +161,14 @@ This fixes LAN candidate advertisement only. Clients outside the LAN require a
 reachable public media endpoint or TURN relay; an HTTP Cloudflare Tunnel does not
 forward WebRTC UDP. HTTPS dashboards should use a trusted WSS signaling endpoint.
 
+Verified on max.lan on 2026-09-23: failed browser sessions advertised Docker IP
+`172.18.0.2` and recorded ICE checks with zero responses. Setting `rtc.node_ip` to
+`192.168.1.174` in the server's existing `livekit.yaml` (keys preserved, config
+backed up) and restarting only LiveKit corrected the advertised node address.
+A separate diagnostic room with 3-minute tokens successfully connected a publisher
+and subscriber from a Mac outside Docker and delivered a synthetic 320x240 video
+frame. Phone capture and off-LAN connectivity still require separate verification.
+
 1. Install the generated Helper APK over the existing version.
 2. Re-enable Accessibility if Android disables it after install.
 3. Connect the Helper to the cloud server.
