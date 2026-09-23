@@ -307,7 +307,7 @@ async function openLiveControl(deviceId) {
         await connectLiveControlRoom(connection, generation);
         if (generation !== liveControlGeneration) return;
         if (!document.getElementById('liveControlVideo').srcObject) {
-            status.textContent = 'Chờ device chấp nhận Screen capture…';
+            status.textContent = 'Dashboard đã kết nối; đang chờ hình ảnh từ device…';
         }
         pollLiveStreamStatus(deviceId, generation);
     } catch (error) {
@@ -324,7 +324,18 @@ async function pollLiveStreamStatus(deviceId, generation) {
         const body = await response.json();
         if (generation !== liveControlGeneration) return;
         if (!response.ok) throw new Error(body.detail || 'Không đọc được trạng thái stream');
+        if (body.status === 'error') throw new Error(body.error || 'Helper không trả được trạng thái stream');
         const result = body.result || {};
+        if (!document.getElementById('liveControlVideo').srcObject) {
+            const messages = {
+                awaiting_permission: 'Chờ bấm Start Now trên device…',
+                connecting: 'Device đã nhận quyền, đang kết nối LiveKit…',
+                streaming: 'Device đang phát; dashboard đang chờ video…',
+            };
+            if (messages[result.state]) {
+                document.getElementById('liveControlStatus').textContent = messages[result.state];
+            }
+        }
         if (['permission_denied', 'error'].includes(result.state)) {
             document.getElementById('liveControlStatus').textContent =
                 result.error || 'Device từ chối chia sẻ màn hình. Đóng và mở lại để thử lại.';

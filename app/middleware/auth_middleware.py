@@ -18,6 +18,8 @@ PUBLIC_PATHS = {
     "/auth/logout",
     "/set",
     "/api/health",
+    "/livekit/rtc/validate",  # LiveKit authenticates the scoped JWT upstream
+    "/livekit/rtc/v1",
     "/api/helper/release",
     "/api/device/register",
     "/download/helper.apk",

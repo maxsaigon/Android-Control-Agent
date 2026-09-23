@@ -175,3 +175,27 @@ frame. Phone capture and off-LAN connectivity still require separate verificatio
 4. Open Live Control in the dashboard.
 5. Approve the Android screen-capture dialog.
 6. Verify video, tap, swipe, text, Back/Home, rotation, stop, and reconnect.
+
+### TLS signaling through the dashboard
+
+The Helper targets Android 33 and does not opt into cleartext traffic. Use a
+`wss://` URL; an HTTP `ws://192.168...` URL can fail before Android joins the room,
+even when the browser viewer connects successfully.
+
+For a dashboard already served through HTTPS, configure:
+
+```dotenv
+LIVEKIT_URL=wss://m.buonme.com/livekit
+LIVEKIT_INTERNAL_URL=ws://android-control-livekit:7880
+```
+
+The optional FastAPI proxy forwards only `/rtc`, `/rtc/v1` WebSockets and
+`/rtc/validate` HTTP to the configured upstream. LiveKit verifies the scoped
+JWTs; dashboard cookies are not forwarded, JWT queries are removed from access
+logs, and room administration APIs are not proxied. The upstream must be on a
+trusted server network. Leave `LIVEKIT_INTERNAL_URL` empty to disable the proxy.
+
+This secures signaling without an APK update or enabling cleartext Android
+traffic. WebRTC media still uses LiveKit's advertised UDP/TCP ports directly;
+remote networks require reachable public ICE addresses or TURN. WSS through a
+Cloudflare tunnel alone does not provide a media relay.

@@ -46,6 +46,7 @@ class Settings(BaseSettings):
 
     # LiveKit Android screen streaming
     livekit_url: str = ""
+    livekit_internal_url: str = ""  # Fixed upstream for the optional WSS signaling proxy
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
     livekit_token_ttl_seconds: int = 600
