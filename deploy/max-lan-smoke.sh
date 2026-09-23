@@ -9,6 +9,7 @@ SERVER="${SERVER:-max@max.lan}"
 REMOTE_DIR="${REMOTE_DIR:-/home/max/android-control}"
 REMOTE_COMPOSE_FILE="${REMOTE_COMPOSE_FILE:-docker-compose.yml}"
 REMOTE_DB_PATH="${REMOTE_DB_PATH:-$REMOTE_DIR/data/android_control.db}"
+REMOTE_RUNTIME_IMAGE="${REMOTE_RUNTIME_IMAGE:-}"
 PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://m.buonme.com}"
 PUBLIC_SMOKE_OUT_DIR="${PUBLIC_SMOKE_OUT_DIR:-/tmp/android-control-public-smoke}"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -96,7 +97,12 @@ ssh "$SERVER" "set -e; \
         python3 -c \"import sqlite3; s=sqlite3.connect('$REMOTE_DB_PATH'); d=sqlite3.connect('data/backups/android_control.db.pre_deploy_\$TS'); s.backup(d); d.close(); s.close()\"; \
         echo \"🗄️ Backed up database to data/backups/android_control.db.pre_deploy_\$TS\"; \
     fi && \
-    docker compose -f \"$REMOTE_COMPOSE_FILE\" up -d --build"
+    if [ -n '$REMOTE_RUNTIME_IMAGE' ]; then \
+        docker build --build-arg RUNTIME_IMAGE='$REMOTE_RUNTIME_IMAGE' -f deploy/Dockerfile.runtime -t android-control-app . && \
+        docker compose -f \"$REMOTE_COMPOSE_FILE\" up -d --no-build; \
+    else \
+        docker compose -f \"$REMOTE_COMPOSE_FILE\" up -d --build; \
+    fi"
 
 echo "⏳ Waiting for app to come back..."
 sleep 6

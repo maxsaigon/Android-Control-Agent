@@ -1,0 +1,7 @@
+# Code-only deployment: explicitly reuse the already validated production runtime.
+# Use the regular Dockerfile whenever Python/system dependencies change.
+ARG RUNTIME_IMAGE
+FROM ${RUNTIME_IMAGE}
+WORKDIR /app
+COPY app/ ./app/
+COPY config.yaml ./
