@@ -1,7 +1,19 @@
-# Code-only deployment: explicitly reuse the already validated production runtime.
-# Use the regular Dockerfile whenever Python/system dependencies change.
+# Reuse validated Python/system dependencies and build the scrcpy assets separately.
+# The base runtime must provide libstdc++6 (already required by ffmpeg).
 ARG RUNTIME_IMAGE
+FROM node:22-bookworm-slim AS scrcpy-build
+WORKDIR /build/gateway/scrcpy
+COPY gateway/scrcpy/package*.json ./
+RUN npm ci
+COPY gateway/scrcpy/ ./
+RUN npm run setup && npm run build
+
 FROM ${RUNTIME_IMAGE}
 WORKDIR /app
 COPY app/ ./app/
 COPY config.yaml ./
+COPY --from=scrcpy-build /usr/local/bin/node /usr/local/bin/node
+COPY --from=scrcpy-build /build/gateway/scrcpy /app/gateway/scrcpy
+COPY --from=scrcpy-build /build/app/static/scrcpy-player.js /app/app/static/scrcpy-player.js
+COPY --from=scrcpy-build /build/app/static/scrcpy-licenses.txt /app/app/static/scrcpy-licenses.txt
+RUN node --version && python -c "import app.main"
