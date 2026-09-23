@@ -1,0 +1,12 @@
+# LAN deployment behind Docker port mappings. Replace node_ip with the host's
+# LAN address; container addresses (172.x) are not reachable by phones/browsers.
+# Supply the existing API key pair in the server-side config, never in Git.
+port: 7880
+rtc:
+  node_ip: 192.168.1.174
+  use_external_ip: false
+  tcp_port: 7881
+  udp_port: 7882
+logging:
+  level: info
+# keys: populated on the server

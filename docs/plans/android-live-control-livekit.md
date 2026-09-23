@@ -148,6 +148,19 @@ LiveKit is the media plane only. `DeviceHub`, `CloudBackend`, and
 
 ## Physical-device smoke test
 
+### Docker LAN ICE troubleshooting
+
+If signaling succeeds but the browser reports `could not establish pc connection`,
+inspect LiveKit's ICE candidates. With bridge networking, advertising a container
+address such as `172.18.0.2` prevents LAN clients from reaching the media sockets.
+Set `rtc.node_ip` to the Docker host's LAN IP and `rtc.use_external_ip: false`,
+while preserving the existing API keys and mapped ports 7881/TCP and 7882/UDP.
+See `deploy/livekit.lan.example.yaml`. Restart LiveKit after changing its config.
+
+This fixes LAN candidate advertisement only. Clients outside the LAN require a
+reachable public media endpoint or TURN relay; an HTTP Cloudflare Tunnel does not
+forward WebRTC UDP. HTTPS dashboards should use a trusted WSS signaling endpoint.
+
 1. Install the generated Helper APK over the existing version.
 2. Re-enable Accessibility if Android disables it after install.
 3. Connect the Helper to the cloud server.
