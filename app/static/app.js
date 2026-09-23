@@ -52,7 +52,7 @@ async function loadUserInfo() {
     if (res.ok) {
       const data = await res.json();
       const el = document.getElementById('currentUser');
-      if (el) el.textContent = `👤 ${data.username}`;
+      if (el) el.textContent = data.username;
     }
   } catch (_) { /* optional */ }
 }
@@ -105,7 +105,7 @@ function navigateTo(section, btn) {
     }
 
     // Update page title
-    const titles = { dashboard: 'Dashboard', devices: 'Devices', scheduler: 'Scheduler', history: 'History', videos: 'Videos & Distribution' };
+    const titles = { dashboard: 'Tổng quan', devices: 'Thiết bị', scheduler: 'Lịch chạy', history: 'Lịch sử', videos: 'Video & phân phối' };
     document.getElementById('pageTitle').textContent = titles[section] || 'Dashboard';
 
     // Load data for section
@@ -138,23 +138,22 @@ async function refreshStats() {
         const devicesSnap = snapshot.devices || {};
         const queueSnap = snapshot.queue || {};
         const aiSnap = snapshot.ai || {};
-        const primary = dashboardOverview.primary_template;
 
         document.getElementById('statDevices').textContent = devicesSnap.total ?? 0;
         document.getElementById('statDevicesSub').textContent =
-            `${devicesSnap.online || 0} online · ${devicesSnap.busy || 0} busy · ${devicesSnap.offline || 0} offline`;
+            `${devicesSnap.online || 0} online · ${devicesSnap.offline || 0} offline`;
 
         document.getElementById('statCommentSessions').textContent = snapshot.active_comment_sessions ?? 0;
         document.getElementById('statTasksSub').textContent =
-            `${queueSnap.running_tasks || 0} running · ${snapshot.recent_failures_24h || 0} fails / 24h`;
+            `${queueSnap.running_tasks || 0} đang chạy · ${snapshot.recent_failures_24h || 0} lỗi / 24h`;
 
         document.getElementById('statCost').textContent = `$${(aiSnap.total_cost || 0).toFixed(3)}`;
         document.getElementById('statCostSub').textContent =
-            `${snapshot.tasks_today?.total || 0} tasks today`;
+            `${snapshot.tasks_today?.total || 0} tác vụ hôm nay`;
 
         document.getElementById('statRate').textContent = `${aiSnap.recent_success_rate ?? 100}%`;
         document.getElementById('statRateSub').textContent =
-            `${aiSnap.success_rate ?? 100}% all-time · ${primary?.title || 'No primary template'}`;
+            `${aiSnap.success_rate ?? 100}% trong toàn bộ lịch sử`;
 
         if (document.getElementById('queueCount')) {
             document.getElementById('queueCount').textContent = queueSnap.running_tasks || 0;
@@ -177,7 +176,7 @@ async function refreshDevices() {
         devices = await res.json();
         renderDevices();
         updateDeviceSelect();
-        
+
         // Also refresh pending links
         await refreshPendingDevices();
 
@@ -433,7 +432,7 @@ function selectDevice(id) {
 function updateDeviceSelect() {
     const sel = document.getElementById('deviceSelect');
     const current = sel.value;
-    sel.innerHTML = '<option value="">Chọn device...</option>' +
+    sel.innerHTML = '<option value="">Chọn thiết bị…</option>' +
         devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml(d.ip_address)}) — ${d.status}</option>`).join('');
     if (current) sel.value = current;
     // Also update account device select on Videos tab
@@ -479,7 +478,7 @@ async function renameDevice(id, currentName) {
     // Replace name text with input field
     const oldHTML = nameEl.innerHTML;
     nameEl.innerHTML = `<input type="text" class="rename-input" value="${escapeHtml(currentName)}"
-        onclick="event.stopPropagation()" 
+        onclick="event.stopPropagation()"
         onkeydown="if(event.key==='Enter'){saveDeviceName(${id},this.value);event.stopPropagation()}else if(event.key==='Escape'){cancelRename()}"
         onblur="saveDeviceName(${id},this.value)">`;
     const input = nameEl.querySelector('input');
@@ -555,12 +554,12 @@ async function refreshPendingDevices() {
         const res = await fetch(`${API}/api/device/link/requests`);
         if (!res.ok) return;
         const pending = await res.json();
-        
+
         const countEl = document.getElementById('pendingCount');
         const listEl = document.getElementById('pendingDevicesList');
         const panelEl = document.getElementById('pendingDevicesPanel');
         if (!countEl || !listEl || !panelEl) return;
-        
+
         countEl.textContent = pending.length;
         if (pending.length === 0) {
             panelEl.style.display = 'block';
@@ -568,7 +567,7 @@ async function refreshPendingDevices() {
             return;
         }
         panelEl.style.display = 'block';
-        
+
         listEl.innerHTML = '<div class="device-grid" style="grid-template-columns: repeat(auto-fill, minmax(320px, 1fr))">' + pending.map(req => {
             const timeAgo = Math.round((new Date() - new Date(req.created_at)) / 60000);
             return `
@@ -783,6 +782,8 @@ async function loadTemplates() {
         const countEl = document.getElementById('templateCount');
         if (countEl) countEl.textContent = templates.length;
 
+        const picker = document.getElementById('templatePicker');
+        if (picker) picker.innerHTML = templates.map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.title)}${!t.implemented ? ' · Sắp có' : ''}</option>`).join('');
         renderTemplateLibrary();
 
         const preferred = templates.find(t => t.is_primary) || templates[0];
@@ -824,10 +825,10 @@ function renderTemplateLibrary() {
     const planned = templates.filter(t => !t.implemented || t.status === 'planned');
 
     const groups = [
-        ['Primary', primary],
-        ['Secondary TikTok', secondary],
-        ['Other Platforms', other],
-        ['Planned', planned],
+        ['Đề xuất', primary],
+        ['TikTok', secondary],
+        ['Nền tảng khác', other],
+        ['Sắp có', planned],
     ].filter(([, items]) => items.length);
 
     container.innerHTML = groups.map(([title, items]) => `
@@ -838,7 +839,7 @@ function renderTemplateLibrary() {
                     const active = template.name === selectedTemplateName ? 'active' : '';
                     const running = dashboardOverview?.running?.by_template?.[template.name] || 0;
                     return `
-                        <button type="button" class="template-library-card ${active}" onclick="selectDashboardTemplate('${template.name}')">
+                        <button type="button" class="template-library-card ${active}" onclick="selectDashboardTemplate('${template.name}'); document.getElementById('templateCatalog').open = false; document.getElementById('templatePicker').focus();">
                             <div class="template-library-top">
                                 <div class="template-library-badges">
                                     ${templateStatusChip(template)}
@@ -864,45 +865,8 @@ function renderPrimaryTemplateSummary() {
     const template = templateMap[selectedTemplateName] || dashboardOverview?.primary_template || templates.find(t => t.is_primary) || templates[0];
     if (!template) return;
 
-    const titleEl = document.getElementById('primaryTemplateTitle');
     const descEl = document.getElementById('primaryTemplateDescription');
-    const badgesEl = document.getElementById('primaryTemplateBadges');
-    const statsEl = document.getElementById('primaryTemplateStats');
-    const metaEl = document.getElementById('composerMeta');
-
-    if (titleEl) titleEl.textContent = template.title;
     if (descEl) descEl.textContent = template.description || '';
-    if (badgesEl) {
-        badgesEl.innerHTML = `
-            ${templateStatusChip(template)}
-            ${templateModeChip(template.mode)}
-            <span class="template-chip muted">Risk ${escapeHtml(template.risk_level || 'medium')}</span>
-        `;
-    }
-    if (metaEl) {
-        metaEl.innerHTML = `
-            ${templateStatusChip(template)}
-            ${templateModeChip(template.mode)}
-        `;
-    }
-    if (statsEl) {
-        const runningCount = dashboardOverview?.running?.by_template?.[template.name] || 0;
-        const fallbackText = template.fallback_behavior || 'No fallback metadata';
-        statsEl.innerHTML = `
-            <div class="template-stat-block">
-                <span class="template-stat-label">Running now</span>
-                <span class="template-stat-value">${runningCount} session(s)</span>
-            </div>
-            <div class="template-stat-block">
-                <span class="template-stat-label">Fallback</span>
-                <span class="template-stat-value">${escapeHtml(fallbackText)}</span>
-            </div>
-            <div class="template-stat-block">
-                <span class="template-stat-label">Expected AI calls</span>
-                <span class="template-stat-value">${template.mode === 'hybrid' ? '≈ 1 / verified comment' : template.mode === 'ai' ? 'Step-based' : '0'}</span>
-            </div>
-        `;
-    }
 }
 
 function buildTemplateField(field, template) {
@@ -927,7 +891,7 @@ function buildTemplateField(field, template) {
         const options = Array.isArray(field.options) ? field.options : [];
         return `
             <div class="form-group ${full}">
-                <label>${escapeHtml(field.label || field.key)}</label>
+                <label for="${id}">${escapeHtml(field.label || field.key)}</label>
                 <select id="${id}" onchange="updateCostEstimate(); updateSubmitButton();">
                     ${options.map(option => {
                         const value = typeof option === 'string' ? option : option.value;
@@ -943,7 +907,7 @@ function buildTemplateField(field, template) {
 
     return `
         <div class="form-group ${full}">
-            <label>${escapeHtml(field.label || field.key)}</label>
+            <label for="${id}">${escapeHtml(field.label || field.key)}</label>
             <input
                 type="${field.type === 'number' ? 'number' : 'text'}"
                 id="${id}"
@@ -964,7 +928,10 @@ function renderTemplateFields(template) {
     if (!container || !template) return;
 
     const fields = Array.isArray(template.ui_fields) ? template.ui_fields : [];
-    container.innerHTML = fields.map(field => buildTemplateField(field, template)).join('');
+    const basic = fields.filter(field => !field.advanced);
+    const advanced = fields.filter(field => field.advanced);
+    container.innerHTML = basic.map(field => buildTemplateField(field, template)).join('') +
+        (advanced.length ? `<details class="advanced-toggle template-options"><summary>Tuỳ chỉnh thêm</summary><div class="dynamic-fields">${advanced.map(field => buildTemplateField(field, template)).join('')}</div></details>` : '');
 
     if (commandGroup) {
         commandGroup.style.display = template.mode === 'ai' ? 'block' : 'none';
@@ -1011,6 +978,8 @@ function selectDashboardTemplate(name) {
     selectedTemplateName = name;
     const selectedEl = document.getElementById('selectedTemplate');
     if (selectedEl) selectedEl.value = name;
+    const picker = document.getElementById('templatePicker');
+    if (picker) picker.value = name;
 
     renderTemplateLibrary();
     renderPrimaryTemplateSummary();
@@ -1053,12 +1022,12 @@ function updateSubmitButton() {
     if (template.mode === 'ai') {
         const cmd = document.getElementById('commandInput')?.value.trim();
         btn.disabled = !cmd;
-        btn.textContent = `Run ${template.title}`;
+        btn.textContent = 'Bắt đầu tác vụ';
         return;
     }
 
     btn.disabled = false;
-    btn.textContent = `Run ${template.title}`;
+    btn.textContent = 'Bắt đầu tác vụ';
 }
 
 // ===== SUBMIT TASK =====
@@ -1267,7 +1236,7 @@ async function refreshRunning() {
         document.getElementById('runningCount').textContent = tasks.length;
 
         if (!tasks.length) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">🎯</div><div class="empty-text">No tasks running</div></div>';
+            container.innerHTML = '<div class="empty-state"><div class="idle-symbol" aria-hidden="true">✓</div><div class="empty-text">Sẵn sàng khi bạn cần<small>Tác vụ đang chạy sẽ xuất hiện ở đây.</small></div></div>';
             liveStepData = {};
             subscribedTasks.clear();
             return;
@@ -1504,10 +1473,10 @@ async function refreshRecentOutcomes() {
         const tasks = await res.json();
         const recent = tasks.filter(
             t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled'
-        ).slice(0, 6);
+        ).slice(0, 3);
 
         if (!recent.length) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">LOG</div><div class="empty-text">Chưa có run hoàn tất</div></div>';
+            container.innerHTML = '<div class="empty-state"><div class="empty-text">Chưa có tác vụ hoàn tất</div></div>';
             return;
         }
 
@@ -1530,7 +1499,7 @@ async function refreshRecentOutcomes() {
                         </div>
                         <div class="recent-outcome-meta">
                             <span class="template-chip ${t.status === 'completed' ? 'script' : 'muted'}">${escapeHtml(t.status)}</span>
-                            ${template ? templateModeChip(template.mode) : ''}
+
                         </div>
                     </div>
                     <div class="recent-outcome-foot">
@@ -1830,7 +1799,7 @@ const ACTION_LABELS = {
 function populateSchedDevices() {
     const sel = document.getElementById('schedDevice');
     if (!sel) return;
-    sel.innerHTML = '<option value="">Chọn device...</option>' +
+    sel.innerHTML = '<option value="">Chọn thiết bị…</option>' +
         devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
 }
 
@@ -3715,7 +3684,7 @@ function _populateAccountDeviceSelect() {
     const sel = document.getElementById('accountDevice');
     if (!sel) return;
     const cur = sel.value;
-    sel.innerHTML = '<option value="">Chọn device...</option>' +
+    sel.innerHTML = '<option value="">Chọn thiết bị…</option>' +
         devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
     if (cur) sel.value = cur;
     populateAssignmentDeviceFilter();

@@ -4,36 +4,34 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Android Control System</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css?v=__STATIC_VERSION__">
 </head>
 <body>
     <!-- Sidebar Navigation -->
     <nav class="sidebar" id="sidebar">
         <div class="sidebar-logo">
-            <span class="logo-icon">🤖</span>
+            <span class="logo-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="6" y="2" width="12" height="20" rx="4"/><path d="M10 18h4"/></svg></span><span class="brand-name">Android Control<small>Personal workspace</small></span>
         </div>
         <div class="sidebar-nav">
             <button class="nav-btn active" data-section="dashboard" onclick="navigateTo('dashboard', this)" title="Dashboard">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                <span class="nav-label">Dashboard</span>
+                <span class="nav-label">Tổng quan</span>
             </button>
             <button class="nav-btn" data-section="devices" onclick="navigateTo('devices', this)" title="Devices">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-                <span class="nav-label">Devices</span>
+                <span class="nav-label">Thiết bị</span>
             </button>
             <button class="nav-btn" data-section="scheduler" onclick="navigateTo('scheduler', this)" title="Scheduler">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                <span class="nav-label">Scheduler</span>
+                <span class="nav-label">Lịch chạy</span>
             </button>
             <button class="nav-btn" data-section="history" onclick="navigateTo('history', this)" title="History">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-                <span class="nav-label">History</span>
+                <span class="nav-label">Lịch sử</span>
             </button>
             <button class="nav-btn" data-section="videos" onclick="navigateTo('videos', this)" title="Videos">
                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/></svg>
-                <span class="nav-label">Videos</span>
+                <span class="nav-label">Video</span>
             </button>
         </div>
         <div class="sidebar-footer">
@@ -49,222 +47,65 @@
                 <button class="menu-toggle" onclick="toggleSidebar()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
                 </button>
-                <h1 class="page-title" id="pageTitle">Dashboard</h1>
+                <h1 class="page-title" id="pageTitle">Tổng quan</h1>
             </div>
             <div class="topbar-right">
                 <div class="status-indicator" id="serverStatus">
                     <span class="pulse"></span>
-                    <span>Connected</span>
+                    <span>Đã kết nối</span>
                 </div>
                 <div class="queue-badge" id="queueBadge">
-                    <span class="badge-label">Queue</span>
+                    <span class="badge-label">Hàng đợi</span>
                     <span class="badge-value" id="queueCount">0</span>
                 </div>
                 <span id="currentUser" style="font-size:12px;color:var(--text-secondary);padding:0 8px"></span>
-                <button class="btn btn-sm btn-ghost" onclick="logout()" title="Đăng xuất" style="padding:6px 12px;font-size:12px">🚪 Logout</button>
+                <button class="btn btn-sm btn-ghost" onclick="logout()" title="Đăng xuất" style="padding:6px 12px;font-size:12px">Đăng xuất</button>
             </div>
         </header>
 
         <!-- ============ DASHBOARD SECTION ============ -->
         <section class="page-section active dashboard-section" id="sectionDashboard">
-            <div class="dashboard-hero">
-                <div class="dashboard-hero-copy">
-                    <span class="eyebrow">TikTok-first operations</span>
-                    <h2>View nhiều hơn, scroll ít hơn.</h2>
-                    <p class="dashboard-hero-text">
-                        Dashboard nén lại để theo dõi queue, launch template và xử lý run ngay trên một màn hình.
-                    </p>
-                </div>
-                <div class="dashboard-hero-pills" id="dashboardHeroPills">
-                    <span class="hero-pill">Primary template</span>
-                    <span class="hero-pill muted">Metadata-driven</span>
-                </div>
+            <div class="workspace-heading">
+                <div><span class="eyebrow">WORKSPACE</span><h2>Mọi thứ, trong tầm tay.</h2><p>Chọn thiết bị. Chạy tác vụ. Theo dõi kết quả.</p></div>
+                <button class="btn btn-ghost" onclick="navigateTo('devices', document.querySelector('[data-section=devices]'))">Quản lý thiết bị <span aria-hidden="true">↗</span></button>
             </div>
-
-            <div class="stats-row dashboard-snapshot-row">
-                <div class="stat-card stat-devices">
-                    <div class="stat-icon">01</div>
-                    <div class="stat-content">
-                        <div class="stat-number" id="statDevices">0</div>
-                        <div class="stat-label">Connected Fleet</div>
-                        <div class="stat-sub" id="statDevicesSub">—</div>
-                    </div>
-                </div>
-                <div class="stat-card stat-tasks">
-                    <div class="stat-icon">02</div>
-                    <div class="stat-content">
-                        <div class="stat-number" id="statCommentSessions">0</div>
-                        <div class="stat-label">Active Comment Sessions</div>
-                        <div class="stat-sub" id="statTasksSub">—</div>
-                    </div>
-                </div>
-                <div class="stat-card stat-cost">
-                    <div class="stat-icon">03</div>
-                    <div class="stat-content">
-                        <div class="stat-number" id="statCost">$0</div>
-                        <div class="stat-label">AI Spend</div>
-                        <div class="stat-sub" id="statCostSub">All time</div>
-                    </div>
-                </div>
-                <div class="stat-card stat-rate">
-                    <div class="stat-icon">04</div>
-                    <div class="stat-content">
-                        <div class="stat-number" id="statRate">100%</div>
-                        <div class="stat-label">24h Quality Signal</div>
-                        <div class="stat-sub" id="statRateSub">—</div>
-                    </div>
-                </div>
+            <div class="stats-row dashboard-snapshot-row" aria-label="Trạng thái hệ thống">
+                <div class="stat-card"><div class="stat-content"><div class="stat-label">Thiết bị đã thêm</div><div class="stat-number" id="statDevices">0</div><div class="stat-sub" id="statDevicesSub">—</div></div></div>
+                <div class="stat-card"><div class="stat-content"><div class="stat-label">Phiên bình luận</div><div class="stat-number" id="statCommentSessions">0</div><div class="stat-sub" id="statTasksSub">—</div></div></div>
+                <div class="stat-card"><div class="stat-content"><div class="stat-label">Chi phí AI</div><div class="stat-number" id="statCost">$0</div><div class="stat-sub" id="statCostSub">Tổng cộng</div></div></div>
+                <div class="stat-card"><div class="stat-content"><div class="stat-label">Thành công · 24 giờ</div><div class="stat-number" id="statRate">—</div><div class="stat-sub" id="statRateSub">—</div></div></div>
             </div>
-
             <div class="dashboard-workspace">
-                <div class="dashboard-grid dashboard-grid-top">
-                    <div class="panel composer-panel">
-                        <div class="panel-header dashboard-panel-header">
-                            <div>
-                                <span class="panel-kicker">Primary run composer</span>
-                                <h2>Launch</h2>
+                <div class="panel composer-panel">
+                    <div class="panel-header"><h2>Tạo tác vụ</h2><span class="quiet-label">Cấu hình &amp; bắt đầu</span></div>
+                    <div class="panel-body">
+                        <form id="taskForm" onsubmit="submitTask(event)">
+                            <input type="hidden" id="selectedTemplate" value="">
+                            <div class="form-group template-picker-group"><label for="templatePicker">Kịch bản</label><select id="templatePicker" onchange="selectDashboardTemplate(this.value)"><option value="">Đang tải kịch bản…</option></select></div>
+                            <div id="primaryTemplateCard" class="primary-template-card"><p id="primaryTemplateDescription" class="primary-template-desc"></p></div>
+                            <div id="dynamicTemplateFields" class="dynamic-fields"></div>
+                            <div id="composerCommandGroup" style="display:none">
+                                <div class="form-group"><label for="commandInput">Yêu cầu cho AI</label><textarea id="commandInput" rows="3" placeholder="Mô tả tác vụ bạn muốn thực hiện"></textarea></div>
+                                <details class="advanced-toggle"><summary>Giới hạn thực thi</summary><div class="form-row">
+                                    <div class="form-group half"><label for="maxSteps">Số bước tối đa</label><input type="number" id="maxSteps" value="20" min="1" max="50"></div>
+                                    <div class="form-group half"><label for="maxRetries">Số lần thử lại</label><input type="number" id="maxRetries" value="2" min="0" max="5"></div>
+                                </div></details>
                             </div>
-                            <div class="template-quick-meta" id="composerMeta">
-                                <span class="template-chip primary">Primary</span>
-                                <span class="template-chip">Hybrid</span>
+                            <div class="execution-controls">
+                                <div class="form-group"><label for="deviceSelect">Thiết bị thực hiện</label><select id="deviceSelect" required><option value="">Chọn thiết bị…</option></select></div>
+                                <label class="checkbox-label composer-checkbox"><input type="checkbox" id="batchMode" onchange="toggleBatchMode()"><span>Chạy trên tất cả thiết bị online</span></label>
                             </div>
-                        </div>
-                        <div class="panel-body">
-                            <form id="taskForm" onsubmit="submitTask(event)">
-                                <input type="hidden" id="selectedTemplate" value="">
-
-                                <div class="primary-template-card" id="primaryTemplateCard">
-                                    <div class="primary-template-head">
-                                        <div>
-                                            <div class="primary-template-label">Default template</div>
-                                            <h3 id="primaryTemplateTitle">TikTok Comment Videos</h3>
-                                        </div>
-                                        <div class="template-chip-stack" id="primaryTemplateBadges"></div>
-                                    </div>
-                                    <p class="primary-template-desc" id="primaryTemplateDescription"></p>
-                                    <div class="primary-template-stats" id="primaryTemplateStats"></div>
-                                </div>
-
-                                <div class="composer-layout">
-                                    <div class="composer-main">
-                                        <div class="config-panel">
-                                            <div class="config-title">Template controls</div>
-                                            <div id="dynamicTemplateFields" class="dynamic-fields"></div>
-                                        </div>
-
-                                        <div class="config-panel" id="composerCommandGroup" style="display:none">
-                                            <div class="config-title">AI command</div>
-                                            <div class="form-group">
-                                                <label>Command</label>
-                                                <textarea id="commandInput" rows="3" placeholder="Mô tả yêu cầu cho AI task"></textarea>
-                                            </div>
-                                            <div class="form-row">
-                                                <div class="form-group half">
-                                                    <label>Max Steps</label>
-                                                    <input type="number" id="maxSteps" value="20" min="1" max="50">
-                                                </div>
-                                                <div class="form-group half">
-                                                    <label>Max Retries</label>
-                                                    <input type="number" id="maxRetries" value="2" min="0" max="5">
-                                                </div>
-                                            </div>
-                                        </div>
-
-                                        <div class="config-panel">
-                                            <div class="config-title">Execution</div>
-                                            <div class="form-row">
-                                                <div class="form-group half">
-                                                    <label>Device</label>
-                                                    <select id="deviceSelect" required>
-                                                        <option value="">Chọn device...</option>
-                                                    </select>
-                                                </div>
-                                                <div class="form-group half">
-                                                    <label>Queue mode</label>
-                                                    <label class="checkbox-label composer-checkbox">
-                                                        <input type="checkbox" id="batchMode" onchange="toggleBatchMode()">
-                                                        <span>Batch trên tất cả devices online</span>
-                                                    </label>
-                                                </div>
-                                            </div>
-
-                                            <div class="cost-estimate" id="costEstimate">
-                                                <div class="cost-row">
-                                                    <span>Mode</span>
-                                                    <span id="estMode">—</span>
-                                                </div>
-                                                <div class="cost-row">
-                                                    <span>Cost</span>
-                                                    <span id="estCost" class="cost-value">—</span>
-                                                </div>
-                                            </div>
-
-                                            <button type="submit" class="btn btn-primary btn-block" id="submitBtn" disabled>
-                                                Chọn template để bắt đầu
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    <aside class="template-detail-panel" id="templateDetailPanel">
-                                        <div class="template-detail-heading">
-                                            <span class="panel-kicker">Template detail</span>
-                                            <h3 id="templateDetailTitle">TikTok Comment Videos</h3>
-                                        </div>
-                                        <div class="template-detail-body" id="templateDetail"></div>
-                                    </aside>
-                                </div>
-                            </form>
-                        </div>
-                    </div>
-
-                    <div class="panel live-panel">
-                        <div class="panel-header dashboard-panel-header">
-                            <div>
-                                <span class="panel-kicker">Live run rail</span>
-                                <h2>Running</h2>
-                            </div>
-                            <span class="count-badge" id="runningCount">0</span>
-                        </div>
-                        <div class="panel-body scrollable" id="runningTasks">
-                            <div class="empty-state">
-                                <div class="empty-icon">SYNC</div>
-                                <div class="empty-text">No tasks running</div>
-                            </div>
-                        </div>
+                            <div class="launch-footer"><div class="cost-estimate" id="costEstimate"><span id="estMode">—</span><span>Ước tính <strong id="estCost">—</strong></span></div><button type="submit" class="btn btn-primary" id="submitBtn" disabled>Bắt đầu tác vụ</button></div>
+                            <details class="advanced-toggle" id="templateDetailPanel"><summary>Thông tin kịch bản</summary><h3 id="templateDetailTitle">Kịch bản</h3><div class="template-detail-body" id="templateDetail"></div></details>
+                        </form>
                     </div>
                 </div>
-
-                <div class="dashboard-grid dashboard-grid-bottom">
-                    <div class="panel">
-                        <div class="panel-header dashboard-panel-header">
-                            <div>
-                                <span class="panel-kicker">Template library</span>
-                                <h2>Templates</h2>
-                            </div>
-                            <span class="count-badge" id="templateCount">0</span>
-                        </div>
-                        <div class="panel-body scrollable">
-                            <div class="template-library" id="templateLibrary">
-                                <div class="loading">Loading templates...</div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="panel">
-                        <div class="panel-header dashboard-panel-header">
-                            <div>
-                                <span class="panel-kicker">Recent outcomes</span>
-                                <h2>Recent Runs</h2>
-                            </div>
-                        </div>
-                        <div class="panel-body scrollable">
-                            <div class="recent-outcomes" id="recentOutcomes">
-                                <div class="loading">Loading...</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                <aside class="activity-column" aria-label="Hoạt động">
+                    <div class="panel live-panel"><div class="panel-header"><h2>Đang chạy</h2><span class="count-badge" id="runningCount">0</span></div><div class="panel-body" id="runningTasks"><div class="loading">Đang tải…</div></div></div>
+                    <div class="panel recent-panel"><div class="panel-header"><h2>Gần đây</h2><button class="btn btn-ghost btn-sm" onclick="navigateTo('history', document.querySelector('[data-section=history]'))">Xem tất cả ↗</button></div><div class="panel-body"><div class="recent-outcomes" id="recentOutcomes"><div class="loading">Đang tải…</div></div></div></div>
+                </aside>
             </div>
+            <details class="panel template-catalog" id="templateCatalog"><summary>Khám phá kịch bản <span class="count-badge" id="templateCount">0</span><span class="quiet-label">TikTok, Facebook &amp; nhiều hơn nữa</span></summary><div class="panel-body"><div class="template-library" id="templateLibrary"><div class="loading">Đang tải…</div></div></div></details>
         </section>
 
         <!-- ============ DEVICES SECTION ============ -->

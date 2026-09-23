@@ -1,6 +1,6 @@
 ---
 title: TikTok Comment Videos
-description: Hybrid runner chính cho TikTok comment với context từ video info và comment panel.
+description: Xem video TikTok và bình luận theo nội dung. Điều chỉnh số lượng trước khi bắt đầu.
 platform: tiktok
 mode: hybrid
 status: primary
@@ -10,7 +10,7 @@ risk_level: high
 sort_order: 10
 fallback_behavior: DeepSeek text-only -> GPT-4o screenshot fallback -> contextual/ascii-safe comment pool.
 default_vars: {"count": 5, "view_time_min": 5, "view_time_max": 10, "like_after_comment": 0.5, "use_ai": true}
-ui_fields: [{"key":"count","type":"number","label":"Target comments","min":1,"max":10,"step":1,"help":"Số comment tối đa trong một session."},{"key":"view_time_min","type":"number","label":"Watch min (s)","min":3,"max":30,"step":1,"help":"Thời gian xem tối thiểu trước khi ra quyết định."},{"key":"view_time_max","type":"number","label":"Watch max (s)","min":5,"max":45,"step":1,"help":"Thời gian xem tối đa trước khi swipe."},{"key":"like_after_comment","type":"number","label":"Like after comment","min":0,"max":1,"step":0.1,"help":"Xác suất like sau khi comment đã verify."},{"key":"use_ai","type":"checkbox","label":"AI enabled","help":"Tắt để dùng pool fallback thay cho AI."}]
+ui_fields: [{"key": "count", "type": "number", "label": "Số bình luận", "min": 1, "max": 10, "step": 1, "help": "Số comment tối đa trong một session."}, {"key": "view_time_min", "type": "number", "label": "Thời gian xem tối thiểu (giây)", "min": 3, "max": 30, "step": 1, "help": "Thời gian xem tối thiểu trước khi ra quyết định.", "advanced": true}, {"key": "view_time_max", "type": "number", "label": "Thời gian xem tối đa (giây)", "min": 5, "max": 45, "step": 1, "help": "Thời gian xem tối đa trước khi swipe.", "advanced": true}, {"key": "like_after_comment", "type": "number", "label": "Xác suất thích sau bình luận", "min": 0, "max": 1, "step": 0.1, "help": "Xác suất like sau khi comment đã verify.", "advanced": true}, {"key": "use_ai", "type": "checkbox", "label": "Dùng AI viết bình luận", "help": "Tắt để dùng pool fallback thay cho AI."}]
 capabilities: ["Đọc video info trước khi mở comment panel", "Đọc visible comments để lấy context", "Sinh comment cụ thể bằng AI", "Verify comment sau khi gửi", "Retry với ASCII-safe fallback nếu lần đầu thất bại"]
 limitations: ["Chất lượng phụ thuộc video info và comment panel đọc được", "GPT-4o screenshot chỉ là fallback khi text-only AI lỗi", "Retry path ưu tiên an toàn hơn độ phong phú"]
 ---
