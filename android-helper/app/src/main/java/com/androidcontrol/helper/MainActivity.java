@@ -40,9 +40,9 @@ import java.util.concurrent.Executors;
 /**
  * Main activity with dual connection mode UI:
  * - LAN Mode: shows local IP + WS port (original behavior)
- * - Cloud Mode: username-token approval (fixed server URL + device name)
+ * - Cloud Mode: personal device approval (fixed server URL + device name)
  *
- * Cloud flow: user enters username token → admin approves in dashboard →
+ * Cloud flow: device requests access → owner approves in dashboard →
  * app receives a device token → app connects WebSocket with token.
  */
 public class MainActivity extends Activity {
@@ -57,7 +57,6 @@ public class MainActivity extends Activity {
     private TextView versionText;
     private LinearLayout lanInfoLayout;
     private LinearLayout cloudConfigLayout;
-    private EditText usernameInput;
     private EditText deviceNameInput;
     private Button connectBtn;
     private Runnable pollRunnable;
@@ -66,6 +65,12 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         config = new ConnectionConfig(this);
+        config.clearPassword();
+        HelperUpdater.initialize(this);
+        if (android.os.Build.VERSION.SDK_INT >= 33 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 100);
+        }
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -145,28 +150,6 @@ public class MainActivity extends Activity {
         cloudConfigLayout.setOrientation(LinearLayout.VERTICAL);
         cloudConfigLayout.setPadding(0, 16, 0, 16);
 
-        // Username
-        TextView usernameLabel = new TextView(this);
-        usernameLabel.setText("Token / Username");
-        usernameLabel.setTextColor(Color.parseColor("#cccccc"));
-        usernameLabel.setTextSize(12);
-        usernameLabel.setPadding(0, 16, 0, 0);
-        cloudConfigLayout.addView(usernameLabel);
-
-        usernameInput = new EditText(this);
-        usernameInput.setHint("e.g. admin");
-        usernameInput.setTextColor(Color.WHITE);
-        usernameInput.setHintTextColor(Color.parseColor("#666666"));
-        usernameInput.setBackgroundColor(Color.parseColor("#16213e"));
-        usernameInput.setPadding(16, 12, 16, 12);
-        usernameInput.setText(config.getUsername());
-        usernameInput.setSingleLine(true);
-        usernameInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_NORMAL);
-        usernameInput.setSelectAllOnFocus(false);
-        usernameInput.setFocusable(true);
-        usernameInput.setFocusableInTouchMode(true);
-        cloudConfigLayout.addView(usernameInput);
-
         // Device Name
         TextView deviceNameLabel = new TextView(this);
         deviceNameLabel.setText("Device Name");
@@ -221,6 +204,11 @@ public class MainActivity extends Activity {
         accessibilityBtn.setLayoutParams(accBtnParams);
         root.addView(accessibilityBtn);
 
+        Button updateBtn = new Button(this);
+        updateBtn.setText("Allow updates / Continue installation");
+        updateBtn.setOnClickListener(v -> HelperUpdater.continueInstall(this));
+        root.addView(updateBtn);
+
         // ─── Mode toggle logic ───
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> {
             if (checkedId == lanRadio.getId()) {
@@ -248,6 +236,9 @@ public class MainActivity extends Activity {
         scrollView.setBackgroundColor(Color.parseColor("#1a1a2e"));
         scrollView.addView(root);
         setContentView(scrollView);
+        if (config.isCloudMode() && !config.hasToken() && config.getLinkRequestId().isEmpty()) {
+            saveAndConnect();
+        }
         Log.i(TAG, "🚀 " + HelperBuildInfo.releaseLabel() + " | " + HelperBuildInfo.debugLabel());
     }
 
@@ -260,8 +251,10 @@ public class MainActivity extends Activity {
             if (!config.getLinkRequestId().isEmpty() && !config.hasToken()) {
                 startPollingStatus();
             } else if (config.hasToken()) {
+                Intent service = new Intent(this, WebSocketService.class);
+                if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(service);
+                else startService(service);
                 connectBtn.setVisibility(View.GONE);
-                usernameInput.setVisibility(View.GONE);
                 deviceNameInput.setVisibility(View.GONE);
             }
         }
@@ -277,10 +270,10 @@ public class MainActivity extends Activity {
         boolean isCloud = cloudConfigLayout.getVisibility() == View.VISIBLE;
 
         if (isCloud) {
-            String username = usernameInput.getText().toString().trim();
+            String username = "";
             String deviceName = deviceNameInput.getText().toString().trim();
 
-            if (username.isEmpty() || deviceName.isEmpty()) {
+            if (deviceName.isEmpty()) {
                 statusText.setText("❌ Please fill in all fields");
                 statusText.setTextColor(Color.parseColor("#ff4444"));
                 return;
@@ -288,7 +281,7 @@ public class MainActivity extends Activity {
 
             // Save config
             config.setMode(ConnectionConfig.MODE_CLOUD);
-            config.setUsername(username);
+            config.clearPassword();
             config.setDeviceName(deviceName);
             
             // clear old token if any
@@ -303,7 +296,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void onPending(String requestId) {
                     config.setLinkRequestId(requestId);
-                    statusText.setText("⏳ Waiting for admin approval...");
+                    statusText.setText("⏳ Approve on dashboard: " + config.getLinkRequestId().substring(Math.max(0, config.getLinkRequestId().length() - 6)) + "");
                     startPollingStatus();
                 }
 
@@ -349,7 +342,7 @@ public class MainActivity extends Activity {
                 DeviceLinkClient.pollStatus(config, reqId, new DeviceLinkClient.LinkCallback() {
                     @Override
                     public void onPending(String requestId) {
-                        statusText.setText("⏳ Waiting for admin approval...");
+                        statusText.setText("⏳ Approve on dashboard: " + config.getLinkRequestId().substring(Math.max(0, config.getLinkRequestId().length() - 6)) + "");
                     }
 
                     @Override
@@ -396,7 +389,6 @@ public class MainActivity extends Activity {
         statusText.setText("✅ Approved! Connecting...");
         statusText.setTextColor(Color.parseColor("#00ff88"));
         connectBtn.setVisibility(View.GONE);
-        usernameInput.setVisibility(View.GONE);
         deviceNameInput.setVisibility(View.GONE);
         
         restartService();
@@ -444,6 +436,7 @@ public class MainActivity extends Activity {
             sb.append("🔑 Token: " + config.getLanToken());
         }
 
+        sb.append("\nUpdate: ").append(HelperUpdater.status(this));
         sb.append("\n🏷️ ").append(HelperBuildInfo.shortLabel());
         sb.append("\n🧾 ").append(HelperBuildInfo.debugLabel());
 

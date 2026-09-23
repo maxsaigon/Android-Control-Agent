@@ -147,6 +147,20 @@
                 <!-- Right: Add Device -->
                 <div class="content-col">
                     <div class="panel">
+                        <div class="panel-header"><h2>Cập nhật Android Helper</h2></div>
+                        <div class="panel-body">
+                            <p>Chọn máy thử trước. Các máy còn lại chỉ cập nhật sau khi máy thử hoạt động tốt.</p>
+                            <label for="helperCanary">Thiết bị thử</label>
+                            <select id="helperCanary"></select>
+                            <button class="btn btn-primary" onclick="startHelperRollout(false)">Cập nhật máy thử</button>
+                            <button class="btn btn-secondary" onclick="startHelperRollout(true)">Cập nhật cả dàn</button>
+                            <button class="btn btn-secondary" onclick="setHelperAutomatic(true)">Bật tự cập nhật bản mới</button>
+                            <button class="btn btn-secondary" onclick="setHelperAutomatic(false)">Tắt tự cập nhật</button>
+                            <p id="helperUpdateSummary"></p>
+                            <div id="helperUpdateJobs" aria-live="polite"></div>
+                        </div>
+                    </div>
+                    <div class="panel">
                         <div class="panel-header">
                             <h2>➕ Thêm Device</h2>
                         </div>
@@ -202,7 +216,7 @@
                                     <li><b>LAN:</b> Phone → Settings → Developer Options → Wireless Debugging → ON</li>
                                     <li>Đảm bảo phone cùng WiFi với server</li>
                                     <li>Nếu <span class="status-badge status-unauthorized">unauthorized</span> → chấp nhận trên phone</li>
-                                    <li><b>☁️ Cloud:</b> Mở <b>m.buonme.com/set</b> trên phone → nhập username + device name → tự động kết nối</li>
+                                    <li><b>☁️ Cloud:</b> Mở <b>m.buonme.com/set</b> trên phone → mở Helper → duyệt mã thiết bị trên dashboard</li>
                                 </ol>
                             </div>
                         </div>

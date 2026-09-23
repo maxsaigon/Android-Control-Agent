@@ -65,6 +65,7 @@ public class WebSocketService extends Service {
         super.onCreate();
         createNotificationChannel();
         config = new ConnectionConfig(this);
+        HelperUpdater.initialize(this);
         Log.i(TAG, "Helper service booting: " + HelperBuildInfo.releaseLabel() +
                 " | " + HelperBuildInfo.debugLabel());
         registerNetworkCallback();
@@ -110,7 +111,7 @@ public class WebSocketService extends Service {
 
         if (ConnectionConfig.MODE_CLOUD.equals(mode) && config.isReadyToConnect()) {
             startCloudMode();
-        } else if (ConnectionConfig.MODE_CLOUD.equals(mode) && config.isConfigured()) {
+        } else if (ConnectionConfig.MODE_CLOUD.equals(mode)) {
             // No cached token yet — need to register first via MainActivity
             Log.w(TAG, "⚠️ Cloud mode set but no token cached — waiting for user to register");
             startForeground(NOTIFICATION_ID, buildNotification(
@@ -153,7 +154,7 @@ public class WebSocketService extends Service {
         }
 
         String wsUrl = config.getCloudWsUrl();
-        Log.i(TAG, "☁️ Cloud mode: connecting to " + wsUrl);
+        Log.i(TAG, "☁️ Cloud mode: connecting to configured server");
 
         startForeground(NOTIFICATION_ID, buildNotification(
                 "Cloud Mode — " + HelperBuildInfo.shortLabel() + " — connecting..."));
@@ -211,10 +212,9 @@ public class WebSocketService extends Service {
         if (relinkInProgress) {
             return;
         }
-        String username = config.getUsername();
+        String username = "";
         String deviceName = config.getDeviceName();
-        if (username == null || username.trim().isEmpty()
-                || deviceName == null || deviceName.trim().isEmpty()) {
+        if (deviceName == null || deviceName.trim().isEmpty()) {
             updateNotification("Cloud Mode — relink required (open app)");
             return;
         }

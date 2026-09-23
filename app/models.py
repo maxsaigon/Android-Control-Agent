@@ -172,7 +172,7 @@ class HelperInfo(SQLModel):
 
 
 class DeviceLinkRequestCreate(SQLModel):
-    username: str
+    username: Optional[str] = None
     installation_id: Optional[str] = None
     device_name: str
     device_model: Optional[str] = None
@@ -685,3 +685,24 @@ class MetricsManualInput(SQLModel):
     likes: Optional[int] = Field(default=None, ge=0)
     comments: Optional[int] = Field(default=None, ge=0)
     shares: Optional[int] = Field(default=None, ge=0)
+
+
+class HelperUpdateJob(SQLModel, table=True):
+    """Durable rollout progress; blocked devices remain reserved across restarts."""
+    id: Optional[int] = Field(default=None, primary_key=True)
+    rollout_id: str = Field(index=True)
+    device_id: int = Field(index=True)
+    version_code: int
+    release_json: str
+    state: str = "queued"
+    error: str = ""
+    blocks_control: bool = False
+    started_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class HelperUpdatePolicy(SQLModel, table=True):
+    id: int = Field(default=1, primary_key=True)
+    automatic: bool = False
+    canary_device_id: Optional[int] = None
+    last_version_code: int = 0

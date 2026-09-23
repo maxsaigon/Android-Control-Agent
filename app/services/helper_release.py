@@ -87,3 +87,22 @@ def helper_download_filename() -> str:
     metadata = load_helper_release_metadata() or {}
     resolved = resolve_helper_apk_path()
     return metadata.get("artifact_name") or (resolved.name if resolved else HELPER_LATEST_ALIAS)
+
+
+def validated_helper_release() -> dict:
+    """Pin deployment to the immutable artifact, never the mutable latest alias."""
+    import hashlib
+    from urllib.parse import quote
+
+    metadata = load_helper_release_metadata() or {}
+    name = metadata.get("artifact_name", "")
+    if not name or Path(name).name != name:
+        raise ValueError("Missing or invalid helper artifact")
+    path = helper_downloads_dir() / name
+    if int(metadata.get("version_code", 0)) <= 0 or not path.is_file():
+        raise ValueError("Helper release is not available")
+    if path.stat().st_size != metadata.get("file_size_bytes"):
+        raise ValueError("Helper release size mismatch")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != metadata.get("sha256"):
+        raise ValueError("Helper release checksum mismatch")
+    return {**metadata, "download_path": f"/static/downloads/{quote(name)}"}

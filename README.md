@@ -22,6 +22,8 @@ Control multiple Android devices via natural language commands with hybrid autom
 
 ## Helper APK Release
 
+- Helper 1.4.0 adds personal pairing and canary-first managed updates. See [setup and rollout guide](docs/plans/android-helper-personal-updates.md).
+
 - Build + publish helper release trước khi deploy nếu có thay đổi trong `android-helper/`:
   ```bash
   cd android-helper

@@ -157,7 +157,27 @@ class TaskQueue:
         if lock.locked():
             raise RuntimeError("Device is busy. Cancel the active task before manual control.")
         async with lock:
+            from app.services.helper_updates import blocking_reason
+            reason = blocking_reason(device_id, engine)
+            if reason:
+                raise RuntimeError(reason)
             yield
+
+    @asynccontextmanager
+    async def device_execution(self, device_id: int):
+        """Keep workflows queued while a durable helper maintenance reservation exists."""
+        from app.services.helper_updates import blocking_reason
+        lock = self._get_device_lock(device_id)
+        while True:
+            await lock.acquire()
+            if not blocking_reason(device_id, engine):
+                break
+            lock.release()
+            await asyncio.sleep(2)
+        try:
+            yield
+        finally:
+            lock.release()
 
     async def submit_batch(self, task_ids: list[int]) -> None:
         """Submit multiple tasks at once (parallel across different devices)."""
@@ -295,11 +315,9 @@ class TaskQueue:
 
         await self._notify(task_id, {"event": "queued"})
 
-        device_lock = self._get_device_lock(device_id)
-
         try:
             # Acquire device lock (1 task per device) + global semaphore
-            async with device_lock:
+            async with self.device_execution(device_id):
                 async with self._semaphore:
                     self._active_devices[device_id] = task_id
                     # Mark device busy

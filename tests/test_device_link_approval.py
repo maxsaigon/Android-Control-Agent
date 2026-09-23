@@ -271,3 +271,29 @@ def test_device_link_expired_request_cannot_be_accepted(approval_app):
 
         status = client.get(f"/api/device/link/status/{pending['request_id']}").json()
         assert status["status"] == "expired"
+
+
+def test_personal_enrollment_without_username_or_password(approval_app, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "helper_owner_username", "admin")
+    app, engine = approval_app
+    with TestClient(app) as client:
+        response = client.post("/api/device/link/request", json={
+            "installation_id": "personal-phone", "device_name": "My phone",
+        })
+        assert response.status_code == 200
+        pending = response.json()
+        assert pending["username"] == "admin"
+        assert client.get(f"/api/device/link/status/{pending['request_id']}").json()["device_token"] is None
+        assert client.post(f"/api/device/link/requests/{pending['request_id']}/accept",
+                           headers={"x-test-user": "operator"}).status_code == 403
+        assert client.post(f"/api/device/link/requests/{pending['request_id']}/accept",
+                           headers={"x-test-user": "admin"}).status_code == 200
+        assert client.get(f"/api/device/link/status/{pending['request_id']}").json()["device_token"]
+
+
+def test_personal_enrollment_does_not_fall_back_to_arbitrary_owner(approval_app, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "helper_owner_username", "missing-owner")
+    with TestClient(approval_app[0]) as client:
+        assert client.post("/api/device/link/request", json={"device_name": "Phone"}).status_code == 404

@@ -37,12 +37,14 @@ public class DeviceLinkClient {
 
                 URL url = new URL(baseUrl + "/api/device/link/request");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
                 conn.setRequestMethod("POST");
                 conn.setRequestProperty("Content-Type", "application/json");
                 conn.setDoOutput(true);
 
                 JsonObject body = new JsonObject();
-                body.addProperty("username", username);
+                if (username != null && !username.isEmpty()) body.addProperty("username", username);
                 body.addProperty("installation_id", config.getInstallationId());
                 body.addProperty("device_name", deviceName);
                 body.addProperty("device_model", Build.MODEL);
@@ -88,6 +90,8 @@ public class DeviceLinkClient {
 
                 URL url = new URL(baseUrl + "/api/device/link/status/" + requestId);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(15000);
                 conn.setRequestMethod("GET");
 
                 int code = conn.getResponseCode();

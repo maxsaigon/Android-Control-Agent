@@ -8,37 +8,13 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-import subprocess
+import zipfile
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_DIR / "android-helper" / "app" / "build" / "outputs" / "apk" / "release"
 DOWNLOADS_DIR = PROJECT_DIR / "app" / "static" / "downloads"
 LATEST_ALIAS = "android-control-helper-latest.apk"
 METADATA_NAME = "helper-release.json"
-
-
-def _git_build_ref() -> str:
-    try:
-        sha_result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=PROJECT_DIR,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        build_ref = sha_result.stdout.strip()
-        dirty_result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=PROJECT_DIR,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        if dirty_result.stdout.strip():
-            return f"{build_ref}-dirty"
-        return build_ref
-    except Exception:
-        return "nogit"
 
 
 def _load_output_metadata() -> dict:
@@ -61,10 +37,7 @@ def _resolve_source_apk(element: dict) -> Path:
         if candidate.exists():
             return candidate
 
-    apks = sorted(OUTPUT_DIR.glob("*.apk"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not apks:
-        raise FileNotFoundError(f"No APK files found in {OUTPUT_DIR}")
-    return apks[0]
+    raise FileNotFoundError(f"Missing APK referenced by Gradle metadata: {output_file}")
 
 
 def _sha256(path: Path) -> str:
@@ -80,10 +53,22 @@ def main() -> int:
     source_apk = _resolve_source_apk(element)
 
     DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    version_name = str(element.get("versionName", "")).strip() or "0.0.0"
-    version_code = int(element.get("versionCode", 0) or 0)
-    build_sha = _git_build_ref()
-    build_time_utc = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    with zipfile.ZipFile(source_apk) as archive:
+        build = json.loads(archive.read("assets/helper-build.json"))
+    version_name = build["version_name"]
+    version_code = int(build["version_code"])
+    if version_code != element["versionCode"] or version_name != element["versionName"]:
+        raise ValueError("APK build metadata disagrees with Gradle output")
+    digest = _sha256(source_apk)
+    previous_path = DOWNLOADS_DIR / METADATA_NAME
+    if previous_path.exists():
+        previous = json.loads(previous_path.read_text())
+        if version_code < previous["version_code"]:
+            raise ValueError("Release versionCode must increase")
+        if version_code == previous["version_code"] and digest != previous["sha256"]:
+            raise ValueError("Changed APK must use a new versionCode")
+    build_sha = build["build_sha"]
+    build_time_utc = build["build_time_utc"]
     # Unique artifact for every publish to avoid CDN/browser stale cache on same filename.
     artifact_name = (
         f"android-control-helper-v{version_name}+{version_code}"
@@ -92,8 +77,12 @@ def main() -> int:
     artifact_path = DOWNLOADS_DIR / artifact_name
     latest_path = DOWNLOADS_DIR / LATEST_ALIAS
 
-    shutil.copy2(source_apk, artifact_path)
-    shutil.copy2(source_apk, latest_path)
+    if artifact_path.exists() and _sha256(artifact_path) != digest:
+        raise ValueError("Refusing to overwrite an immutable release artifact")
+    for destination in (artifact_path, latest_path):
+        temporary = destination.with_suffix(".apk.tmp")
+        shutil.copy2(source_apk, temporary)
+        temporary.replace(destination)
 
     stat = source_apk.stat()
     metadata = {
@@ -106,13 +95,18 @@ def main() -> int:
         "build_time_utc": build_time_utc,
         "published_at_utc": datetime.now(timezone.utc).isoformat(),
         "file_size_bytes": stat.st_size,
-        "sha256": _sha256(source_apk),
-        "source_apk": str(source_apk),
+        "sha256": digest,
+        "package_name": build["package_name"],
+        "min_sdk": build["min_sdk"],
+        "protocol_version": build["protocol_version"],
     }
-    (DOWNLOADS_DIR / METADATA_NAME).write_text(
+    metadata_temp = DOWNLOADS_DIR / (METADATA_NAME + ".tmp")
+    metadata_temp.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+    metadata_temp.replace(DOWNLOADS_DIR / METADATA_NAME)
 
     print(json.dumps(metadata, ensure_ascii=False, indent=2))
     return 0

@@ -81,10 +81,13 @@ async def lifespan(app: FastAPI):
     # Start task scheduler
     await scheduler.start()
     
+    from app.services.helper_updates import helper_updates
+    helper_updates.start()
     logging.info("🚀 Android Control System started")
     logging.info("📖 API docs: http://localhost:8000/docs")
     yield
     # Shutdown
+    await helper_updates.stop()
     await scheduler.stop()
     watchdog.stop()
     logging.info("👋 Android Control System stopped")
@@ -144,6 +147,8 @@ app.include_router(device_ws.router)         # Cloud device WebSocket
 app.include_router(device_ws.token_router)    # Device token management
 app.include_router(device_ws.register_router) # Device registration (login-based)
 from app.routers import device_link
+from app.routers.helper_updates import router as helper_updates_router
+app.include_router(helper_updates_router)
 app.include_router(device_link.router)        # Device link approval flow
 app.include_router(videos_router)             # Video management
 app.include_router(accounts_router)           # Device-account mappings
@@ -701,17 +706,15 @@ def setup_page():
             <div class="step">
                 <div class="step-num">4</div>
                 <div class="step-text">
-                    <h3>Enter Login Info</h3>
-                    <p>Server: <code>m.buonme.com</code><br>
-                    Username: your login username<br>
-                    Device Name: choose a name for this device</p>
+                    <h3>Approve device</h3>
+                    <p>Helper tự gửi yêu cầu, không cần username/password. Đối chiếu mã trên Helper và chấp nhận thiết bị trong dashboard.</p>
                 </div>
             </div>
             <div class="step">
                 <div class="step-num">5</div>
                 <div class="step-text">
-                    <h3>Tap Connect</h3>
-                    <p>Tap "Save & Connect". The notification should show "Connected ✅".<br>
+                    <h3>Enable future updates</h3>
+                    <p>Tap "Allow updates / Continue installation" once and allow this Helper to install updates. The notification should show "Connected ✅".<br>
                     Device sẽ tự động được thêm vào dashboard. Khi debug hãy đối chiếu version/build SHA ngay trên màn hình helper.</p>
                 </div>
             </div>

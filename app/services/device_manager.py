@@ -34,7 +34,7 @@ class DeviceManager:
 
         return configured_path
 
-    async def _run_adb(self, *args: str) -> tuple[int, str, str]:
+    async def _run_adb(self, *args: str, timeout_s: float = 20.0) -> tuple[int, str, str]:
         """Run an ADB command and return (returncode, stdout, stderr)."""
         cmd = [self._resolved_adb_path, *args]
         logger.debug(f"Running: {' '.join(cmd)}")
@@ -51,7 +51,6 @@ class DeviceManager:
             )
             logger.error(msg)
             return 127, "", msg
-        timeout_s = 20.0
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),
@@ -272,10 +271,20 @@ class DeviceManager:
         """Enable the AccessibilityService on device via ADB settings."""
         target = f"{ip}:{port}"
 
+        # Preserve other enabled accessibility services.
+        code, current, _ = await self._run_adb(
+            "-s", target, "shell", "settings", "get", "secure", "enabled_accessibility_services"
+        )
+        if code != 0:
+            return False
+        services = [v for v in current.strip().split(":") if v and v != "null"]
+        if self.HELPER_SERVICE not in services:
+            services.append(self.HELPER_SERVICE)
+
         # Set the enabled accessibility services
         await self._run_adb(
             "-s", target, "shell", "settings", "put", "secure",
-            "enabled_accessibility_services", self.HELPER_SERVICE,
+            "enabled_accessibility_services", ":".join(services),
         )
         # Enable accessibility globally
         await self._run_adb(
@@ -294,6 +303,50 @@ class DeviceManager:
         else:
             logger.warning(f"  ⚠️ Failed to enable accessibility on {target}")
         return enabled
+
+    async def helper_version(self, ip: str, port: int = 5555) -> int | None:
+        import re
+        code, out, _ = await self._run_adb("-s", f"{ip}:{port}", "shell", "dumpsys", "package", self.HELPER_PACKAGE)
+        match = re.search(r"versionCode=(\d+)", out) if code == 0 else None
+        return int(match.group(1)) if match else None
+
+    async def install_helper_release(self, ip: str, port: int, release: dict) -> dict:
+        """Caller owns the device lock. Verify pinned artifact and installed health."""
+        import hashlib
+        from pathlib import Path
+        from app.services.helper_release import helper_downloads_dir
+        name = release["artifact_name"]
+        if Path(name).name != name:
+            raise ValueError("Invalid helper artifact name")
+        apk = helper_downloads_dir() / name
+        if (apk.stat().st_size != release["file_size_bytes"]
+                or hashlib.sha256(apk.read_bytes()).hexdigest() != release["sha256"]):
+            raise ValueError("Helper artifact checksum/size mismatch")
+        installed = await self.helper_version(ip, port)
+        if installed is not None and installed > release["version_code"]:
+            raise ValueError("Refusing helper downgrade")
+        target = f"{ip}:{port}"
+        # Android enforces the installed package's signing certificate on replacement.
+        code, out, err = await self._run_adb("-s", target, "install", "-r", str(apk), timeout_s=180)
+        if code != 0 or "Success" not in out:
+            raise RuntimeError(f"Install failed: {out} {err}")
+        enabled = await self._enable_accessibility_service(ip, port)
+        await self._run_adb("-s", target, "shell", "am", "start", "-n", f"{self.HELPER_PACKAGE}/.MainActivity")
+        actual = await self.helper_version(ip, port)
+        bound = False
+        for _ in range(10):
+            code, dump, _ = await self._run_adb("-s", target, "shell", "dumpsys", "accessibility")
+            # Enabled in settings alone does not mean the service actually bound.
+            bound = code == 0 and any(
+                self.HELPER_PACKAGE in line and ("Bound services:" in line or "boundServices:" in line)
+                for line in dump.splitlines()
+            )
+            if bound:
+                break
+            await asyncio.sleep(1)
+        verified = actual == release["version_code"] and enabled and bound
+        return {"installed": True, "enabled": enabled, "version_code": actual,
+                "verified": verified, "error": None if verified else "Installed but accessibility health check failed"}
 
     async def ensure_helper_apk(self, ip: str, port: int = 5555) -> dict:
         """Ensure AC Helper APK is installed and running on device.
@@ -317,28 +370,13 @@ class DeviceManager:
         }
 
         try:
-            # Step 1: Check if installed
-            if await self._is_helper_installed(ip, port):
-                logger.info(f"  📦 Helper APK already installed on {target}")
-                result["installed"] = True
-            else:
-                # Step 2: Install APK
-                import os
-                helper_apk_path = self._helper_apk_path()
-                if not helper_apk_path or not os.path.exists(helper_apk_path):
-                    result["error"] = f"APK not found: {helper_apk_path or 'unresolved helper release'}"
-                    return result
-
-                logger.info(f"  📦 Installing Helper APK on {target} from {helper_apk_path}...")
-                code, out, err = await self._run_adb(
-                    "-s", target, "install", "-r", helper_apk_path
-                )
-                if code != 0 or "Success" not in out:
-                    result["error"] = f"Install failed: {out} {err}"
-                    return result
-
-                result["installed"] = True
-                logger.info(f"  ✅ Helper APK installed on {target}")
+            from app.services.helper_release import validated_helper_release
+            installed = await self.helper_version(ip, port)
+            release = validated_helper_release()
+            if installed is None or installed < release["version_code"]:
+                return await self.install_helper_release(ip, port, release)
+            result["installed"] = True
+            result["version_code"] = installed
 
             # Step 3: Enable Accessibility Service
             result["enabled"] = await self._enable_accessibility_service(ip, port)

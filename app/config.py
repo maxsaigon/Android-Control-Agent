@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     secret_key: str = "CHANGE-THIS-IN-PRODUCTION-USE-RANDOM-32-CHARS"
     session_expire_hours: int = 24  # Session cookie lifetime
 
+    # Personal helper enrollment: legacy username clients remain supported.
+    helper_owner_username: str = "admin"
+
     # DroidRun
     droidrun_config_path: str = str(PROJECT_ROOT / "config.yaml")
 

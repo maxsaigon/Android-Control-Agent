@@ -26,6 +26,9 @@ def buildTimeUtc() {
     return new Date().format("yyyyMMdd-HHmmss", java.util.TimeZone.getTimeZone("UTC"))
 }
 
+def helperBuildSha = gitBuildRef()
+def helperBuildTime = buildTimeUtc()
+
 android {
     namespace 'com.androidcontrol.helper'
     compileSdk 35
@@ -34,12 +37,12 @@ android {
         applicationId "com.androidcontrol.helper"
         minSdk 28          // Android 9+ (screencap global action requires API 28)
         targetSdk 33
-        versionCode 7
-        versionName "1.3.1"
+        versionCode 8
+        versionName "1.4.0"
 
         buildConfigField "String", "HELPER_RELEASE_NAME", "\"${helperArtifactBaseName}\""
-        buildConfigField "String", "HELPER_BUILD_SHA", "\"${gitBuildRef()}\""
-        buildConfigField "String", "HELPER_BUILD_TIME_UTC", "\"${buildTimeUtc()}\""
+        buildConfigField "String", "HELPER_BUILD_SHA", "\"${helperBuildSha}\""
+        buildConfigField "String", "HELPER_BUILD_TIME_UTC", "\"${helperBuildTime}\""
     }
 
     buildTypes {
@@ -65,6 +68,8 @@ android {
         jvmTarget = '1.8'
     }
 
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir("generated/helperAssets")
+
     buildFeatures {
         buildConfig true
     }
@@ -87,3 +92,27 @@ dependencies {
     implementation 'io.livekit:livekit-android:2.27.0'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
 }
+
+
+tasks.register('generateHelperReleaseMetadata') {
+    def output = layout.buildDirectory.file('generated/helperAssets/helper-build.json')
+    inputs.property('sha', helperBuildSha)
+    inputs.property('time', helperBuildTime)
+    inputs.property('versionCode', android.defaultConfig.versionCode)
+    inputs.property('versionName', android.defaultConfig.versionName)
+    outputs.file(output)
+    doLast {
+        def file = output.get().asFile
+        file.parentFile.mkdirs()
+        file.text = groovy.json.JsonOutput.toJson([
+            version_code: android.defaultConfig.versionCode,
+            version_name: android.defaultConfig.versionName,
+            build_sha: helperBuildSha,
+            build_time_utc: helperBuildTime,
+            package_name: android.defaultConfig.applicationId,
+            protocol_version: 1,
+            min_sdk: android.defaultConfig.minSdkVersion.apiLevel,
+        ])
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'generateHelperReleaseMetadata' }

@@ -52,6 +52,9 @@ public class CommandHandler {
             HelperAccessibilityService service = HelperAccessibilityService.getInstance();
 
             switch (action) {
+                case "helper_update":
+                    sendOk(callback, id, HelperUpdater.start(params));
+                    break;
                 case "ping":
                     sendOk(callback, id, "pong");
                     break;

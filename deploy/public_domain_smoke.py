@@ -8,6 +8,7 @@ smoke tests cannot see.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import tempfile
@@ -74,6 +75,12 @@ def main() -> int:
     public_base = args.base_url.rstrip("/")
     try:
         helper_release = _fetch(f"{public_base}/api/helper/release")
+        release_metadata = json.loads(helper_release["body"])
+        versioned_apk = _fetch(public_base + release_metadata["download_path"], binary=True)
+        expected = release_metadata["metadata"]
+        assert len(versioned_apk["body"]) == expected["file_size_bytes"], "Versioned APK size mismatch"
+        assert hashlib.sha256(versioned_apk["body"]).hexdigest() == expected["sha256"], "Versioned APK checksum mismatch"
+        report["versioned_apk_verified"] = True
         set_page = _fetch(f"{public_base}/set")
         helper_apk = _fetch(f"{public_base}/download/helper.apk", binary=True)
         report["public_assets"] = {
@@ -182,6 +189,10 @@ def main() -> int:
                 })"""
             )
             report["state"] = state
+            page.locator(".nav-btn").filter(has_text="Thiết bị").click()
+            page.wait_for_function("document.getElementById('helperUpdateSummary')?.textContent.includes('Tự cập nhật:')", timeout=args.timeout_ms)
+            report["helper_update_panel"] = page.locator("#helperUpdateSummary").inner_text()
+            page.screenshot(path=str(out_dir / "helper-updates.png"), full_page=True)
             browser.close()
 
     finally:
@@ -205,6 +216,8 @@ def main() -> int:
     helper_download_name = helper_download_headers.get("content-disposition", "")
 
     checks = [
+        ("versioned_apk_verified", report.get("versioned_apk_verified") is True),
+        ("helper_update_panel_ready", bool(report.get("helper_update_panel"))),
         ("set_page_ok", set_page.get("status") == 200),
         ("helper_release_ok", helper_release.get("status") == 200 and helper_release_json.get("available") is True),
         (

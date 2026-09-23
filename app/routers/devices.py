@@ -244,9 +244,14 @@ async def setup_helper(
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
 
-    result = await device_manager.ensure_helper_apk(
-        device.ip_address, device.adb_port
-    )
+    if device.adb_port == 0 or device.ip_address.startswith("cloud"):
+        raise HTTPException(409, "Use helper update rollout for cloud devices")
+    from app.services.task_queue import task_queue
+    try:
+        async with task_queue.manual_control(device_id):
+            result = await device_manager.ensure_helper_apk(device.ip_address, device.adb_port)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {
         "device_id": device.id,
         "name": device.name,

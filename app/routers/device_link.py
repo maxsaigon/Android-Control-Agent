@@ -61,14 +61,18 @@ def _expire_stale_pending(session: Session) -> None:
 @router.post("/request", response_model=DeviceLinkRequestRead)
 def request_device_link(req: DeviceLinkRequestCreate, request: Request, session: Session = Depends(get_session)):
     """Android Helper requests to link device."""
-    user = session.exec(select(User).where(User.username == req.username)).first()
+    from app.config import settings
+    username = req.username or settings.helper_owner_username
+    if not username:
+        raise HTTPException(status_code=503, detail="Personal helper owner is not configured")
+    user = session.exec(select(User).where(User.username == username)).first()
     if not user:
         raise HTTPException(status_code=404, detail="Username not found")
     
     client_ip = request.client.host if request.client else None
     existing_requests = session.exec(
         select(DeviceLinkRequest).where(
-            DeviceLinkRequest.username == req.username,
+            DeviceLinkRequest.username == username,
             (
                 DeviceLinkRequest.installation_id == req.installation_id
                 if req.installation_id
@@ -85,7 +89,7 @@ def request_device_link(req: DeviceLinkRequestCreate, request: Request, session:
     
     new_req = DeviceLinkRequest(
         request_id="lrq_" + secrets.token_urlsafe(16),
-        username=req.username,
+        username=username,
         user_id=user.id if user else None,
         installation_id=req.installation_id,
         device_name=req.device_name,

@@ -38,6 +38,27 @@ if [ "$HEAD_SHA" != "$REMOTE_SHA" ]; then
     exit 1
 fi
 
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+    echo "❌ Commit all source changes before deploying."
+    exit 1
+fi
+
+# OTA jobs pin this immutable artifact; the latest alias alone is insufficient.
+HELPER_ARTIFACT="$(python3 - <<'PY_RELEASE'
+import hashlib
+import json
+from pathlib import Path
+root = Path('app/static/downloads')
+metadata = json.loads((root / 'helper-release.json').read_text())
+name = metadata['artifact_name']
+assert Path(name).name == name and name.endswith('.apk'), 'Invalid helper artifact'
+apk = root / name
+assert apk.stat().st_size == metadata['file_size_bytes'], 'APK size mismatch'
+assert hashlib.sha256(apk.read_bytes()).hexdigest() == metadata['sha256'], 'APK checksum mismatch'
+print(name)
+PY_RELEASE
+)"
+
 echo "✅ Backup rule satisfied: origin/$BRANCH matches current HEAD."
 echo "📦 Deploying $HEAD_SHA to $SERVER:$REMOTE_DIR"
 echo "🧱 Remote compose: $REMOTE_COMPOSE_FILE"
@@ -62,6 +83,7 @@ rsync -avz --delete \
     --exclude 'android-helper/.gradle' \
     --exclude 'android-helper/app/build' \
     --exclude '*.egg-info' \
+    --include "app/static/downloads/$HELPER_ARTIFACT" \
     --include 'app/static/downloads/android-control-helper-latest.apk' \
     --exclude 'app/static/downloads/*.apk' \
     "$PROJECT_DIR/" "$SERVER:$REMOTE_DIR/"

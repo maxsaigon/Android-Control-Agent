@@ -65,11 +65,14 @@ async def start_stream(
         can_publish=True,
         can_subscribe=False,
     )
-    result = await device_hub.send_command(
-        device_id,
-        "start_stream",
-        {"url": stream.url, "token": stream.token, "room": stream.room},
-    )
+    try:
+        async with task_queue.manual_control(device_id):
+            result = await device_hub.send_command(
+                device_id, "start_stream",
+                {"url": stream.url, "token": stream.token, "room": stream.room},
+            )
+    except (RuntimeError, ConnectionError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {
         "status": result.get("status", "ok"),
         "result": result.get("result"),

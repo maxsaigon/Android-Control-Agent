@@ -79,6 +79,7 @@ async function init() {
     dashboardRuntime.pollVisible(async () => {
         await Promise.all([refreshDevices(), refreshRunning(), refreshQueueStatus()]);
         if (currentPage === 'videos') await refreshAssignments();
+        if (currentPage === 'devices') await refreshHelperUpdates();
     }, 3000);
     dashboardRuntime.pollVisible(async () => {
         if (currentPage === 'history' || currentPage === 'dashboard') await refreshHistory();
@@ -114,6 +115,7 @@ function navigateTo(section, btn) {
         refreshRecentOutcomes();
         refreshRunning();
     }
+    if (section === 'devices') refreshHelperUpdates();
     if (section === 'scheduler') loadSchedules();
     if (section === 'history') refreshHistory();
     if (section === 'videos') {
@@ -577,7 +579,7 @@ async function refreshPendingDevices() {
                         <span class="device-status status-busy">⏳ Pending</span>
                     </div>
                     <div class="device-info">
-                        <span>👤 User: ${escapeHtml(req.username)}</span>
+                        <span>Mã ghép nối: ${escapeHtml(req.request_id.slice(-6))}</span>
                         <span>📱 ${escapeHtml(req.device_model || 'Unknown')}</span>
                         ${req.android_version ? `<span>🤖 Android ${escapeHtml(req.android_version)}</span>` : ''}
                         <span>🕐 ${timeAgo}m ago</span>
@@ -3776,4 +3778,71 @@ async function submitManualMetrics(assignmentId) {
     } catch (e) {
         toast(`Lỗi: ${e.message}`, 'error');
     }
+}
+
+
+async function helperUpdateRequest(path, method, body) {
+    const res = await fetch(`/api/helper/updates${path}`, {
+        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Không thực hiện được cập nhật');
+    return data;
+}
+
+async function refreshHelperUpdates() {
+    const summary = document.getElementById('helperUpdateSummary');
+    const select = document.getElementById('helperCanary');
+    if (!summary || !select) return;
+    try {
+        const res = await fetch('/api/helper/updates');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Không tải được trạng thái');
+        const selected = select.value || String(data.policy.canary_device_id || '');
+        const options = devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
+        if (select.innerHTML !== options && document.activeElement !== select) {
+            select.innerHTML = options;
+            if (devices.some(d => String(d.id) === selected)) select.value = selected;
+        }
+        summary.textContent = `Tự cập nhật: ${data.policy.automatic ? 'Bật' : 'Tắt'} · Mỗi lần cập nhật một máy`;
+        const labels = {queued:'Đang chờ', waiting_device:'Chờ kết nối', waiting_idle:'Chờ thiết bị rảnh', downloading:'Đang tải', installing:'Đang cài', waiting_user_action:'Cần xác nhận trên máy', verifying:'Đang kiểm tra', succeeded:'Thành công', failed:'Thất bại', needs_bootstrap:'Cần cài APK lần đầu', cancelled:'Đã dừng'};
+        document.getElementById('helperUpdateJobs').innerHTML = data.jobs.slice(0, 20).map(j => {
+            const name = devices.find(d => d.id === j.device_id)?.name || `Device ${j.device_id}`;
+            return `<div class="info-box"><b>${escapeHtml(name)}</b> → bản ${j.version_code}: ${labels[j.state] || escapeHtml(j.state)}
+                ${j.error ? `<p>${escapeHtml(j.error)}</p>` : ''}
+                ${j.blocks_control ? '<p>Thiết bị đang được dành riêng cho cập nhật.</p>' : ''}
+                ${!j.blocks_control && !['succeeded', 'cancelled'].includes(j.state) ? `<button class="btn btn-sm" onclick="stopHelperRollout('${j.rollout_id}')">Dừng các máy đang chờ</button>` : ''}
+                ${['failed', 'needs_bootstrap'].includes(j.state) ? `<button class="btn btn-sm" onclick="retryHelperUpdate(${j.id})">Thử lại / Kiểm tra sau cài</button>` : ''}</div>`;
+        }).join('');
+    } catch (error) { summary.textContent = error.message; }
+}
+
+async function startHelperRollout(all) {
+    const canary = Number(document.getElementById('helperCanary').value);
+    if (!canary) return;
+    try {
+        await helperUpdateRequest('/rollout', 'POST', {device_ids: [canary, ...(all ? devices.filter(d => d.id !== canary).map(d => d.id) : [])]});
+        await refreshHelperUpdates();
+    } catch (error) { document.getElementById('helperUpdateSummary').textContent = error.message; }
+}
+
+async function setHelperAutomatic(automatic) {
+    try {
+        await helperUpdateRequest('/policy', 'PUT', {automatic, canary_device_id: Number(document.getElementById('helperCanary').value) || null});
+        await refreshHelperUpdates();
+    } catch (error) { document.getElementById('helperUpdateSummary').textContent = error.message; }
+}
+
+async function retryHelperUpdate(id) {
+    try {
+        await helperUpdateRequest(`/${id}/retry`, 'POST', {});
+        await refreshHelperUpdates();
+    } catch (error) { document.getElementById('helperUpdateSummary').textContent = error.message; }
+}
+
+async function stopHelperRollout(id) {
+    try {
+        await helperUpdateRequest(`/rollouts/${encodeURIComponent(id)}/stop`, 'POST', {});
+        await refreshHelperUpdates();
+    } catch (error) { document.getElementById('helperUpdateSummary').textContent = error.message; }
 }
