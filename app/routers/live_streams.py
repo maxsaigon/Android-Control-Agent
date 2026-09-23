@@ -7,6 +7,7 @@ from sqlmodel import Session, select
 from app.database import get_session
 from app.models import Device, DeviceToken
 from app.services.device_hub import device_hub
+from app.services.task_queue import task_queue
 from app.services.livekit_tokens import create_stream_session, is_livekit_configured
 
 router = APIRouter(prefix="/api/devices", tags=["device-live-stream"])
@@ -133,4 +134,11 @@ async def live_control(
     }
     if body.action not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported live-control action")
-    return await device_hub.send_command(device_id, body.action, body.params)
+    try:
+        async with task_queue.manual_control(device_id):
+            result = await device_hub.send_command(device_id, body.action, body.params)
+    except (RuntimeError, ConnectionError, TimeoutError) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if result.get("status") == "error":
+        raise HTTPException(409, result.get("error", "Device command failed"))
+    return result

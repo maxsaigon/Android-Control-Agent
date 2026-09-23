@@ -37,6 +37,7 @@ ALLOWED_ACTIONS = {
     "screenshot",
     "get_foreground_app",
     "launch_app",
+    "get_screen_size",
 }
 
 
@@ -103,7 +104,11 @@ def build_router(
             raise HTTPException(400, "Unsupported action")
         device = device_or_404(device_id)
         try:
-            result = await transports.for_device(device).command(action, body.params)
+            lock = workflows.locks[device_id]
+            if lock.locked():
+                raise RuntimeError("Device is busy; cancel its workflow before manual control")
+            async with lock:
+                result = await transports.for_device(device).command(action, body.params)
         except (ConnectionError, RuntimeError, ValueError, TimeoutError) as exc:
             raise HTTPException(409, str(exc)) from exc
         return ActionResult(action=action, result=result)
@@ -113,7 +118,7 @@ def build_router(
         return workflows.registry()
 
     @router.post("/api/devices/{device_id}/runs", response_model=RunView, status_code=202)
-    def start_run(device_id: int, body: WorkflowStart) -> RunView:
+    async def start_run(device_id: int, body: WorkflowStart) -> RunView:
         device_or_404(device_id)
         try:
             return workflows.start(device_id, body.workflow, body.params)
@@ -132,7 +137,7 @@ def build_router(
             raise HTTPException(404, "Run not found") from exc
 
     @router.post("/api/runs/{run_id}/cancel", status_code=202)
-    def cancel_run(run_id: str) -> dict[str, bool]:
+    async def cancel_run(run_id: str) -> dict[str, bool]:
         try:
             workflows.cancel(run_id)
         except KeyError as exc:
@@ -196,7 +201,7 @@ def build_router(
                 if message_type == "heartbeat":
                     repository.update_device_presence(
                         device.id,
-                        status=DeviceStatus.ONLINE,
+                        status=DeviceStatus.BUSY if device.id in workflows.active_devices else DeviceStatus.ONLINE,
                         battery_level=payload.get("battery"),
                         helper=payload.get("helper") or None,
                     )
@@ -204,7 +209,7 @@ def build_router(
                 elif message_type == "hello":
                     repository.update_device_presence(
                         device.id,
-                        status=DeviceStatus.ONLINE,
+                        status=DeviceStatus.BUSY if device.id in workflows.active_devices else DeviceStatus.ONLINE,
                         helper=payload.get("helper") or {},
                     )
                 elif "id" in payload:

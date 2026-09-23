@@ -66,7 +66,7 @@ public class CloudWebSocketClient extends WebSocketClient {
 
     @Override
     public void onOpen(ServerHandshake handshake) {
-        Log.i(TAG, "☁️ Connected to cloud server: " + getURI());
+        Log.i(TAG, "☁️ Connected to cloud server: " + getURI().getHost());
         Log.i(TAG, "☁️ Helper build: " + HelperBuildInfo.releaseLabel() +
                 " | " + HelperBuildInfo.debugLabel());
         reconnectAttempt = 0;
@@ -221,6 +221,7 @@ public class CloudWebSocketClient extends WebSocketClient {
                 (long) Math.pow(2, reconnectAttempt) * 1000,
                 MAX_RECONNECT_DELAY_MS
         );
+        delay = (long) (delay * (0.8 + Math.random() * 0.4));
         Log.i(TAG, "🔄 Reconnecting in " + (delay / 1000) + "s (attempt " + reconnectAttempt + ")");
 
         if (listener != null) {

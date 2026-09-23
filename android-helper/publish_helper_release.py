@@ -11,7 +11,7 @@ from pathlib import Path
 import subprocess
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-OUTPUT_DIR = PROJECT_DIR / "android-helper" / "app" / "build" / "outputs" / "apk" / "debug"
+OUTPUT_DIR = PROJECT_DIR / "android-helper" / "app" / "build" / "outputs" / "apk" / "release"
 DOWNLOADS_DIR = PROJECT_DIR / "app" / "static" / "downloads"
 LATEST_ALIAS = "android-control-helper-latest.apk"
 METADATA_NAME = "helper-release.json"
@@ -45,7 +45,7 @@ def _load_output_metadata() -> dict:
     metadata_path = OUTPUT_DIR / "output-metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(
-            f"Missing {metadata_path}. Build the helper first with ./gradlew assembleDebug"
+            f"Missing {metadata_path}. Build the helper first with ./gradlew assembleRelease"
         )
     data = json.loads(metadata_path.read_text(encoding="utf-8"))
     elements = data.get("elements") or []

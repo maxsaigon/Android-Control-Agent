@@ -58,7 +58,10 @@ async def device_connect(websocket: WebSocket, token: str):
         # Update device status
         device = session.get(Device, device_id)
         if device:
-            device.status = DeviceStatus.ONLINE
+            from app.services.task_queue import task_queue
+            device.status = (
+                DeviceStatus.BUSY if device_id in task_queue._active_devices else DeviceStatus.ONLINE
+            )
             device.last_seen = datetime.now(timezone.utc)
             session.add(device)
             session.commit()

@@ -4,6 +4,8 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -14,14 +16,20 @@ class Repository:
     def __init__(self, path: Path):
         self.path = path
 
-    def connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self.path, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         with self.connect() as db:
+            db.execute("PRAGMA journal_mode = WAL")
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS devices (
@@ -73,6 +81,16 @@ class Repository:
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_devices_legacy_id "
                 "ON devices(legacy_id) WHERE legacy_id IS NOT NULL"
             )
+            db.execute("CREATE INDEX IF NOT EXISTS ix_runs_created_at ON runs(created_at DESC)")
+
+    def recover_interrupted_runs(self) -> None:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE runs SET status = 'cancelled', finished_at = ?, error = ? "
+                "WHERE status IN ('pending', 'running')",
+                (utc_now(), "Server restarted; verify the device before retrying"),
+            )
+            db.execute("UPDATE devices SET status = 'offline'")
 
     def ensure_admin(self, username: str, password_hash: str) -> None:
         with self.connect() as db:

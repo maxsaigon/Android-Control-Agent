@@ -34,8 +34,7 @@ ssh "$SERVER" "set -e
     python3 -c \"import secrets; print(secrets.token_urlsafe(48))\" > '$REMOTE_REFACTOR/runtime/session-secret'
   if [ -f '$REMOTE_REFACTOR/runtime/control.db' ]; then
     timestamp=\$(date +%Y%m%d-%H%M%S)
-    cp '$REMOTE_REFACTOR/runtime/control.db' \
-      '$REMOTE_REFACTOR/runtime/backups/control.db.pre_deploy_'\$timestamp
+    python3 -c \"import sqlite3; s=sqlite3.connect('$REMOTE_REFACTOR/runtime/control.db'); d=sqlite3.connect('$REMOTE_REFACTOR/runtime/backups/control.db.pre_deploy_' + '\$timestamp'); s.backup(d); d.close(); s.close()\"
   fi
   test -f '$REMOTE_ROOT/.env'"
 

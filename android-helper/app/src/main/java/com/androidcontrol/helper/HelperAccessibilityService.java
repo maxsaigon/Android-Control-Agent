@@ -7,6 +7,10 @@ import android.graphics.Bitmap;
 import android.graphics.Path;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -24,12 +28,15 @@ import com.google.gson.JsonObject;
  * - Tap/swipe via dispatchGesture
  * - Click/set text on nodes via performAction
  * - Global actions (Back, Home, Recents, Notifications)
- * - Screenshot (API 28+)
+ * - Screenshot (API 30+)
  */
 public class HelperAccessibilityService extends AccessibilityService {
 
     private static final String TAG = "ACHelper";
     private static HelperAccessibilityService instance;
+    private final ExecutorService screenshotExecutor = Executors.newSingleThreadExecutor();
+    private boolean gestureInProgress;
+    private final java.util.concurrent.atomic.AtomicBoolean screenshotBusy = new java.util.concurrent.atomic.AtomicBoolean();
 
     @Override
     public void onServiceConnected() {
@@ -60,6 +67,7 @@ public class HelperAccessibilityService extends AccessibilityService {
     @Override
     public void onDestroy() {
         instance = null;
+        screenshotExecutor.shutdownNow();
         super.onDestroy();
         Log.i(TAG, "AccessibilityService destroyed");
     }
@@ -84,7 +92,7 @@ public class HelperAccessibilityService extends AccessibilityService {
                 .addStroke(stroke)
                 .build();
 
-        dispatchGesture(gesture, new GestureResultCallback() {
+        dispatchChecked(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 if (callback != null) callback.onSuccess("Tapped at (" + x + ", " + y + ")");
@@ -112,7 +120,7 @@ public class HelperAccessibilityService extends AccessibilityService {
                 .addStroke(stroke)
                 .build();
 
-        dispatchGesture(gesture, new GestureResultCallback() {
+        dispatchChecked(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 if (callback != null) callback.onSuccess(
@@ -140,7 +148,7 @@ public class HelperAccessibilityService extends AccessibilityService {
                 .addStroke(stroke)
                 .build();
 
-        dispatchGesture(gesture, new GestureResultCallback() {
+        dispatchChecked(gesture, new GestureResultCallback() {
             @Override
             public void onCompleted(GestureDescription gestureDescription) {
                 if (callback != null) callback.onSuccess("Long pressed at (" + x + ", " + y + ")");
@@ -151,6 +159,29 @@ public class HelperAccessibilityService extends AccessibilityService {
                 if (callback != null) callback.onError("Long press cancelled");
             }
         }, null);
+    }
+
+    private void dispatchChecked(GestureDescription gesture, GestureResultCallback callback,
+                                 Handler ignored) {
+        if (gestureInProgress) {
+            callback.onCancelled(gesture);
+            return;
+        }
+        gestureInProgress = true;
+        boolean accepted = dispatchGesture(gesture, new GestureResultCallback() {
+            @Override public void onCompleted(GestureDescription value) {
+                gestureInProgress = false;
+                callback.onCompleted(value);
+            }
+            @Override public void onCancelled(GestureDescription value) {
+                gestureInProgress = false;
+                callback.onCancelled(value);
+            }
+        }, new Handler(Looper.getMainLooper()));
+        if (!accepted) {
+            gestureInProgress = false;
+            callback.onCancelled(gesture);
+        }
     }
 
     // --- Node Actions ---
@@ -349,56 +380,69 @@ public class HelperAccessibilityService extends AccessibilityService {
         void onError(String error);
     }
 
-    // --- Screenshot (API 28+) ---
+    // --- Screenshot (API 30+) ---
 
     /**
-     * Capture screenshot via AccessibilityService.takeScreenshot (API 28+).
+     * Capture screenshot via AccessibilityService.takeScreenshot (API 30+).
      * Returns base64-encoded PNG via callback.  On older APIs the callback
      * receives an error message instead.
      */
     public void takeScreenshot(ScreenshotCallback callback) {
-        if (Build.VERSION.SDK_INT < 28) {
-            callback.onError("takeScreenshot requires API 28+");
+        takeScreenshot(callback, 0, false);
+    }
+
+    public void takeScreenshot(ScreenshotCallback callback, int maxWidth, boolean jpeg) {
+        if (Build.VERSION.SDK_INT < 30) {
+            callback.onError("takeScreenshot requires API 30+; use ADB or screen sharing on Android 9/10");
+            return;
+        }
+        if (!screenshotBusy.compareAndSet(false, true)) {
+            callback.onError("Screenshot already in progress");
             return;
         }
         try {
             takeScreenshot(
                 android.view.Display.DEFAULT_DISPLAY,
-                command -> command.run(),  // executor — run inline on calling thread
+                screenshotExecutor,
                 new TakeScreenshotCallback() {
                     @Override
                     public void onSuccess(ScreenshotResult result) {
+                        android.hardware.HardwareBuffer buffer = result.getHardwareBuffer();
+                        Bitmap hardware = null;
+                        Bitmap software = null;
                         try {
-                            android.hardware.HardwareBuffer hwBuffer = result.getHardwareBuffer();
-                            Bitmap bitmap = Bitmap.wrapHardwareBuffer(hwBuffer, result.getColorSpace());
-                            if (bitmap == null) {
-                                callback.onError("Failed to decode hardware buffer");
-                                hwBuffer.close();
-                                return;
+                            hardware = Bitmap.wrapHardwareBuffer(buffer, result.getColorSpace());
+                            if (hardware == null) throw new IllegalStateException("Cannot decode screenshot");
+                            software = hardware.copy(Bitmap.Config.ARGB_8888, false);
+                            if (maxWidth > 0 && software.getWidth() > maxWidth) {
+                                Bitmap resized = Bitmap.createScaledBitmap(software, maxWidth,
+                                        Math.max(1, software.getHeight() * maxWidth / software.getWidth()), true);
+                                software.recycle();
+                                software = resized;
                             }
-                            // Copy to software bitmap so we can compress it
-                            Bitmap soft = bitmap.copy(Bitmap.Config.ARGB_8888, false);
-                            bitmap.recycle();
-                            hwBuffer.close();
-
-                            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-                            soft.compress(Bitmap.CompressFormat.PNG, 100, baos);
-                            soft.recycle();
-                            String b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
-                            callback.onScreenshot(b64);
-                        } catch (Exception e) {
-                            Log.e(TAG, "Screenshot encode error", e);
-                            callback.onError("Encode error: " + e.getMessage());
+                            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                            software.compress(jpeg ? Bitmap.CompressFormat.JPEG : Bitmap.CompressFormat.PNG,
+                                    jpeg ? 75 : 100, bytes);
+                            callback.onScreenshot(Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP));
+                        } catch (Exception error) {
+                            callback.onError("Encode error: " + error.getMessage());
+                        } finally {
+                            if (software != null) software.recycle();
+                            if (hardware != null) hardware.recycle();
+                            buffer.close();
+                            screenshotBusy.set(false);
                         }
                     }
 
                     @Override
                     public void onFailure(int errorCode) {
+                        screenshotBusy.set(false);
                         callback.onError("takeScreenshot failed, errorCode=" + errorCode);
                     }
                 }
             );
         } catch (Exception e) {
+            screenshotBusy.set(false);
             Log.e(TAG, "takeScreenshot exception", e);
             callback.onError("Exception: " + e.getMessage());
         }

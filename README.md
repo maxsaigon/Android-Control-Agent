@@ -134,3 +134,20 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ## License
 
 MIT
+
+### Local reliability checks
+
+```bash
+PYTHONPATH=.:refactor/src venv/bin/python -m pytest tests refactor/tests -q
+python3 deploy/dashboard_regression.py
+```
+
+Helper publishing builds an optimized, non-debuggable **release** APK. For this
+personal installation it intentionally reuses the existing local Android debug
+keystore certificate so installed Helpers can upgrade without uninstalling.
+Keep that keystore backed up; a different certificate cannot update existing installs.
+Build from a committed checkout to give the APK a clean source revision.
+
+Manual live-control commands return HTTP 409 while a workflow owns the device.
+Cancel the workflow before taking manual control. Android 9/10 require ADB or
+screen sharing for screenshots; Accessibility screenshots require Android 11+.

@@ -10,6 +10,7 @@ screenshots/
 
 # Android build artifacts
 android-helper/.gradle/
+android-helper/.kotlin/
 android-helper/app/build/
 android-helper/build/
 android-helper/local.properties

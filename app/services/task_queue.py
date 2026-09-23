@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Dict
 
@@ -123,10 +124,12 @@ class TaskQueue:
     """Manages background task execution across devices with concurrency control."""
 
     def __init__(self, max_concurrent: int = 5):
+        self._max_concurrent = max_concurrent
         self._running_tasks: Dict[int, asyncio.Task] = {}
         self._subscribers: Dict[int, list[asyncio.Queue]] = {}
         # Device locks: only 1 task per device at a time
         self._device_locks: Dict[int, asyncio.Lock] = {}
+        self._active_devices: Dict[int, int] = {}
         # Global concurrency limiter
         self._semaphore = asyncio.Semaphore(max_concurrent)
         # Live step data for REST polling (fallback when WebSocket unavailable)
@@ -146,6 +149,15 @@ class TaskQueue:
 
         bg_task = asyncio.create_task(self._execute(task_id))
         self._running_tasks[task_id] = bg_task
+
+    @asynccontextmanager
+    async def manual_control(self, device_id: int):
+        """Manual input must not interrupt a workflow or another input."""
+        lock = self._get_device_lock(device_id)
+        if lock.locked():
+            raise RuntimeError("Device is busy. Cancel the active task before manual control.")
+        async with lock:
+            yield
 
     async def submit_batch(self, task_ids: list[int]) -> None:
         """Submit multiple tasks at once (parallel across different devices)."""
@@ -263,12 +275,6 @@ class TaskQueue:
                 )
                 return
 
-            # Mark task as running
-            task.status = TaskStatus.RUNNING
-            task.started_at = datetime.now(timezone.utc)
-            session.add(task)
-            session.commit()
-
             command = task.command
             use_reasoning = task.use_reasoning
             execution_mode = task.execution_mode
@@ -293,10 +299,16 @@ class TaskQueue:
 
         try:
             # Acquire device lock (1 task per device) + global semaphore
-            async with self._semaphore:
-                async with device_lock:
+            async with device_lock:
+                async with self._semaphore:
+                    self._active_devices[device_id] = task_id
                     # Mark device busy
                     with Session(engine) as session:
+                        task = session.get(Task, task_id)
+                        if task:
+                            task.status = TaskStatus.RUNNING
+                            task.started_at = datetime.now(timezone.utc)
+                            session.add(task)
                         device = session.get(Device, device_id)
                         if device:
                             device.status = DeviceStatus.BUSY
@@ -362,11 +374,6 @@ class TaskQueue:
                         )
                         session.add(log)
 
-                    # Free up device
-                    device = session.get(Device, device_id)
-                    if device:
-                        device.status = DeviceStatus.ONLINE
-                        session.add(device)
                     session.commit()
 
                 # Sync assignment upload_status based on task outcome
@@ -416,10 +423,6 @@ class TaskQueue:
                     task.completed_at = datetime.now(timezone.utc)
                     session.add(task)
 
-                    device = session.get(Device, device_id)
-                    if device:
-                        device.status = DeviceStatus.ONLINE
-                        session.add(device)
                     session.commit()
 
             _sync_assignment_upload_status(
@@ -434,6 +437,19 @@ class TaskQueue:
             )
             await self._notify(task_id, {"event": "failed", "error": str(e)})
         finally:
+            if self._active_devices.get(device_id) == task_id:
+                self._active_devices.pop(device_id, None)
+                from app.services.device_hub import device_hub
+                with Session(engine) as session:
+                    device = session.get(Device, device_id)
+                    if device:
+                        cloud = device.adb_port == 0 or device.ip_address.startswith("cloud")
+                        device.status = (
+                            DeviceStatus.OFFLINE if cloud and not device_hub.is_connected(device_id)
+                            else DeviceStatus.ONLINE
+                        )
+                        session.add(device)
+                        session.commit()
             self._running_tasks.pop(task_id, None)
 
     async def _execute_with_retry(
@@ -577,14 +593,15 @@ class TaskQueue:
     @property
     def running_count(self) -> int:
         """Number of currently running tasks."""
-        return sum(1 for t in self._running_tasks.values() if not t.done())
+        return len(self._active_devices)
 
     @property
     def status(self) -> dict:
         """Get queue status."""
         return {
             "running_tasks": self.running_count,
-            "max_concurrent": self._semaphore._value,
+            "pending_tasks": max(0, len(self._running_tasks) - self.running_count),
+            "max_concurrent": self._max_concurrent,
             "device_locks": list(self._device_locks.keys()),
         }
 

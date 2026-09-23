@@ -37,6 +37,10 @@ public class CommandHandler {
     }
 
     public static void handle(String message, ResponseCallback callback) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post(() -> handle(message, callback));
+            return;
+        }
         String id = ""; // captured as early as possible for error correlation
         String action = "";
         try {
@@ -105,7 +109,7 @@ public class CommandHandler {
                     break;
 
                 case "screenshot":
-                    handleScreenshot(service, id, callback);
+                    handleScreenshot(service, id, params, callback);
                     break;
 
                 case "start_stream":
@@ -302,17 +306,7 @@ public class CommandHandler {
 
     private static void handleForceStop(HelperAccessibilityService service, String id,
                                          JsonObject params, ResponseCallback callback) {
-        // AccessibilityService cannot force-stop apps directly.
-        // We'll try via shell if available, otherwise report limitation.
-        try {
-            String packageName = requireString(params, "package");
-            Runtime.getRuntime().exec(new String[]{"am", "force-stop", packageName});
-            sendOk(callback, id, "Force-stopped: " + packageName);
-        } catch (IllegalArgumentException e) {
-            sendError(callback, id, e.getMessage());
-        } catch (Exception e) {
-            sendError(callback, id, "Cannot force-stop without root/shell: " + e.getMessage());
-        }
+        sendError(callback, id, "force_stop requires ADB/root; unsupported by Accessibility Helper");
     }
 
     private static void handleListPackages(HelperAccessibilityService service, String id,
@@ -337,18 +331,20 @@ public class CommandHandler {
     // --- Screenshot handler (F6 fix) ---
 
     private static void handleScreenshot(HelperAccessibilityService service, String id,
-                                          ResponseCallback callback) {
+                                          JsonObject params, ResponseCallback callback) {
         if (service == null) { sendError(callback, id, "Service not running"); return; }
-        if (android.os.Build.VERSION.SDK_INT < 28) {
-            sendError(callback, id, "screenshot requires API 28+ (Android 9)");
+        if (android.os.Build.VERSION.SDK_INT < 30) {
+            sendError(callback, id, "screenshot requires API 30+ (Android 11); use ADB or screen sharing");
             return;
         }
+        boolean jpeg = params.has("format") && "jpeg".equals(params.get("format").getAsString());
+        int maxWidth = params.has("max_width") ? Math.max(320, Math.min(1920, params.get("max_width").getAsInt())) : 0;
         service.takeScreenshot(new HelperAccessibilityService.ScreenshotCallback() {
             @Override
             public void onScreenshot(String base64Png) {
                 JsonObject result = new JsonObject();
                 result.addProperty("data", base64Png);
-                result.addProperty("format", "png");
+                result.addProperty("format", jpeg ? "jpeg" : "png");
                 sendOkJson(callback, id, result);
             }
 
@@ -356,7 +352,7 @@ public class CommandHandler {
             public void onError(String error) {
                 sendError(callback, id, "screenshot error: " + error);
             }
-        });
+        }, maxWidth, jpeg);
     }
 
     // --- Live screen stream handlers ---

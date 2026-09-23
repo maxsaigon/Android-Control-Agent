@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import shlex
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,13 @@ class AdbTransport(DeviceTransport):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        except (asyncio.CancelledError, TimeoutError):
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
+            raise
         if process.returncode:
             raise RuntimeError(stderr.decode(errors="replace").strip() or "ADB command failed")
         return stdout if binary else stdout.decode(errors="replace").strip()
@@ -67,6 +74,13 @@ class AdbTransport(DeviceTransport):
                 "android.intent.category.LAUNCHER",
                 "1",
             )
+        if action == "get_screen_size":
+            output = await self._run("shell", "wm", "size")
+            sizes = re.findall(r"(\d+)x(\d+)", output)
+            if not sizes:
+                raise RuntimeError("Cannot read display size")
+            width, height = map(int, sizes[-1])
+            return {"width": width, "height": height}
         if action == "screenshot":
             image = await self._run("exec-out", "screencap", "-p", binary=True)
             return {"image_base64": base64.b64encode(image).decode(), "mime": "image/png"}

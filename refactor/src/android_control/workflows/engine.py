@@ -6,7 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from ..database import Repository
-from ..models import DeviceStatus, RunStatus, RunView, utc_now
+from ..models import DeviceStatus, RunStatus, RunView, TransportKind, utc_now
 from ..transports.registry import TransportRegistry
 from .tiktok import WORKFLOWS
 
@@ -17,6 +17,7 @@ class WorkflowEngine:
         self.transports = transports
         self.locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
         self.tasks: dict[str, asyncio.Task[None]] = {}
+        self.active_devices: dict[int, str] = {}
 
     def registry(self) -> list[dict[str, Any]]:
         return [
@@ -53,6 +54,7 @@ class WorkflowEngine:
         device_id = int(run["device_id"])
         try:
             async with self.locks[device_id]:
+                self.active_devices[device_id] = run["id"]
                 run["status"] = RunStatus.RUNNING.value
                 run["started_at"] = utc_now()
                 self.repository.set_status(device_id, DeviceStatus.BUSY)
@@ -73,10 +75,9 @@ class WorkflowEngine:
                     )
                     self.repository.update_run(run)
 
-                await WORKFLOWS[run["workflow"]]["runner"](
-                    transport,
-                    run["params"],
-                    emit,
+                await asyncio.wait_for(
+                    WORKFLOWS[run["workflow"]]["runner"](transport, run["params"], emit),
+                    timeout=1200,
                 )
                 run["status"] = RunStatus.COMPLETED.value
         except asyncio.CancelledError:
@@ -88,9 +89,15 @@ class WorkflowEngine:
             run["finished_at"] = utc_now()
             self.repository.update_run(run)
             try:
-                connected = self.transports.hub.connections.get(device_id)
-                status = DeviceStatus.ONLINE if connected else DeviceStatus.OFFLINE
-                self.repository.set_status(device_id, status)
+                if self.active_devices.get(device_id) == run["id"]:
+                    self.active_devices.pop(device_id, None)
+                    device = self.repository.get_device(device_id)
+                    connected = self.transports.hub.connections.get(device_id)
+                    if device.transport == TransportKind.CLOUD:
+                        status = DeviceStatus.ONLINE if connected else DeviceStatus.OFFLINE
+                    else:
+                        status = DeviceStatus.ONLINE if run["status"] == RunStatus.COMPLETED else DeviceStatus.OFFLINE
+                    self.repository.set_status(device_id, status)
             except KeyError:
                 pass
             self.tasks.pop(run["id"], None)
@@ -99,4 +106,16 @@ class WorkflowEngine:
         task = self.tasks.get(run_id)
         if task is None:
             raise KeyError(run_id)
+        run = self.repository.get_run(run_id)
+        if run["status"] == RunStatus.PENDING:
+            run["status"] = RunStatus.CANCELLED.value
+            run["finished_at"] = utc_now()
+            self.repository.update_run(run)
+        task.add_done_callback(lambda _: self.tasks.pop(run_id, None))
         task.cancel()
+
+    async def shutdown(self) -> None:
+        tasks = list(self.tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)

@@ -159,7 +159,7 @@ app.mount("/debug-media", StaticFiles(directory=settings.screenshots_dir), name=
 def _static_asset_version() -> str:
     """Build a cache-busting token from the current dashboard asset contents."""
     digest = hashlib.sha256()
-    for path in (_static_dir / "style.css", _static_dir / "app.js"):
+    for path in (_static_dir / "style.css", _static_dir / "app.js", _static_dir / "dashboard-runtime.js"):
         digest.update(path.read_bytes())
     return digest.hexdigest()[:12]
 

@@ -3,6 +3,8 @@ const state = {
   media: [],
   selectedId: null,
   resources: null,
+  selectionVersion: 0,
+  screenRequest: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -98,6 +100,8 @@ function renderSelected() {
 }
 
 function selectDevice(id) {
+  state.selectionVersion++;
+  state.screenRequest?.abort();
   state.selectedId = id;
   renderDevices();
   renderSelected();
@@ -131,18 +135,28 @@ async function runAction(action, params = {}) {
 }
 
 async function refreshScreen() {
+  const device = requireDevice();
+  if (!device) return;
+  const version = state.selectionVersion;
+  state.screenRequest?.abort();
+  const controller = new AbortController();
+  state.screenRequest = controller;
   try {
-    const response = await runAction("screenshot");
-    if (!response) return;
+    const response = await api(`/api/devices/${device.id}/actions/screenshot`, {
+      method: "POST", body: JSON.stringify({ params: { max_width: 720, format: "jpeg" } }), signal: controller.signal,
+    });
+    if (state.selectedId !== device.id || state.selectionVersion !== version) return;
     const result = response.result || {};
     const data = result.data || result.image_base64 || (typeof result === "string" ? result : null);
     if (!data) throw new Error("Helper không trả về dữ liệu ảnh");
     $("deviceScreen").src = `data:image/${result.format || result.mime?.split("/")[1] || "png"};base64,${data}`;
     $("deviceScreen").hidden = false;
     $("screenEmpty").hidden = true;
-    $("screenUpdated").textContent = `Vừa chụp · ${new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}`;
+    $("screenUpdated").textContent = `Vừa chụp · ${new Date().toLocaleTimeString("vi-VN")}`;
   } catch (error) {
-    toast(`Không chụp được màn hình: ${error.message}`, "error");
+    if (error.name !== "AbortError" && version === state.selectionVersion) toast(error.message, "error");
+  } finally {
+    if (state.screenRequest === controller) state.screenRequest = null;
   }
 }
 
@@ -253,8 +267,16 @@ function bindEvents() {
     button.addEventListener("click", async () => {
       const up = button.dataset.swipe === "up";
       try {
+        const device = requireDevice();
+        if (!device) return;
+        const version = state.selectionVersion;
+        const response = await runAction("get_screen_size");
+        if (state.selectedId !== device.id || state.selectionVersion !== version) return;
+        const { width, height } = response.result;
+        if (!(width > 0 && height > 0)) throw new Error("Không đọc được kích thước màn hình");
         await runAction("swipe", {
-          x1: 540, y1: up ? 1700 : 520, x2: 540, y2: up ? 520 : 1700, duration: 340,
+          x1: Math.round(width * 0.5), y1: Math.round(height * (up ? 0.8 : 0.25)),
+          x2: Math.round(width * 0.5), y2: Math.round(height * (up ? 0.25 : 0.8)), duration: 340,
         });
       } catch (error) {
         toast(error.message, "error");
@@ -336,10 +358,16 @@ async function init() {
     $("serverLabel").textContent = "Control plane unavailable";
     toast(error.message, "error");
   }
-  window.setInterval(() => {
-    refreshDevices().catch(() => {});
-    refreshRuns().catch(() => {});
-  }, 4000);
+  let refreshing = false;
+  async function poll() {
+    if (document.hidden || refreshing) return;
+    refreshing = true;
+    try { await Promise.all([refreshDevices(), refreshRuns()]); }
+    catch (_) { $("serverLabel").textContent = "Mất kết nối · dữ liệu có thể đã cũ"; }
+    finally { refreshing = false; }
+  }
+  window.setInterval(poll, 4000);
+  document.addEventListener("visibilitychange", poll);
 }
 
 init();

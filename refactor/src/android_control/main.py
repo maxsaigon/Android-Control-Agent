@@ -31,9 +31,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         repository.initialize()
+        repository.recover_interrupted_runs()
         if repository.get_admin_password_hash(config.admin_username) is None:
             repository.ensure_admin(config.admin_username, hash_password(admin_password))
         yield
+        await workflows.shutdown()
 
     app = FastAPI(
         title="Android Device Media Control",

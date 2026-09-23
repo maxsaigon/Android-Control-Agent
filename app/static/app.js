@@ -2,6 +2,7 @@
  * Android Control Dashboard — Redesigned Client-side JavaScript
  */
 
+let dashboardRuntime;
 const API = '';  // Same origin
 let devices = [];
 let templates = [];
@@ -63,6 +64,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function init() {
+    const assetVersion = new URL(document.querySelector('script[src*="/static/app.js"]').src).searchParams.get('v') || '1';
+    dashboardRuntime = await import(`./dashboard-runtime.js?v=${encodeURIComponent(assetVersion)}`);
     loadUserInfo();  // Load user info async (non-blocking)
     await Promise.all([
         refreshDevices(),
@@ -73,19 +76,14 @@ async function init() {
         refreshRecentOutcomes(),
     ]);
     updateCostEstimate();
-    // Auto-refresh every 3 seconds
-    refreshTimer = setInterval(() => {
-        refreshDevices();
-        refreshRunning();
-        refreshQueueStatus();
-        if (currentPage === 'videos') {
-            refreshAssignments();
-        }
+    dashboardRuntime.pollVisible(async () => {
+        await Promise.all([refreshDevices(), refreshRunning(), refreshQueueStatus()]);
+        if (currentPage === 'videos') await refreshAssignments();
     }, 3000);
-    // History + Stats every 10s
-    setInterval(refreshHistory, 10000);
-    setInterval(refreshStats, 10000);
-    setInterval(refreshRecentOutcomes, 10000);
+    dashboardRuntime.pollVisible(async () => {
+        if (currentPage === 'history' || currentPage === 'dashboard') await refreshHistory();
+        if (currentPage === 'dashboard') await Promise.all([refreshStats(), refreshRecentOutcomes()]);
+    }, 10000);
 }
 
 // ===== SIDEBAR NAVIGATION =====
@@ -169,9 +167,13 @@ async function refreshStats() {
 
 // ===== DEVICES =====
 
+let deviceRefreshPending = false;
 async function refreshDevices() {
+    if (deviceRefreshPending) return;
+    deviceRefreshPending = true;
     try {
         const res = await fetch(`${API}/api/devices`);
+        if (!res.ok) throw new Error('Devices unavailable');
         devices = await res.json();
         renderDevices();
         updateDeviceSelect();
@@ -182,7 +184,7 @@ async function refreshDevices() {
     } catch (e) {
         document.getElementById('serverStatus').innerHTML =
             '<span class="pulse" style="background:var(--red)"></span><span style="color:var(--red)">Disconnected</span>';
-    }
+    } finally { deviceRefreshPending = false; }
 }
 
 function renderDevices() {
@@ -195,7 +197,7 @@ function renderDevices() {
         container.innerHTML = '<div class="empty-state"><div class="empty-icon">📱</div><div class="empty-text">Chưa có device nào<br><small style="color:var(--text-muted)">Thêm device ở form bên phải →</small></div></div>';
         return;
     }
-    container.innerHTML = '<div class="device-grid">' + devices.map(d => {
+    const html = '<div class="device-grid">' + devices.map(d => {
         const statusMap = {
             online: { label: '🟢 Online', cls: 'online' },
             offline: { label: '🔴 Offline', cls: 'offline' },
@@ -214,17 +216,17 @@ function renderDevices() {
             <div class="device-card ${st.cls}" onclick="selectDevice(${d.id})" id="dev-${d.id}">
                 <div class="device-header">
                     <span class="device-name">
-                        ${d.name}
-                        <button class="btn-icon" onclick="event.stopPropagation(); renameDevice(${d.id}, '${d.name.replace(/'/g, "\\'")}')" title="Đổi tên">✏️</button>
+                        ${escapeHtml(d.name)}
+                        <button class="btn-icon" onclick="event.stopPropagation(); renameDevice(${d.id}, devices.find(item => item.id === ${d.id}).name)" title="Đổi tên">✏️</button>
                     </span>
                     <span class="device-status status-${d.status}">${st.label}</span>
                 </div>
                 <div class="device-info">
                     <span>🆔 Device #${d.id}</span>
-                    <span>🌐 ${d.ip_address}:${d.adb_port}</span>
-                    <span>📱 ${d.device_model || 'Unknown'}</span>
+                    <span>🌐 ${escapeHtml(d.ip_address)}:${d.adb_port}</span>
+                    <span>📱 ${escapeHtml(d.device_model || 'Unknown')}</span>
                     ${d.battery_level !== null && d.battery_level !== undefined ? `<span>🔋 ${d.battery_level}%</span>` : ''}
-                    ${d.android_version ? `<span>🤖 Android ${d.android_version}</span>` : ''}
+                    ${d.android_version ? `<span>🤖 Android ${escapeHtml(d.android_version)}</span>` : ''}
                     <span>🕐 ${lastSeen}</span>
                 </div>
                 ${d.status === 'unauthorized' ? '<div class="device-warning">⚠️ Chấp nhận kết nối ADB trên phone</div>' : ''}
@@ -245,6 +247,7 @@ function renderDevices() {
             </div>
         `;
     }).join('') + '</div>';
+    dashboardRuntime.reconcileCards(container, html);
 }
 
 // ============================================
@@ -254,8 +257,11 @@ function renderDevices() {
 let liveControlRoom = null;
 let liveControlDeviceId = null;
 let livePointerStart = null;
+let liveControlGeneration = 0;
 
 async function openLiveControl(deviceId) {
+    await closeLiveControl();
+    const generation = ++liveControlGeneration;
     const modal = document.getElementById('liveControlModal');
     const status = document.getElementById('liveControlStatus');
     const device = devices.find(item => item.id === deviceId);
@@ -273,6 +279,7 @@ async function openLiveControl(deviceId) {
             throw new Error((await startResponse.json()).detail || 'Không thể bắt đầu stream');
         }
 
+        if (generation !== liveControlGeneration) return;
         const tokenResponse = await fetch(`${API}/api/devices/${deviceId}/stream/viewer-token`, {
             method: 'POST',
         });
@@ -280,15 +287,18 @@ async function openLiveControl(deviceId) {
             throw new Error((await tokenResponse.json()).detail || 'Không thể lấy viewer token');
         }
         const connection = await tokenResponse.json();
-        await connectLiveControlRoom(connection);
+        if (generation !== liveControlGeneration) return;
+        await connectLiveControlRoom(connection, generation);
+        if (generation !== liveControlGeneration) return;
         status.textContent = 'Chờ device chấp nhận Screen capture…';
     } catch (error) {
+        if (generation !== liveControlGeneration) return;
         status.textContent = `Lỗi: ${error.message}`;
         toast(`❌ ${error.message}`, 'error');
     }
 }
 
-async function connectLiveControlRoom(connection) {
+async function connectLiveControlRoom(connection, generation) {
     if (!window.LivekitClient) {
         throw new Error('LiveKit browser SDK chưa tải được');
     }
@@ -301,7 +311,7 @@ async function connectLiveControlRoom(connection) {
     liveControlRoom = room;
 
     room.on(RoomEvent.TrackSubscribed, (track) => {
-        if (track.kind !== Track.Kind.Video) return;
+        if (generation !== liveControlGeneration || track.kind !== Track.Kind.Video) return;
         const video = document.getElementById('liveControlVideo');
         track.attach(video);
         document.getElementById('liveControlStatus').textContent = 'Đang điều khiển trực tiếp';
@@ -309,13 +319,15 @@ async function connectLiveControlRoom(connection) {
     room.on(RoomEvent.TrackUnsubscribed, (track) => track.detach());
     room.on(RoomEvent.Disconnected, () => {
         const status = document.getElementById('liveControlStatus');
-        if (status) status.textContent = 'Stream đã ngắt kết nối';
+        if (status && generation === liveControlGeneration) status.textContent = 'Stream đã ngắt kết nối';
     });
     await room.connect(connection.url, connection.token);
+    if (generation !== liveControlGeneration) await room.disconnect();
 }
 
 async function closeLiveControl(event) {
     if (event && event.target !== event.currentTarget) return;
+    ++liveControlGeneration;
     const deviceId = liveControlDeviceId;
     liveControlDeviceId = null;
     livePointerStart = null;
@@ -391,7 +403,7 @@ async function livePointerUp(event) {
 }
 
 async function sendLiveControl(action, params = {}) {
-    if (!liveControlDeviceId) return;
+    if (!liveControlDeviceId) return false;
     const response = await fetch(`${API}/api/devices/${liveControlDeviceId}/live-control`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -400,14 +412,15 @@ async function sendLiveControl(action, params = {}) {
     if (!response.ok) {
         const body = await response.json().catch(() => ({}));
         toast(`❌ ${body.detail || 'Control command failed'}`, 'error');
+        return false;
     }
+    return true;
 }
 
 async function sendLiveText() {
     const input = document.getElementById('liveControlText');
     if (!input.value) return;
-    await sendLiveControl('type_text', { text: input.value });
-    input.value = '';
+    if (await sendLiveControl('type_text', { text: input.value })) input.value = '';
 }
 
 function selectDevice(id) {
@@ -421,7 +434,7 @@ function updateDeviceSelect() {
     const sel = document.getElementById('deviceSelect');
     const current = sel.value;
     sel.innerHTML = '<option value="">Chọn device...</option>' +
-        devices.map(d => `<option value="${d.id}">${d.name} (${d.ip_address}) — ${d.status}</option>`).join('');
+        devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)} (${escapeHtml(d.ip_address)}) — ${d.status}</option>`).join('');
     if (current) sel.value = current;
     // Also update account device select on Videos tab
     _populateAccountDeviceSelect();
@@ -465,7 +478,7 @@ async function renameDevice(id, currentName) {
 
     // Replace name text with input field
     const oldHTML = nameEl.innerHTML;
-    nameEl.innerHTML = `<input type="text" class="rename-input" value="${currentName}" 
+    nameEl.innerHTML = `<input type="text" class="rename-input" value="${escapeHtml(currentName)}"
         onclick="event.stopPropagation()" 
         onkeydown="if(event.key==='Enter'){saveDeviceName(${id},this.value);event.stopPropagation()}else if(event.key==='Escape'){cancelRename()}"
         onblur="saveDeviceName(${id},this.value)">`;
@@ -1818,7 +1831,7 @@ function populateSchedDevices() {
     const sel = document.getElementById('schedDevice');
     if (!sel) return;
     sel.innerHTML = '<option value="">Chọn device...</option>' +
-        devices.map(d => `<option value="${d.id}">${d.name}</option>`).join('');
+        devices.map(d => `<option value="${d.id}">${escapeHtml(d.name)}</option>`).join('');
 }
 
 async function loadSchedules() {
@@ -2052,7 +2065,7 @@ function showFilePreview(file) {
     selectedVideoFile = file;
     const info = document.getElementById('uploadFileInfo');
     const sizeMB = (file.size / 1024 / 1024).toFixed(1);
-    info.innerHTML = `🎬 <strong>${file.name}</strong> · ${sizeMB} MB`;
+    info.innerHTML = `🎬 <strong>${escapeHtml(file.name)}</strong> · ${sizeMB} MB`;
     document.getElementById('uploadForm').style.display = 'block';
     document.getElementById('videoTitle').value = file.name.replace(/\.[^/.]+$/, '');
 }

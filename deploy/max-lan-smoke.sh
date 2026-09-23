@@ -56,6 +56,7 @@ rsync -avz --delete \
     --exclude 'node_modules' \
     --exclude '.agents' \
     --exclude 'data' \
+    --exclude 'refactor/runtime' \
     --exclude 'screenshots' \
     --exclude 'android-helper/build' \
     --exclude 'android-helper/.gradle' \
@@ -70,7 +71,7 @@ ssh "$SERVER" "set -e; \
     mkdir -p data/backups && \
     if [ -f \"$REMOTE_DB_PATH\" ]; then \
         TS=\$(date +%Y%m%d-%H%M%S); \
-        cp \"$REMOTE_DB_PATH\" \"data/backups/android_control.db.pre_deploy_\$TS\"; \
+        python3 -c \"import sqlite3; s=sqlite3.connect('$REMOTE_DB_PATH'); d=sqlite3.connect('data/backups/android_control.db.pre_deploy_\$TS'); s.backup(d); d.close(); s.close()\"; \
         echo \"🗄️ Backed up database to data/backups/android_control.db.pre_deploy_\$TS\"; \
     fi && \
     docker compose -f \"$REMOTE_COMPOSE_FILE\" up -d --build"

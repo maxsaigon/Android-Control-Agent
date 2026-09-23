@@ -20,15 +20,24 @@ async def browse(
     view_seconds = max(0.5, min(float(params.get("view_seconds", 2.0)), 30.0))
 
     await transport.launch_app(TIKTOK_PACKAGE)
-    await emit("launch", "TikTok launch command delivered", True)
+    await emit("launch", "TikTok launch command delivered", False)
     await asyncio.sleep(min(view_seconds, 2))
+
+    tree = await transport.ui_tree()
+    if TIKTOK_PACKAGE not in str(tree):
+        raise RuntimeError("TikTok foreground not verified from UI tree")
+    await emit("verify", "TikTok UI observed; feed content is not independently verified", True)
+    size = await transport.command("get_screen_size")
+    width, height = int(size["width"]), int(size["height"])
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Invalid display size")
 
     for index in range(count):
         await asyncio.sleep(view_seconds + random.uniform(0, min(view_seconds * 0.2, 1)))
-        await emit("observe", f"Viewed feed item {index + 1}/{count}", True)
+        await emit("observe", f"Waited on feed item {index + 1}/{count}; viewing not verified", False)
         if index < count - 1:
-            await transport.swipe(540, 1700, 540, 520, random.randint(280, 420))
-            await emit("swipe", "Advanced to the next feed item", True)
+            await transport.swipe(width // 2, int(height * .8), width // 2, int(height * .25), random.randint(280, 420))
+            await emit("swipe", "Swipe delivered; new feed item not independently verified", False)
 
 
 WORKFLOWS = {

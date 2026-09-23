@@ -420,8 +420,8 @@ public class WebSocketService extends Service {
         public ServerHandshakeBuilder onWebsocketHandshakeReceivedAsServer(WebSocket conn, Draft draft, ClientHandshake request) throws InvalidDataException {
             ServerHandshakeBuilder builder = super.onWebsocketHandshakeReceivedAsServer(conn, draft, request);
             String path = request.getResourceDescriptor();
-            if (path == null || !path.contains("token=" + expectedToken)) {
-                Log.w(TAG, "Rejecting LAN connection: invalid or missing token (path=" + path + ")");
+            if (path == null || !expectedToken.equals(android.net.Uri.parse(path).getQueryParameter("token"))) {
+                Log.w(TAG, "Rejecting LAN connection: invalid or missing token");
                 throw new InvalidDataException(CloseFrame.POLICY_VALIDATION, "Invalid token");
             }
             return builder;
@@ -439,7 +439,7 @@ public class WebSocketService extends Service {
 
         @Override
         public void onMessage(WebSocket conn, String message) {
-            Log.d(TAG, "Received: " + message);
+            Log.d(TAG, "LAN command received");
             CommandHandler.handle(message, response -> {
                 if (conn.isOpen()) {
                     conn.send(response);
